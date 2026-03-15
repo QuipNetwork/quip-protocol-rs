@@ -1,1 +1,41 @@
+# Rust / Cargo
 target/
+Cargo.lock.bak
+**/*.rs.bk
+
+# Substrate WASM build artefacts
+*.wasm
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# IDE — IntelliJ / RustRover / CLion
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# IDE — VS Code
+.vscode/
+*.code-workspace
+
+# IDE — Eclipse
+.project
+.classpath
+.settings/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
