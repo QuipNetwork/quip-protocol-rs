@@ -25,13 +25,19 @@ use crate::{SignatureError, StatefulSignature};
 use codec::{Decode, Encode};
 use hashsigs_rs::WOTSPlus;
 use scale_info::TypeInfo;
-use sp_core::hashing::sha2_256;
+use sp_core::blake2_256;
+
+// Hash function interface used by the WOTS+ signature scheme. To be removed once hashsigs_rs is updated.
+type HashFn = fn(&[u8]) -> [u8; 32];
+
+// Hash function used by the WOTS+ signature scheme.
+const HASH_FN: HashFn = blake2_256;
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Returns a [`WOTSPlus`] instance configured with SHA-256.
 fn wots() -> WOTSPlus {
-    WOTSPlus::new(sha2_256)
+    WOTSPlus::new(HASH_FN)
 }
 
 /// Derive the per-leaf OTS seed from `master_seed` and the leaf `index`.
@@ -41,12 +47,12 @@ fn leaf_seed(master_seed: &[u8; 32], index: u64) -> [u8; 32] {
     let mut buf = [0u8; 40];
     buf[..32].copy_from_slice(master_seed);
     buf[32..].copy_from_slice(&index.to_le_bytes());
-    sha2_256(&buf)
+    HASH_FN(&buf)
 }
 
 /// Hash a WOTS+ [`PublicKey`](hashsigs_rs::PublicKey) into a 32-byte Merkle leaf.
 fn leaf_hash(pk: &hashsigs_rs::PublicKey) -> [u8; 32] {
-    sha2_256(&pk.to_bytes())
+    HASH_FN(&pk.to_bytes())
 }
 
 /// Combine two 32-byte sibling hashes into a parent node.
@@ -54,7 +60,7 @@ fn node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     let mut buf = [0u8; 64];
     buf[..32].copy_from_slice(left);
     buf[32..].copy_from_slice(right);
-    sha2_256(&buf)
+    HASH_FN(&buf)
 }
 
 // ── Raw signature encoding ────────────────────────────────────────────────────
@@ -316,7 +322,7 @@ impl StatefulSignature for WotsPlus {
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.subsec_nanos())
                 .unwrap_or(0);
-            let master_seed = sha2_256(&nanos.to_le_bytes());
+            let master_seed = HASH_FN(&nanos.to_le_bytes());
             build_tree(master_seed, 16)
         }
         #[cfg(not(feature = "std"))]
@@ -344,7 +350,7 @@ impl StatefulSignature for WotsPlus {
         let (pk, priv_key) = w.generate_key_pair(&seed);
 
         // WOTS+ operates on a fixed 32-byte input; hash the message first.
-        let msg_hash = sha2_256(message);
+        let msg_hash = HASH_FN(message);
         let wots_sig = w.sign(&priv_key, &msg_hash);
 
         // Include the leaf public key so the verifier can check both the OTS
@@ -398,7 +404,7 @@ impl StatefulSignature for WotsPlus {
         let w = wots();
 
         // Step 1: verify the WOTS+ OTS signature against the leaf public key.
-        let msg_hash = sha2_256(message);
+        let msg_hash = HASH_FN(message);
         if !w.verify(&leaf_pk, &msg_hash, &raw.wots_sig) {
             return false;
         }
@@ -451,7 +457,7 @@ mod tests {
     const TEST_HEIGHT: u8 = 4; // 16 OTS keys
 
     fn test_keypair() -> (WotsPlusSecretKey, WotsPlusPublicKey, WotsPlusState) {
-        let seed = sha2_256(b"quip-protocol-test-seed");
+        let seed = HASH_FN(b"quip-protocol-test-seed");
         WotsPlus::generate_from_seed(seed, TEST_HEIGHT)
     }
 
@@ -505,7 +511,7 @@ mod tests {
 
     #[test]
     fn exhausted_key_returns_error() {
-        let seed = sha2_256(b"exhaustion-test");
+        let seed = HASH_FN(b"exhaustion-test");
         let (sk, _, mut state) = WotsPlus::generate_from_seed(seed, 1); // 2 keys only
         WotsPlus::sign(&sk, &mut state, b"a").unwrap();
         WotsPlus::sign(&sk, &mut state, b"b").unwrap();
@@ -515,7 +521,7 @@ mod tests {
 
     #[test]
     fn has_remaining_keys() {
-        let seed = sha2_256(b"remaining-test");
+        let seed = HASH_FN(b"remaining-test");
         let (sk, _, mut state) = WotsPlus::generate_from_seed(seed, 1); // 2 keys
         assert!(WotsPlus::has_remaining_keys(&state));
         WotsPlus::sign(&sk, &mut state, b"1").unwrap();
