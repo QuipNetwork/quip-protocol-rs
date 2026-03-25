@@ -27,22 +27,22 @@ use hashsigs_rs::WOTSPlus;
 use scale_info::TypeInfo;
 use sp_core::blake2_256;
 
-// Hash function interface used by the WOTS+ signature scheme. To be removed once hashsigs_rs is updated.
+/// Hash function interface used by the WOTS+ signature scheme. To be removed once hashsigs_rs is updated.
 type HashFn = fn(&[u8]) -> [u8; 32];
 
-// Hash function used by the WOTS+ signature scheme.
+/// Hash function used by the WOTS+ signature scheme.
 const HASH_FN: HashFn = blake2_256;
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-/// Returns a [`WOTSPlus`] instance configured with SHA-256.
+/// Returns a [`WOTSPlus`] instance configured with a hashing function.
 fn wots() -> WOTSPlus {
     WOTSPlus::new(HASH_FN)
 }
 
 /// Derive the per-leaf OTS seed from `master_seed` and the leaf `index`.
 ///
-/// `leaf_seed = SHA-256(master_seed ‖ index_le64)`
+/// `leaf_seed = HASH_FN(master_seed ‖ index_le64)`
 fn leaf_seed(master_seed: &[u8; 32], index: u64) -> [u8; 32] {
     let mut buf = [0u8; 40];
     buf[..32].copy_from_slice(master_seed);
