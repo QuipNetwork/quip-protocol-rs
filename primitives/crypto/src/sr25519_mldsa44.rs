@@ -27,7 +27,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 // ---------------------------------------------------------------------------
 
 const VERSION: u8 = 0x01;
-const LABEL: &[u8] = b"hybrid-sr25519-mldsa44-v1";
+const LABEL: &[u8] = b"hybrid-sr25519-mldsa44-v1\0";
 
 const SR_PK_LEN: usize = 32;
 const SR_SIG_LEN: usize = 64;
@@ -159,10 +159,9 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
     fn sign_deterministic(sk: &HybridSecretKey, msg: &[u8], nonce: &[u8]) -> HybridSignature {
         let msg_prime = prepare_message(VERSION, LABEL, msg, &[]);
         let sr_sig = sr25519_sign_det(&sk.sr25519_seed, &msg_prime, nonce);
-        // ML-DSA rnd = H(ml_dsa_sk || nonce || msg') — bound to the ML-DSA-44
-        // key, not the sr25519 seed.
-        let ml_rnd = blake2_256_secret_parts(&[sk.ml_dsa_sk.as_ref(), nonce, msg_prime.as_slice()]);
-        let ml_sig = mldsa44_sign_det(&sk.ml_dsa_sk, &msg_prime, &ml_rnd);
+        // H3 follows the spec's ML-DSA deterministic mode: the network nonce is
+        // ignored and the PQ leg is derived from the key and message only.
+        let ml_sig = mldsa44_sign_det(&sk.ml_dsa_sk, &msg_prime);
         build_signature(&sr_sig, &ml_sig)
     }
 
@@ -306,19 +305,14 @@ fn sr25519_sign_det(seed: &[u8; 32], msg_prime: &[u8], nonce: &[u8]) -> sr25519:
 
 /// ML-DSA-44 deterministic signing helper.
 ///
-/// Uses `try_sign_with_seed` (FIPS 204 §5.2 deterministic variant) so the
-/// output is fully determined by `(ml_dsa_sk, msg_prime, rnd)` without calling
-/// any system RNG.  `rnd` is the 32-byte randomness value that FIPS 204 calls
-/// `rnd`; for deterministic signing derive it as `H(sk_seed || nonce || msg')`.
-fn mldsa44_sign_det(
-    ml_dsa_sk: &[u8; ML_SK_LEN],
-    msg_prime: &[u8],
-    rnd: &[u8; 32],
-) -> [u8; ML_SIG_LEN] {
+/// Uses `try_sign_with_seed` with the all-zero seed from the FIPS 204
+/// deterministic variant, so the output depends only on `(ml_dsa_sk,
+/// msg_prime)` and not on the external network nonce.
+fn mldsa44_sign_det(ml_dsa_sk: &[u8; ML_SK_LEN], msg_prime: &[u8]) -> [u8; ML_SIG_LEN] {
     let ml_sk =
         ml_dsa_44::PrivateKey::try_from_bytes(*ml_dsa_sk).expect("stored ML-DSA-44 key is valid");
     ml_sk
-        .try_sign_with_seed(rnd, msg_prime, b"")
+        .try_sign_with_seed(&[0u8; 32], msg_prime, b"")
         .expect("ML-DSA-44 deterministic signing failed")
 }
 
@@ -473,9 +467,18 @@ mod tests {
     fn mldsa44_component_is_deterministic() {
         let (sk, _) = keygen();
         let msg_prime = prepare_message(VERSION, LABEL, b"msg", &[]);
-        let rnd = [42u8; 32];
-        let sig1 = mldsa44_sign_det(&sk.ml_dsa_sk, &msg_prime, &rnd);
-        let sig2 = mldsa44_sign_det(&sk.ml_dsa_sk, &msg_prime, &rnd);
+        let sig1 = mldsa44_sign_det(&sk.ml_dsa_sk, &msg_prime);
+        let sig2 = mldsa44_sign_det(&sk.ml_dsa_sk, &msg_prime);
         assert_eq!(sig1, sig2, "ML-DSA-44 component is not deterministic");
+    }
+
+    #[test]
+    fn deterministic_nonce_only_changes_sr25519_component() {
+        let (sk, _) = keygen();
+        let sig1 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"nonce-1");
+        let sig2 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"nonce-2");
+
+        assert_ne!(&sig1.0[..SR_SIG_LEN], &sig2.0[..SR_SIG_LEN]);
+        assert_eq!(&sig1.0[SR_SIG_LEN..], &sig2.0[SR_SIG_LEN..]);
     }
 }
