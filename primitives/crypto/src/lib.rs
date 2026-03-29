@@ -30,16 +30,26 @@ pub trait HybridSignatureScheme {
     fn public(sk: &Self::SecretKey) -> Self::PublicKey;
 
     /// Hedged signing. Safe for all use cases.
-    fn sign(sk: &Self::SecretKey, msg: &[u8], rng: &mut impl CryptoRngCore) -> Self::Signature;
+    fn sign(
+        sk: &Self::SecretKey,
+        msg: &[u8],
+        ctx: &[u8],
+        rng: &mut impl CryptoRngCore,
+    ) -> Self::Signature;
 
     /// Deterministic signing with a network-derived nonce.
     ///
     /// `nonce` MUST be unique per `(key, msg)` pair — typically
     /// `H(state_root || block_number || msg)`.
-    fn sign_deterministic(sk: &Self::SecretKey, msg: &[u8], nonce: &[u8]) -> Self::Signature;
+    fn sign_deterministic(
+        sk: &Self::SecretKey,
+        msg: &[u8],
+        ctx: &[u8],
+        nonce: &[u8],
+    ) -> Self::Signature;
 
     /// Standard verification. Works for signatures from both signing functions.
-    fn verify(pk: &Self::PublicKey, msg: &[u8], sig: &Self::Signature) -> bool;
+    fn verify(pk: &Self::PublicKey, msg: &[u8], ctx: &[u8], sig: &Self::Signature) -> bool;
 
     /// Verification with nonce check.
     ///
@@ -49,6 +59,7 @@ pub trait HybridSignatureScheme {
     fn verify_deterministic(
         pk: &Self::PublicKey,
         msg: &[u8],
+        ctx: &[u8],
         sig: &Self::Signature,
         expected_nonce: &[u8],
     ) -> bool;

@@ -139,8 +139,13 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
     /// `try_sign_with_rng` adds fresh randomness for hedged security.
     ///
     /// Both components sign `M' = VERSION || LABEL || ctx || msg`.
-    fn sign(sk: &HybridSecretKey, msg: &[u8], rng: &mut impl CryptoRngCore) -> HybridSignature {
-        let msg_prime = prepare_message(VERSION, LABEL, msg, &[]);
+    fn sign(
+        sk: &HybridSecretKey,
+        msg: &[u8],
+        ctx: &[u8],
+        rng: &mut impl CryptoRngCore,
+    ) -> HybridSignature {
+        let msg_prime = prepare_message(VERSION, LABEL, msg, ctx);
 
         let sr_sig = sr25519_sign_hedged(&sk.sr25519_seed, &msg_prime, rng);
 
@@ -156,8 +161,13 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
     /// Deterministic signing with a network-derived nonce.
     ///
     /// Delegates to [`sr25519_sign_det`] and [`mldsa44_sign_det`].
-    fn sign_deterministic(sk: &HybridSecretKey, msg: &[u8], nonce: &[u8]) -> HybridSignature {
-        let msg_prime = prepare_message(VERSION, LABEL, msg, &[]);
+    fn sign_deterministic(
+        sk: &HybridSecretKey,
+        msg: &[u8],
+        ctx: &[u8],
+        nonce: &[u8],
+    ) -> HybridSignature {
+        let msg_prime = prepare_message(VERSION, LABEL, msg, ctx);
         let sr_sig = sr25519_sign_det(&sk.sr25519_seed, &msg_prime, nonce);
         // H3 follows the spec's ML-DSA deterministic mode: the network nonce is
         // ignored and the PQ leg is derived from the key and message only.
@@ -167,8 +177,8 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
 
     /// Standard verification. Works for signatures from both `sign` and
     /// `sign_deterministic`. Both components must pass.
-    fn verify(pk: &HybridPublicKey, msg: &[u8], sig: &HybridSignature) -> bool {
-        let msg_prime = prepare_message(VERSION, LABEL, msg, &[]);
+    fn verify(pk: &HybridPublicKey, msg: &[u8], ctx: &[u8], sig: &HybridSignature) -> bool {
+        let msg_prime = prepare_message(VERSION, LABEL, msg, ctx);
         verify_internal(pk, &msg_prime, sig)
     }
 
@@ -181,10 +191,11 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
     fn verify_deterministic(
         pk: &HybridPublicKey,
         msg: &[u8],
+        ctx: &[u8],
         sig: &HybridSignature,
         _expected_nonce: &[u8],
     ) -> bool {
-        let msg_prime = prepare_message(VERSION, LABEL, msg, &[]);
+        let msg_prime = prepare_message(VERSION, LABEL, msg, ctx);
         verify_internal(pk, &msg_prime, sig)
     }
 }
@@ -364,52 +375,53 @@ mod tests {
     #[test]
     fn hedged_sign_verify_roundtrip() {
         let (sk, pk) = keygen();
-        let sig = Sr25519MlDsa44::sign(&sk, b"hello quip", &mut OsRng);
-        assert!(Sr25519MlDsa44::verify(&pk, b"hello quip", &sig));
+        let sig = Sr25519MlDsa44::sign(&sk, b"hello quip", b"", &mut OsRng);
+        assert!(Sr25519MlDsa44::verify(&pk, b"hello quip", b"", &sig));
     }
 
     #[test]
     fn deterministic_sign_verify_roundtrip() {
         let (sk, pk) = keygen();
         let nonce = b"H(state_root||block||msg)";
-        let sig = Sr25519MlDsa44::sign_deterministic(&sk, b"hello quip", nonce);
-        assert!(Sr25519MlDsa44::verify(&pk, b"hello quip", &sig));
+        let sig = Sr25519MlDsa44::sign_deterministic(&sk, b"hello quip", b"", nonce);
+        assert!(Sr25519MlDsa44::verify(&pk, b"hello quip", b"", &sig));
     }
 
     #[test]
     fn deterministic_is_deterministic() {
         let (sk, _) = keygen();
         let nonce = b"same-nonce";
-        let sig1 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", nonce);
-        let sig2 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", nonce);
+        let sig1 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"", nonce);
+        let sig2 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"", nonce);
         assert_eq!(sig1.0, sig2.0);
     }
 
     #[test]
     fn deterministic_different_nonce_gives_different_sig() {
         let (sk, _) = keygen();
-        let sig1 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"nonce-1");
-        let sig2 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"nonce-2");
+        let sig1 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"", b"nonce-1");
+        let sig2 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"", b"nonce-2");
         assert_ne!(sig1.0, sig2.0);
     }
 
     #[test]
     fn verify_accepts_hedged_and_deterministic() {
         let (sk, pk) = keygen();
-        let hedged = Sr25519MlDsa44::sign(&sk, b"msg", &mut OsRng);
-        let det = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"nonce");
-        assert!(Sr25519MlDsa44::verify(&pk, b"msg", &hedged));
-        assert!(Sr25519MlDsa44::verify(&pk, b"msg", &det));
+        let hedged = Sr25519MlDsa44::sign(&sk, b"msg", b"", &mut OsRng);
+        let det = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"", b"nonce");
+        assert!(Sr25519MlDsa44::verify(&pk, b"msg", b"", &hedged));
+        assert!(Sr25519MlDsa44::verify(&pk, b"msg", b"", &det));
     }
 
     #[test]
     fn verify_deterministic_is_equivalent_to_verify() {
         // For ML-DSA-44 hybrids verify_deterministic == verify (no nonce in signature).
         let (sk, pk) = keygen();
-        let sig = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"nonce");
+        let sig = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"", b"nonce");
         assert!(Sr25519MlDsa44::verify_deterministic(
             &pk,
             b"msg",
+            b"",
             &sig,
             b"any-nonce"
         ));
@@ -419,21 +431,28 @@ mod tests {
     fn wrong_key_fails() {
         let (sk, _) = keygen();
         let (_, wrong_pk) = keygen();
-        let sig = Sr25519MlDsa44::sign(&sk, b"hello", &mut OsRng);
-        assert!(!Sr25519MlDsa44::verify(&wrong_pk, b"hello", &sig));
+        let sig = Sr25519MlDsa44::sign(&sk, b"hello", b"", &mut OsRng);
+        assert!(!Sr25519MlDsa44::verify(&wrong_pk, b"hello", b"", &sig));
     }
 
     #[test]
     fn wrong_message_fails() {
         let (sk, pk) = keygen();
-        let sig = Sr25519MlDsa44::sign(&sk, b"hello", &mut OsRng);
-        assert!(!Sr25519MlDsa44::verify(&pk, b"world", &sig));
+        let sig = Sr25519MlDsa44::sign(&sk, b"hello", b"", &mut OsRng);
+        assert!(!Sr25519MlDsa44::verify(&pk, b"world", b"", &sig));
+    }
+
+    #[test]
+    fn wrong_context_fails() {
+        let (sk, pk) = keygen();
+        let sig = Sr25519MlDsa44::sign(&sk, b"hello", b"ctx-a", &mut OsRng);
+        assert!(!Sr25519MlDsa44::verify(&pk, b"hello", b"ctx-b", &sig));
     }
 
     #[test]
     fn signature_is_correct_length() {
         let (sk, _) = keygen();
-        let sig = Sr25519MlDsa44::sign(&sk, b"test", &mut OsRng);
+        let sig = Sr25519MlDsa44::sign(&sk, b"test", b"", &mut OsRng);
         assert_eq!(sig.as_ref().len(), HYBRID_SIG_LEN);
     }
 
@@ -475,10 +494,18 @@ mod tests {
     #[test]
     fn deterministic_nonce_only_changes_sr25519_component() {
         let (sk, _) = keygen();
-        let sig1 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"nonce-1");
-        let sig2 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"nonce-2");
+        let sig1 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"", b"nonce-1");
+        let sig2 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"", b"nonce-2");
 
         assert_ne!(&sig1.0[..SR_SIG_LEN], &sig2.0[..SR_SIG_LEN]);
         assert_eq!(&sig1.0[SR_SIG_LEN..], &sig2.0[SR_SIG_LEN..]);
+    }
+
+    #[test]
+    fn context_changes_signature() {
+        let (sk, _) = keygen();
+        let sig1 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"ctx-a", b"nonce");
+        let sig2 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"ctx-b", b"nonce");
+        assert_ne!(sig1.0, sig2.0);
     }
 }
