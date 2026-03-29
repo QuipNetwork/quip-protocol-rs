@@ -16,10 +16,10 @@ schnorrkel = { workspace = true }
 fips204 = "0.4"
 blake2 = "0.10"
 hkdf = "0.12"
-sha2 = "0.10"
+sha2 = "0.10" # can't be bumped to 0.11 as it breaks other dependencies.
 subtle = "2.6"
 zeroize = { version = "1", features = ["derive"] }
-rand_core = "0.6"
+rand_core = "0.6" # can't be bumped due to schnorrkel and fips204 depending on this api version.
 
 [features]
 default = ["std"]
