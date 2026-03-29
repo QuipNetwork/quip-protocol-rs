@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 /// The label binds the signature to a specific hybrid construction,
 /// preventing cross-context replay between different hybrid schemes.
 // TODO: Perhaps implement a signing context helper similar to `schnorrkel::context::SigningContext` and `schnorrkel::context::SigningTranscript`. TBD
+// NOTE: This is allocated on the heap. 
 pub fn prepare_message(version: u8, label: &[u8], msg: &[u8], ctx: &[u8]) -> Vec<u8> {
     assert!(ctx.len() <= 255, "ctx must be at most 255 bytes");
     let mut out = Vec::with_capacity(1 + label.len() + 1 + ctx.len() + msg.len());
