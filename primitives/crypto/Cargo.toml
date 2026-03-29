@@ -1,0 +1,23 @@
+[package]
+name = "quip-crypto-primitives"
+version = "0.1.0"
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+sp-core = { workspace = true }
+schnorrkel = { workspace = true }
+fips204 = "0.4"
+subtle = "2.6"
+zeroize = { version = "1", features = ["derive"] }
+rand_core = "0.6"
+
+[features]
+default = ["std"]
+std = ["sp-core/std"]
