@@ -14,6 +14,8 @@ workspace = true
 sp-core = { workspace = true }
 schnorrkel = { workspace = true }
 fips204 = "0.4"
+hkdf = "0.12"
+sha2 = "0.10"
 subtle = "2.6"
 zeroize = { version = "1", features = ["derive"] }
 rand_core = "0.6"

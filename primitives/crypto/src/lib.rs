@@ -10,6 +10,32 @@ pub use sr25519_mldsa44::{HybridPublicKey, HybridSecretKey, HybridSignature, Sr2
 use rand_core::CryptoRngCore;
 use zeroize::Zeroize;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HybridSignatureError {
+    InvalidLength { expected: usize, actual: usize },
+    InvalidSeedLength { expected: usize, actual: usize },
+    InvalidPublicKey,
+    InvalidSecretKey,
+}
+
+impl core::fmt::Display for HybridSignatureError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::InvalidLength { expected, actual } => {
+                write!(f, "invalid length: expected {expected}, got {actual}")
+            }
+            Self::InvalidSeedLength { expected, actual } => {
+                write!(f, "invalid seed length: expected {expected}, got {actual}")
+            }
+            Self::InvalidPublicKey => write!(f, "invalid public key"),
+            Self::InvalidSecretKey => write!(f, "invalid secret key"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for HybridSignatureError {}
+
 /// Common interface for hybrid signature constructions.
 ///
 /// Signing has two modes:
@@ -26,7 +52,17 @@ pub trait HybridSignatureScheme {
     type SecretKey: Zeroize;
     type Signature: AsRef<[u8]>;
 
+    fn public_key_len() -> usize;
+    fn secret_key_len() -> usize;
+    fn signature_max_len() -> usize;
+
     fn generate(rng: &mut impl CryptoRngCore) -> (Self::SecretKey, Self::PublicKey);
+    fn from_seed_slice(
+        seed: &[u8],
+    ) -> Result<(Self::SecretKey, Self::PublicKey), HybridSignatureError>;
+    fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey, HybridSignatureError>;
+    fn secret_key_from_bytes(bytes: &[u8]) -> Result<Self::SecretKey, HybridSignatureError>;
+    fn signature_from_bytes(bytes: &[u8]) -> Result<Self::Signature, HybridSignatureError>;
     fn public(sk: &Self::SecretKey) -> Self::PublicKey;
 
     /// Hedged signing. Safe for all use cases.
