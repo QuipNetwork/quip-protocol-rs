@@ -92,18 +92,18 @@ default = ["std"]
 std = ["quip-protocol-runtime/std"]
 # Dependencies that are only required if runtime benchmarking should be build.
 runtime-benchmarks = [
-	"frame-benchmarking-cli/runtime-benchmarks",
-	"frame-system/runtime-benchmarks",
-	"pallet-transaction-payment/runtime-benchmarks",
-	"sc-service/runtime-benchmarks",
-	"quip-protocol-runtime/runtime-benchmarks",
-	"sp-runtime/runtime-benchmarks",
+  "frame-benchmarking-cli/runtime-benchmarks",
+  "frame-system/runtime-benchmarks",
+  "pallet-transaction-payment/runtime-benchmarks",
+  "sc-service/runtime-benchmarks",
+  "quip-protocol-runtime/runtime-benchmarks",
+  "sp-runtime/runtime-benchmarks",
 ]
 # Enable features that allow the runtime to be tried and debugged. Name might be subject to change
 # in the near future.
 try-runtime = [
-	"frame-system/try-runtime",
-	"pallet-transaction-payment/try-runtime",
-	"quip-protocol-runtime/try-runtime",
-	"sp-runtime/try-runtime",
+  "frame-system/try-runtime",
+  "pallet-transaction-payment/try-runtime",
+  "quip-protocol-runtime/try-runtime",
+  "sp-runtime/try-runtime",
 ]
