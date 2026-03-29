@@ -20,7 +20,8 @@ sha2 = "0.10" # can't be bumped to 0.11 as it breaks other dependencies.
 subtle = "2.6"
 zeroize = { version = "1", features = ["derive"] }
 rand_core = "0.6" # can't be bumped due to schnorrkel and fips204 depending on this api version.
+thiserror = { version = "1", optional = true }
 
 [features]
 default = ["std"]
-std = ["sp-core/std"]
+std = ["sp-core/std", "dep:thiserror"]

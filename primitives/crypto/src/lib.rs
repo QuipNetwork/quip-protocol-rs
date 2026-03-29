@@ -3,38 +3,14 @@
 extern crate alloc;
 
 mod domain;
+mod error;
 pub mod sr25519_mldsa44;
 
+pub use error::HybridSignatureError;
 pub use sr25519_mldsa44::{HybridPublicKey, HybridSecretKey, HybridSignature, Sr25519MlDsa44};
 
 use rand_core::CryptoRngCore;
 use zeroize::Zeroize;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum HybridSignatureError {
-    InvalidLength { expected: usize, actual: usize },
-    InvalidSeedLength { expected: usize, actual: usize },
-    InvalidPublicKey,
-    InvalidSecretKey,
-}
-
-impl core::fmt::Display for HybridSignatureError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::InvalidLength { expected, actual } => {
-                write!(f, "invalid length: expected {expected}, got {actual}")
-            }
-            Self::InvalidSeedLength { expected, actual } => {
-                write!(f, "invalid seed length: expected {expected}, got {actual}")
-            }
-            Self::InvalidPublicKey => write!(f, "invalid public key"),
-            Self::InvalidSecretKey => write!(f, "invalid secret key"),
-        }
-    }
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for HybridSignatureError {}
 
 /// Common interface for hybrid signature constructions.
 ///
