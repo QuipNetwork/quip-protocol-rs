@@ -10,6 +10,8 @@
 //!
 //! Domain label: `hybrid-sr25519-mldsa44-v1`
 
+use alloc::vec::Vec;
+
 use crate::domain::prepare_message;
 use crate::HybridSignatureScheme;
 
@@ -18,7 +20,7 @@ use fips204::traits::{KeyGen, SerDes, Signer, Verifier as _};
 use rand_core::CryptoRngCore;
 use sp_core::{sr25519, Pair};
 use subtle::{Choice, ConstantTimeEq};
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -34,7 +36,7 @@ const ML_PK_LEN: usize = 1312;
 const ML_SK_LEN: usize = 2560;
 const ML_SIG_LEN: usize = 2420;
 
-pub const HYBRID_PK_LEN: usize = SR_PK_LEN + ML_PK_LEN;    // 1344
+pub const HYBRID_PK_LEN: usize = SR_PK_LEN + ML_PK_LEN; // 1344
 pub const HYBRID_SIG_LEN: usize = SR_SIG_LEN + ML_SIG_LEN; // 2484
 
 // ---------------------------------------------------------------------------
@@ -64,7 +66,7 @@ impl ConstantTimeEq for HybridPublicKey {
 /// `ml_dsa_pk` is cached so that `public()` is cheap.
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct HybridSecretKey {
-    sr25519_seed: [u8; 32],
+    sr25519_seed: [u8; SR_PK_LEN],
     ml_dsa_sk: [u8; ML_SK_LEN],
     ml_dsa_pk: [u8; ML_PK_LEN],
 }
@@ -110,14 +112,18 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
         pk_bytes[..SR_PK_LEN].copy_from_slice(sr_pair.public().as_array_ref());
         pk_bytes[SR_PK_LEN..].copy_from_slice(&ml_pk_bytes);
 
-        let sk = HybridSecretKey { sr25519_seed, ml_dsa_sk: ml_sk_bytes, ml_dsa_pk: ml_pk_bytes };
+        let sk = HybridSecretKey {
+            sr25519_seed,
+            ml_dsa_sk: ml_sk_bytes,
+            ml_dsa_pk: ml_pk_bytes,
+        };
 
         (sk, HybridPublicKey(pk_bytes))
     }
 
     fn public(sk: &HybridSecretKey) -> HybridPublicKey {
-        let sr_pair = sr25519::Pair::from_seed_slice(&sk.sr25519_seed)
-            .expect("stored sr25519 seed is valid");
+        let sr_pair =
+            sr25519::Pair::from_seed_slice(&sk.sr25519_seed).expect("stored sr25519 seed is valid");
 
         let mut pk_bytes = [0u8; HYBRID_PK_LEN];
         pk_bytes[..SR_PK_LEN].copy_from_slice(sr_pair.public().as_array_ref());
@@ -128,17 +134,15 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
 
     /// Hedged signing.
     ///
-    /// sr25519: schnorrkel derives the nonce deterministically from the key and
-    /// message (no external randomness needed).  ML-DSA-44: `try_sign_with_rng`
-    /// adds fresh randomness for hedged security.
+    /// sr25519: injects the caller-provided RNG into schnorrkel's signing
+    /// transcript to avoid relying on OS randomness. ML-DSA-44:
+    /// `try_sign_with_rng` adds fresh randomness for hedged security.
     ///
     /// Both components sign `M' = VERSION || LABEL || ctx || msg`.
     fn sign(sk: &HybridSecretKey, msg: &[u8], rng: &mut impl CryptoRngCore) -> HybridSignature {
         let msg_prime = prepare_message(VERSION, LABEL, msg, &[]);
 
-        let sr_pair = sr25519::Pair::from_seed_slice(&sk.sr25519_seed)
-            .expect("stored sr25519 seed is valid");
-        let sr_sig = sr_pair.sign(&msg_prime);
+        let sr_sig = sr25519_sign_hedged(&sk.sr25519_seed, &msg_prime, rng);
 
         let ml_sk = ml_dsa_44::PrivateKey::try_from_bytes(sk.ml_dsa_sk)
             .expect("stored ML-DSA-44 key is valid");
@@ -152,18 +156,12 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
     /// Deterministic signing with a network-derived nonce.
     ///
     /// Delegates to [`sr25519_sign_det`] and [`mldsa44_sign_det`].
-    fn sign_deterministic(
-        sk: &HybridSecretKey,
-        msg: &[u8],
-        nonce: &[u8],
-    ) -> HybridSignature {
-        let msg_prime = prepare_message(VERSION, LABEL,msg, &[]);
+    fn sign_deterministic(sk: &HybridSecretKey, msg: &[u8], nonce: &[u8]) -> HybridSignature {
+        let msg_prime = prepare_message(VERSION, LABEL, msg, &[]);
         let sr_sig = sr25519_sign_det(&sk.sr25519_seed, &msg_prime, nonce);
         // ML-DSA rnd = H(ml_dsa_sk || nonce || msg') — bound to the ML-DSA-44
         // key, not the sr25519 seed.
-        let ml_rnd = sp_core::hashing::blake2_256(
-            &[sk.ml_dsa_sk.as_ref(), nonce, msg_prime.as_slice()].concat(),
-        );
+        let ml_rnd = blake2_256_secret_parts(&[sk.ml_dsa_sk.as_ref(), nonce, msg_prime.as_slice()]);
         let ml_sig = mldsa44_sign_det(&sk.ml_dsa_sk, &msg_prime, &ml_rnd);
         build_signature(&sr_sig, &ml_sig)
     }
@@ -171,7 +169,7 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
     /// Standard verification. Works for signatures from both `sign` and
     /// `sign_deterministic`. Both components must pass.
     fn verify(pk: &HybridPublicKey, msg: &[u8], sig: &HybridSignature) -> bool {
-        let msg_prime = prepare_message(VERSION, LABEL,msg, &[]);
+        let msg_prime = prepare_message(VERSION, LABEL, msg, &[]);
         verify_internal(pk, &msg_prime, sig)
     }
 
@@ -187,7 +185,7 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
         sig: &HybridSignature,
         _expected_nonce: &[u8],
     ) -> bool {
-        let msg_prime = prepare_message(VERSION, LABEL,msg, &[]);
+        let msg_prime = prepare_message(VERSION, LABEL, msg, &[]);
         verify_internal(pk, &msg_prime, sig)
     }
 }
@@ -207,10 +205,13 @@ struct Blake2Rng {
 
 impl Blake2Rng {
     fn new(seed: [u8; 32]) -> Self {
-        let buf = sp_core::hashing::blake2_256(
-            &[seed.as_ref(), &0u64.to_le_bytes()].concat(),
-        );
-        Blake2Rng { seed, counter: 0, buf, pos: 0 }
+        let buf = blake2_256_seed_counter(&seed, 0);
+        Blake2Rng {
+            seed,
+            counter: 0,
+            buf,
+            pos: 0,
+        }
     }
 }
 
@@ -232,14 +233,11 @@ impl rand_core::RngCore for Blake2Rng {
         while offset < dest.len() {
             if self.pos >= 32 {
                 self.counter += 1;
-                self.buf = sp_core::hashing::blake2_256(
-                    &[self.seed.as_ref(), &self.counter.to_le_bytes()].concat(),
-                );
+                self.buf = blake2_256_seed_counter(&self.seed, self.counter);
                 self.pos = 0;
             }
             let take = core::cmp::min(32 - self.pos, dest.len() - offset);
-            dest[offset..offset + take]
-                .copy_from_slice(&self.buf[self.pos..self.pos + take]);
+            dest[offset..offset + take].copy_from_slice(&self.buf[self.pos..self.pos + take]);
             self.pos += take;
             offset += take;
         }
@@ -253,23 +251,51 @@ impl rand_core::RngCore for Blake2Rng {
 
 impl rand_core::CryptoRng for Blake2Rng {}
 
+fn blake2_256_seed_counter(seed: &[u8; 32], counter: u64) -> [u8; 32] {
+    let mut input = [0u8; 40];
+    input[..32].copy_from_slice(seed);
+    input[32..].copy_from_slice(&counter.to_le_bytes());
+    let hash = sp_core::hashing::blake2_256(&input);
+    input.zeroize();
+    hash
+}
+
+fn blake2_256_secret_parts(parts: &[&[u8]]) -> [u8; 32] {
+    let total_len: usize = parts.iter().map(|part| part.len()).sum();
+    let mut input = Zeroizing::new(Vec::with_capacity(total_len));
+    for part in parts {
+        input.extend_from_slice(part);
+    }
+    sp_core::hashing::blake2_256(input.as_slice())
+}
+
+fn sr25519_keypair_from_seed(seed: &[u8; 32]) -> schnorrkel::Keypair {
+    let mini = schnorrkel::MiniSecretKey::from_bytes(seed).expect("valid sr25519 seed");
+    mini.expand_to_keypair(schnorrkel::ExpansionMode::Ed25519)
+}
+
+fn sr25519_sign_hedged(
+    seed: &[u8; 32],
+    msg_prime: &[u8],
+    rng: &mut impl CryptoRngCore,
+) -> sr25519::Signature {
+    let keypair = sr25519_keypair_from_seed(seed);
+    let t = schnorrkel::context::attach_rng(
+        schnorrkel::signing_context(b"substrate").bytes(msg_prime),
+        rng,
+    );
+    sr25519::Signature::from_raw(keypair.sign(t).to_bytes())
+}
+
 /// sr25519 deterministic signing helper.
 ///
 /// Derives Schnorr nonce `r` from `H(seed || nonce || msg_prime)` by seeding
 /// `Blake2Rng` and feeding it to `schnorrkel::context::attach_rng`.  This
 /// replaces schnorrkel's default `getrandom` call so the output is fully
 /// determined by `(seed, nonce, msg_prime)`.
-fn sr25519_sign_det(
-    seed: &[u8; 32],
-    msg_prime: &[u8],
-    nonce: &[u8],
-) -> sr25519::Signature {
-    let rng_seed = sp_core::hashing::blake2_256(
-        &[seed.as_ref(), nonce, msg_prime].concat(),
-    );
-    let mini = schnorrkel::MiniSecretKey::from_bytes(seed)
-        .expect("valid sr25519 seed");
-    let keypair = mini.expand_to_keypair(schnorrkel::ExpansionMode::Ed25519);
+fn sr25519_sign_det(seed: &[u8; 32], msg_prime: &[u8], nonce: &[u8]) -> sr25519::Signature {
+    let rng_seed = blake2_256_secret_parts(&[seed.as_ref(), nonce, msg_prime]);
+    let keypair = sr25519_keypair_from_seed(seed);
     let mut det_rng = Blake2Rng::new(rng_seed);
     let t = schnorrkel::context::attach_rng(
         schnorrkel::signing_context(b"substrate").bytes(msg_prime),
@@ -289,17 +315,14 @@ fn mldsa44_sign_det(
     msg_prime: &[u8],
     rnd: &[u8; 32],
 ) -> [u8; ML_SIG_LEN] {
-    let ml_sk = ml_dsa_44::PrivateKey::try_from_bytes(*ml_dsa_sk)
-        .expect("stored ML-DSA-44 key is valid");
+    let ml_sk =
+        ml_dsa_44::PrivateKey::try_from_bytes(*ml_dsa_sk).expect("stored ML-DSA-44 key is valid");
     ml_sk
         .try_sign_with_seed(rnd, msg_prime, b"")
         .expect("ML-DSA-44 deterministic signing failed")
 }
 
-fn build_signature(
-    sr_sig: &sr25519::Signature,
-    ml_sig: &[u8; ML_SIG_LEN],
-) -> HybridSignature {
+fn build_signature(sr_sig: &sr25519::Signature, ml_sig: &[u8; ML_SIG_LEN]) -> HybridSignature {
     let mut sig = [0u8; HYBRID_SIG_LEN];
     sig[..SR_SIG_LEN].copy_from_slice(sr_sig.as_ref());
     sig[SR_SIG_LEN..].copy_from_slice(ml_sig);
@@ -308,16 +331,16 @@ fn build_signature(
 
 /// Verify both components against `msg_prime`. Both must pass.
 fn verify_internal(pk: &HybridPublicKey, msg_prime: &[u8], sig: &HybridSignature) -> bool {
-    let sr_pk = sr25519::Public::from_raw(
-        pk.0[..SR_PK_LEN].try_into().expect("pk is 1344 bytes"),
-    );
-    let ml_pk_bytes: &[u8; ML_PK_LEN] =
-        pk.0[SR_PK_LEN..].try_into().expect("ml_pk slice is 1312 bytes");
+    let sr_pk = sr25519::Public::from_raw(pk.0[..SR_PK_LEN].try_into().expect("pk is 1344 bytes"));
+    let ml_pk_bytes: &[u8; ML_PK_LEN] = pk.0[SR_PK_LEN..]
+        .try_into()
+        .expect("ml_pk slice is 1312 bytes");
 
     let sr_sig_bytes: &[u8; SR_SIG_LEN] =
         sig.0[..SR_SIG_LEN].try_into().expect("sig is 2484 bytes");
-    let ml_sig_bytes: &[u8; ML_SIG_LEN] =
-        sig.0[SR_SIG_LEN..].try_into().expect("ml_sig slice is 2420 bytes");
+    let ml_sig_bytes: &[u8; ML_SIG_LEN] = sig.0[SR_SIG_LEN..]
+        .try_into()
+        .expect("ml_sig slice is 2420 bytes");
 
     let sr_sig = sr25519::Signature::from_raw(*sr_sig_bytes);
     let sr_ok = sr25519::Pair::verify(&sr_sig, msg_prime, &sr_pk);
@@ -390,7 +413,12 @@ mod tests {
         // For ML-DSA-44 hybrids verify_deterministic == verify (no nonce in signature).
         let (sk, pk) = keygen();
         let sig = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"nonce");
-        assert!(Sr25519MlDsa44::verify_deterministic(&pk, b"msg", &sig, b"any-nonce"));
+        assert!(Sr25519MlDsa44::verify_deterministic(
+            &pk,
+            b"msg",
+            &sig,
+            b"any-nonce"
+        ));
     }
 
     #[test]
@@ -433,7 +461,7 @@ mod tests {
     #[test]
     fn sr25519_component_is_deterministic() {
         let (sk, _) = keygen();
-        let msg_prime = prepare_message(VERSION, LABEL,b"msg", &[]);
+        let msg_prime = prepare_message(VERSION, LABEL, b"msg", &[]);
         let sig1 = sr25519_sign_det(&sk.sr25519_seed, &msg_prime, b"nonce");
         let sig2 = sr25519_sign_det(&sk.sr25519_seed, &msg_prime, b"nonce");
         let b1: &[u8] = sig1.as_ref();
@@ -444,7 +472,7 @@ mod tests {
     #[test]
     fn mldsa44_component_is_deterministic() {
         let (sk, _) = keygen();
-        let msg_prime = prepare_message(VERSION, LABEL,b"msg", &[]);
+        let msg_prime = prepare_message(VERSION, LABEL, b"msg", &[]);
         let rnd = [42u8; 32];
         let sig1 = mldsa44_sign_det(&sk.ml_dsa_sk, &msg_prime, &rnd);
         let sig2 = mldsa44_sign_det(&sk.ml_dsa_sk, &msg_prime, &rnd);
