@@ -11,11 +11,11 @@
 //!
 //! Domain label: `hybrid-sr25519-mldsa44-v1`
 
-use alloc::vec::Vec;
-
 use crate::domain::prepare_message;
 use crate::{HybridSignatureError, HybridSignatureScheme};
 
+use blake2::digest::{Update, VariableOutput};
+use blake2::Blake2bVar;
 use fips204::ml_dsa_44;
 use fips204::traits::{KeyGen, SerDes, Signer, Verifier as _};
 use hkdf::Hkdf;
@@ -447,12 +447,15 @@ fn blake2_256_seed_counter(seed: &[u8; 32], counter: u64) -> [u8; 32] {
 }
 
 fn blake2_256_secret_parts(parts: &[&[u8]]) -> [u8; 32] {
-    let total_len: usize = parts.iter().map(|part| part.len()).sum();
-    let mut input = Zeroizing::new(Vec::with_capacity(total_len));
+    let mut hasher = Blake2bVar::new(32).expect("32-byte Blake2b output is valid");
     for part in parts {
-        input.extend_from_slice(part);
+        hasher.update(part);
     }
-    sp_core::hashing::blake2_256(input.as_slice())
+    let mut out = [0u8; 32];
+    hasher
+        .finalize_variable(&mut out)
+        .expect("output length matches buffer");
+    out
 }
 
 fn sr25519_keypair_from_secret(secret: &[u8; SR_SK_LEN]) -> schnorrkel::Keypair {
