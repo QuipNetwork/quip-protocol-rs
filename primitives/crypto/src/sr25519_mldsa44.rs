@@ -464,6 +464,10 @@ fn sr25519_keypair_from_secret(secret: &[u8; SR_SK_LEN]) -> schnorrkel::Keypair 
         .to_keypair()
 }
 
+// Signing context for `schnorrkel::context::attach_rng` to mainaint the compatibility with substrate
+// wrapper in sp_core.
+const SUBSTRATE_SIGNING_CONTEXT: &[u8] = b"substrate";
+
 fn sr25519_sign_hedged(
     secret: &[u8; SR_SK_LEN],
     msg_prime: &[u8],
@@ -471,7 +475,7 @@ fn sr25519_sign_hedged(
 ) -> sr25519::Signature {
     let keypair = sr25519_keypair_from_secret(secret);
     let t = schnorrkel::context::attach_rng(
-        schnorrkel::signing_context(b"substrate").bytes(msg_prime),
+        schnorrkel::signing_context(SUBSTRATE_SIGNING_CONTEXT).bytes(msg_prime),
         rng,
     );
     sr25519::Signature::from_raw(keypair.sign(t).to_bytes())
@@ -492,7 +496,7 @@ fn sr25519_sign_det(
     let keypair = sr25519_keypair_from_secret(secret);
     let mut det_rng = Blake2Rng::new(rng_seed);
     let t = schnorrkel::context::attach_rng(
-        schnorrkel::signing_context(b"substrate").bytes(msg_prime),
+        schnorrkel::signing_context(SUBSTRATE_SIGNING_CONTEXT).bytes(msg_prime),
         &mut det_rng,
     );
     sr25519::Signature::from_raw(keypair.sign(t).to_bytes())
@@ -506,6 +510,7 @@ fn sr25519_sign_det(
 fn mldsa44_sign_det(ml_dsa_sk: &[u8; ML_SK_LEN], msg_prime: &[u8]) -> [u8; ML_SIG_LEN] {
     let ml_sk =
         ml_dsa_44::PrivateKey::try_from_bytes(*ml_dsa_sk).expect("stored ML-DSA-44 key is valid");
+    // Note that the context is always empty as it's already included in `msg_prime`.
     ml_sk
         .try_sign_with_seed(&[0u8; 32], msg_prime, b"")
         .expect("ML-DSA-44 deterministic signing failed")
