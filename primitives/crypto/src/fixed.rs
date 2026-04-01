@@ -1,12 +1,14 @@
 use core::marker::PhantomData;
 
 use rand_core::CryptoRngCore;
+use subtle::{Choice, ConstantTimeEq};
 use zeroize::Zeroize;
 
 use crate::classical::ClassicalSignatureAlgorithm;
 use crate::domain::prepare_message;
 use crate::pq::FixedPqSignatureAlgorithm;
-use crate::suite::{derive_component_seeds, FixedHybridSuite, MASTER_SEED_LEN};
+use crate::seed::{derive_component_seeds, MASTER_SEED_LEN};
+use crate::suite::FixedHybridSuite;
 use crate::{HybridSignatureError, Result};
 
 pub trait CompositePublicKey: AsRef<[u8]> + Clone + Sized {
@@ -22,6 +24,102 @@ pub trait CompositeSignature: AsRef<[u8]> + Sized {
     fn from_parts(classical: &[u8], pq: &[u8]) -> Self;
     fn split(&self) -> (&[u8], &[u8]);
     fn from_bytes(bytes: &[u8]) -> Result<Self>;
+}
+
+pub trait FixedHybridComponents: FixedHybridSuite {
+    type Classical: ClassicalSignatureAlgorithm;
+    type Pq: FixedPqSignatureAlgorithm;
+}
+
+pub struct FixedPublicKey<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> {
+    bytes: [u8; TOTAL_LEN],
+    marker: PhantomData<fn() -> S>,
+}
+
+impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> Clone
+    for FixedPublicKey<S, TOTAL_LEN, LEFT_LEN>
+{
+    fn clone(&self) -> Self {
+        Self {
+            bytes: self.bytes,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> AsRef<[u8]>
+    for FixedPublicKey<S, TOTAL_LEN, LEFT_LEN>
+{
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> ConstantTimeEq
+    for FixedPublicKey<S, TOTAL_LEN, LEFT_LEN>
+{
+    fn ct_eq(&self, other: &Self) -> Choice {
+        self.bytes.ct_eq(&other.bytes)
+    }
+}
+
+impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> FixedPublicKey<S, TOTAL_LEN, LEFT_LEN>
+where
+    S: FixedHybridComponents,
+{
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() != TOTAL_LEN {
+            return Err(HybridSignatureError::InvalidLength {
+                expected: TOTAL_LEN,
+                actual: bytes.len(),
+            });
+        }
+
+        let mut out = [0u8; TOTAL_LEN];
+        out.copy_from_slice(bytes);
+
+        if !<S::Classical as ClassicalSignatureAlgorithm>::validate_public_key(&out[..LEFT_LEN]) {
+            return Err(HybridSignatureError::InvalidPublicKey);
+        }
+        if !<S::Pq as FixedPqSignatureAlgorithm>::validate_public_key(&out[LEFT_LEN..]) {
+            return Err(HybridSignatureError::InvalidPublicKey);
+        }
+
+        Ok(Self::from_array(out))
+    }
+
+    pub fn to_bytes(&self) -> [u8; TOTAL_LEN] {
+        self.bytes
+    }
+}
+
+impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> FixedPublicKey<S, TOTAL_LEN, LEFT_LEN> {
+    fn from_array(bytes: [u8; TOTAL_LEN]) -> Self {
+        Self {
+            bytes,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> CompositePublicKey
+    for FixedPublicKey<S, TOTAL_LEN, LEFT_LEN>
+{
+    const LEN: usize = TOTAL_LEN;
+
+    fn from_parts(classical: &[u8], pq: &[u8]) -> Self {
+        debug_assert_eq!(classical.len(), LEFT_LEN);
+        debug_assert_eq!(pq.len(), TOTAL_LEN - LEFT_LEN);
+
+        let mut bytes = [0u8; TOTAL_LEN];
+        bytes[..LEFT_LEN].copy_from_slice(classical);
+        bytes[LEFT_LEN..].copy_from_slice(pq);
+        Self::from_array(bytes)
+    }
+
+    fn split(&self) -> (&[u8], &[u8]) {
+        (&self.bytes[..LEFT_LEN], &self.bytes[LEFT_LEN..])
+    }
 }
 
 pub struct FixedSignature<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> {
@@ -100,12 +198,10 @@ impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> CompositeSignature
     }
 }
 
-pub trait FixedHybridEncoding: FixedHybridSuite {
+pub trait FixedHybridEncoding: FixedHybridComponents {
     type PublicKey: CompositePublicKey;
     type SecretKey: Zeroize;
     type Signature: CompositeSignature;
-    type Classical: ClassicalSignatureAlgorithm;
-    type Pq: FixedPqSignatureAlgorithm;
     const SECRET_KEY_LEN: usize;
 
     fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey>;

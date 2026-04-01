@@ -13,14 +13,14 @@
 
 use crate::classical::{ed25519 as classical_ed25519, ClassicalSignatureAlgorithm, Ed25519};
 use crate::fixed::{
-    self, CompositePublicKey, CompositeSignature, FixedHybridEncoding, FixedSignature,
+    self, CompositePublicKey, CompositeSignature, FixedHybridComponents, FixedHybridEncoding,
+    FixedPublicKey, FixedSignature,
 };
 use crate::pq::{mldsa44 as pq_mldsa44, FixedPqSignatureAlgorithm, MlDsa44};
 use crate::suite::FixedHybridSuite;
 use crate::{HybridSignatureError, HybridSignatureScheme, Result};
 
 use rand_core::CryptoRngCore;
-use subtle::{Choice, ConstantTimeEq};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 const ED_PK_LEN: usize = classical_ed25519::PUBLIC_KEY_LEN;
@@ -36,68 +36,7 @@ pub const HYBRID_SK_LEN: usize = ED_SK_LEN + ML_SK_LEN;
 pub const HYBRID_SIG_LEN: usize = ED_SIG_LEN + ML_SIG_LEN;
 
 /// Composite public key: `ed25519_pk (32B) || ml_dsa_pk (1312B)`.
-#[derive(Clone)]
-pub struct PublicKey([u8; HYBRID_PK_LEN]);
-
-impl AsRef<[u8]> for PublicKey {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl ConstantTimeEq for PublicKey {
-    fn ct_eq(&self, other: &Self) -> Choice {
-        self.0.ct_eq(&other.0)
-    }
-}
-
-impl PublicKey {
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() != HYBRID_PK_LEN {
-            return Err(HybridSignatureError::InvalidLength {
-                expected: HYBRID_PK_LEN,
-                actual: bytes.len(),
-            });
-        }
-
-        let mut out = [0u8; HYBRID_PK_LEN];
-        out.copy_from_slice(bytes);
-
-        let ed_bytes: &[u8; ED_PK_LEN] = out[..ED_PK_LEN].try_into().expect("ed25519 pk length");
-        let ml_bytes: &[u8; ML_PK_LEN] = out[ED_PK_LEN..].try_into().expect("ML-DSA pk length");
-
-        if !classical_ed25519::validate_public_key(ed_bytes) {
-            return Err(HybridSignatureError::InvalidPublicKey);
-        }
-        if !pq_mldsa44::validate_public_key(ml_bytes) {
-            return Err(HybridSignatureError::InvalidPublicKey);
-        }
-
-        Ok(Self(out))
-    }
-
-    pub fn to_bytes(&self) -> [u8; HYBRID_PK_LEN] {
-        self.0
-    }
-}
-
-impl CompositePublicKey for PublicKey {
-    const LEN: usize = HYBRID_PK_LEN;
-
-    fn from_parts(classical: &[u8], pq: &[u8]) -> Self {
-        debug_assert_eq!(classical.len(), ED_PK_LEN);
-        debug_assert_eq!(pq.len(), ML_PK_LEN);
-
-        let mut bytes = [0u8; HYBRID_PK_LEN];
-        bytes[..ED_PK_LEN].copy_from_slice(classical);
-        bytes[ED_PK_LEN..].copy_from_slice(pq);
-        Self(bytes)
-    }
-
-    fn split(&self) -> (&[u8], &[u8]) {
-        (&self.0[..ED_PK_LEN], &self.0[ED_PK_LEN..])
-    }
-}
+pub type PublicKey = FixedPublicKey<Ed25519MlDsa44, HYBRID_PK_LEN, ED_PK_LEN>;
 
 /// Composite secret key. Zeroized on drop — no `Clone`.
 ///
@@ -156,12 +95,15 @@ impl FixedHybridSuite for Ed25519MlDsa44 {
     const LABEL: &'static [u8] = b"hybrid-ed25519-mldsa44-v1\0";
 }
 
+impl FixedHybridComponents for Ed25519MlDsa44 {
+    type Classical = Ed25519;
+    type Pq = MlDsa44;
+}
+
 impl FixedHybridEncoding for Ed25519MlDsa44 {
     type PublicKey = PublicKey;
     type SecretKey = SecretKey;
     type Signature = Signature;
-    type Classical = Ed25519;
-    type Pq = MlDsa44;
     const SECRET_KEY_LEN: usize = HYBRID_SK_LEN;
 
     fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey> {
@@ -271,7 +213,7 @@ impl HybridSignatureScheme for Ed25519MlDsa44 {
 mod tests {
     use super::*;
     use crate::domain::prepare_message;
-    use crate::suite::MASTER_SEED_LEN;
+    use crate::seed::MASTER_SEED_LEN;
     use crate::HybridSignatureScheme;
     use rand_core::OsRng;
 
@@ -380,7 +322,7 @@ mod tests {
     fn public_from_sk_matches_keygen_pk() {
         let (sk, pk) = keygen();
         let derived_pk = Ed25519MlDsa44::public(&sk);
-        assert_eq!(pk.0, derived_pk.0);
+        assert_eq!(pk.to_bytes(), derived_pk.to_bytes());
     }
 
     #[test]
@@ -451,8 +393,8 @@ mod tests {
         let sk2_bytes = sk2.to_bytes();
 
         assert_eq!(&*sk1_bytes, &*sk2_bytes);
-        assert_eq!(pk1.0, pk2.0);
-        assert_eq!(pk1.0, Ed25519MlDsa44::public(&sk1).0);
+        assert_eq!(pk1.to_bytes(), pk2.to_bytes());
+        assert_eq!(pk1.to_bytes(), Ed25519MlDsa44::public(&sk1).to_bytes());
     }
 
     #[test]
@@ -470,7 +412,7 @@ mod tests {
     fn public_key_bytes_roundtrip() {
         let (_, pk) = keygen();
         let decoded = PublicKey::from_bytes(&pk.to_bytes()).unwrap();
-        assert_eq!(pk.0, decoded.0);
+        assert_eq!(pk.to_bytes(), decoded.to_bytes());
     }
 
     #[test]
@@ -481,7 +423,7 @@ mod tests {
         let decoded_bytes = decoded.to_bytes();
 
         assert_eq!(&*sk_bytes, &*decoded_bytes);
-        assert_eq!(pk.0, Ed25519MlDsa44::public(&decoded).0);
+        assert_eq!(pk.to_bytes(), Ed25519MlDsa44::public(&decoded).to_bytes());
     }
 
     #[test]

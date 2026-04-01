@@ -1,6 +1,6 @@
 use rand_core::CryptoRngCore;
 
-use crate::suite::MASTER_SEED_LEN;
+use crate::seed::MASTER_SEED_LEN;
 
 pub mod ed25519;
 pub mod sr25519;
@@ -11,6 +11,7 @@ pub trait ClassicalSignatureAlgorithm {
     type SignatureBytes: AsRef<[u8]>;
 
     fn from_seed(seed: &[u8; MASTER_SEED_LEN]) -> (Self::PublicKeyBytes, Self::SecretKeyBytes);
+    fn validate_public_key(public: &[u8]) -> bool;
     fn public_key_from_secret(secret: &[u8]) -> Self::PublicKeyBytes;
     fn sign<R: CryptoRngCore>(secret: &[u8], msg_prime: &[u8], rng: &mut R)
         -> Self::SignatureBytes;
@@ -27,6 +28,14 @@ impl ClassicalSignatureAlgorithm for Sr25519 {
 
     fn from_seed(seed: &[u8; MASTER_SEED_LEN]) -> (Self::PublicKeyBytes, Self::SecretKeyBytes) {
         sr25519::from_seed(seed)
+    }
+
+    fn validate_public_key(public: &[u8]) -> bool {
+        let public: &[u8; sr25519::PUBLIC_KEY_LEN] = match public.try_into() {
+            Ok(public) => public,
+            Err(_) => return false,
+        };
+        sr25519::validate_public_key(public)
     }
 
     fn public_key_from_secret(secret: &[u8]) -> Self::PublicKeyBytes {
@@ -76,6 +85,14 @@ impl ClassicalSignatureAlgorithm for Ed25519 {
 
     fn from_seed(seed: &[u8; MASTER_SEED_LEN]) -> (Self::PublicKeyBytes, Self::SecretKeyBytes) {
         ed25519::from_seed(seed)
+    }
+
+    fn validate_public_key(public: &[u8]) -> bool {
+        let public: &[u8; ed25519::PUBLIC_KEY_LEN] = match public.try_into() {
+            Ok(public) => public,
+            Err(_) => return false,
+        };
+        ed25519::validate_public_key(public)
     }
 
     fn public_key_from_secret(secret: &[u8]) -> Self::PublicKeyBytes {

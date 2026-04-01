@@ -1,6 +1,6 @@
 use rand_core::CryptoRngCore;
 
-use crate::suite::MASTER_SEED_LEN;
+use crate::seed::MASTER_SEED_LEN;
 
 pub mod mldsa44;
 
@@ -11,6 +11,7 @@ pub trait FixedPqSignatureAlgorithm {
 
     fn generate<R: CryptoRngCore>(rng: &mut R) -> (Self::PublicKeyBytes, Self::SecretKeyBytes);
     fn from_seed(seed: &[u8; MASTER_SEED_LEN]) -> (Self::PublicKeyBytes, Self::SecretKeyBytes);
+    fn validate_public_key(public: &[u8]) -> bool;
     fn public_key_from_secret(secret: &[u8]) -> Self::PublicKeyBytes;
     fn sign<R: CryptoRngCore>(secret: &[u8], msg_prime: &[u8], rng: &mut R)
         -> Self::SignatureBytes;
@@ -31,6 +32,14 @@ impl FixedPqSignatureAlgorithm for MlDsa44 {
 
     fn from_seed(seed: &[u8; MASTER_SEED_LEN]) -> (Self::PublicKeyBytes, Self::SecretKeyBytes) {
         mldsa44::from_seed(seed)
+    }
+
+    fn validate_public_key(public: &[u8]) -> bool {
+        let public: &[u8; mldsa44::PUBLIC_KEY_LEN] = match public.try_into() {
+            Ok(public) => public,
+            Err(_) => return false,
+        };
+        mldsa44::validate_public_key(public)
     }
 
     fn public_key_from_secret(secret: &[u8]) -> Self::PublicKeyBytes {

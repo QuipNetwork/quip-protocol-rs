@@ -7,6 +7,7 @@ mod domain;
 mod error;
 mod fixed;
 mod pq;
+mod seed;
 pub mod suite;
 
 pub use error::{HybridSignatureError, Result};
