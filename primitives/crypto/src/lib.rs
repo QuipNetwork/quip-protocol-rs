@@ -5,6 +5,7 @@ extern crate alloc;
 mod classical;
 mod domain;
 mod error;
+mod fixed;
 mod pq;
 pub mod sr25519_mldsa44;
 mod suite;

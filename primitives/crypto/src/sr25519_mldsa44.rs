@@ -11,13 +11,12 @@
 //!
 //! Domain label: `hybrid-sr25519-mldsa44-v1`
 
-use crate::classical::sr25519 as classical_sr25519;
-use crate::domain::prepare_message;
-use crate::pq::mldsa44 as pq_mldsa44;
-use crate::suite::{derive_component_seeds, FixedHybridSuite, MASTER_SEED_LEN};
-use crate::{HybridSignatureError, HybridSignatureScheme};
+use crate::classical::{sr25519 as classical_sr25519, ClassicalSignatureAlgorithm, Sr25519};
+use crate::fixed::FixedHybridEncoding;
+use crate::pq::{mldsa44 as pq_mldsa44, FixedPqSignatureAlgorithm, MlDsa44};
+use crate::suite::FixedHybridSuite;
+use crate::HybridSignatureError;
 
-use rand_core::CryptoRngCore;
 use subtle::{Choice, ConstantTimeEq};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -174,202 +173,76 @@ impl FixedHybridSuite for Sr25519MlDsa44 {
     const LABEL: &'static [u8] = b"hybrid-sr25519-mldsa44-v1\0";
 }
 
-impl HybridSignatureScheme for Sr25519MlDsa44 {
+impl FixedHybridEncoding for Sr25519MlDsa44 {
     type PublicKey = HybridPublicKey;
     type SecretKey = HybridSecretKey;
     type Signature = HybridSignature;
+    type Classical = Sr25519;
+    type Pq = MlDsa44;
 
-    fn public_key_len() -> usize {
-        HYBRID_PK_LEN
-    }
+    const PUBLIC_KEY_LEN: usize = HYBRID_PK_LEN;
+    const SECRET_KEY_LEN: usize = HYBRID_SK_LEN;
+    const SIGNATURE_LEN: usize = HYBRID_SIG_LEN;
 
-    fn secret_key_len() -> usize {
-        HYBRID_SK_LEN
-    }
-
-    fn signature_max_len() -> usize {
-        HYBRID_SIG_LEN
-    }
-
-    /// Generate a fresh hybrid key pair from the provided RNG.
-    fn generate(rng: &mut impl CryptoRngCore) -> (HybridSecretKey, HybridPublicKey) {
-        let mut sr25519_seed = [0u8; MASTER_SEED_LEN];
-        rng.fill_bytes(&mut sr25519_seed);
-        let (sr_pk_bytes, sr25519_secret) = classical_sr25519::from_seed(&sr25519_seed);
-        let (ml_pk_bytes, ml_sk_bytes) = pq_mldsa44::generate(rng);
-
-        let mut pk_bytes = [0u8; HYBRID_PK_LEN];
-        pk_bytes[..SR_PK_LEN].copy_from_slice(&sr_pk_bytes);
-        pk_bytes[SR_PK_LEN..].copy_from_slice(&ml_pk_bytes);
-
-        let sk = HybridSecretKey {
-            sr25519_secret,
-            ml_dsa_sk: ml_sk_bytes,
-        };
-
-        (sk, HybridPublicKey(pk_bytes))
-    }
-
-    fn from_seed_slice(
-        seed: &[u8],
-    ) -> Result<(HybridSecretKey, HybridPublicKey), HybridSignatureError> {
-        let mut classical_seed = [0u8; MASTER_SEED_LEN];
-        let mut pq_seed = [0u8; MASTER_SEED_LEN];
-        derive_component_seeds(seed, &mut classical_seed, &mut pq_seed)?;
-
-        let (sr_pk_bytes, sr25519_secret) = classical_sr25519::from_seed(&classical_seed);
-        let (ml_pk_bytes, ml_sk_bytes) = pq_mldsa44::from_seed(&pq_seed);
-
-        classical_seed.zeroize();
-        pq_seed.zeroize();
-
-        let sk = HybridSecretKey {
-            sr25519_secret,
-            ml_dsa_sk: ml_sk_bytes,
-        };
-
-        let mut pk_bytes = [0u8; HYBRID_PK_LEN];
-        pk_bytes[..SR_PK_LEN].copy_from_slice(&sr_pk_bytes);
-        pk_bytes[SR_PK_LEN..].copy_from_slice(&ml_pk_bytes);
-
-        Ok((sk, HybridPublicKey(pk_bytes)))
-    }
-
-    fn public_key_from_bytes(bytes: &[u8]) -> Result<HybridPublicKey, HybridSignatureError> {
+    fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey, HybridSignatureError> {
         HybridPublicKey::from_bytes(bytes)
     }
 
-    fn secret_key_from_bytes(bytes: &[u8]) -> Result<HybridSecretKey, HybridSignatureError> {
+    fn secret_key_from_bytes(bytes: &[u8]) -> Result<Self::SecretKey, HybridSignatureError> {
         HybridSecretKey::from_bytes(bytes)
     }
 
-    fn signature_from_bytes(bytes: &[u8]) -> Result<HybridSignature, HybridSignatureError> {
+    fn signature_from_bytes(bytes: &[u8]) -> Result<Self::Signature, HybridSignatureError> {
         HybridSignature::from_bytes(bytes)
     }
 
-    fn public(sk: &HybridSecretKey) -> HybridPublicKey {
-        let sr_pk = classical_sr25519::public_key_from_secret(&sk.sr25519_secret);
-        let ml_pk = pq_mldsa44::public_key_from_secret(&sk.ml_dsa_sk);
-
+    fn compose_public_key(
+        classical: &<Self::Classical as ClassicalSignatureAlgorithm>::PublicKeyBytes,
+        pq: &<Self::Pq as FixedPqSignatureAlgorithm>::PublicKeyBytes,
+    ) -> Self::PublicKey {
         let mut pk_bytes = [0u8; HYBRID_PK_LEN];
-        pk_bytes[..SR_PK_LEN].copy_from_slice(&sr_pk);
-        pk_bytes[SR_PK_LEN..].copy_from_slice(&ml_pk);
-
+        pk_bytes[..SR_PK_LEN].copy_from_slice(classical.as_ref());
+        pk_bytes[SR_PK_LEN..].copy_from_slice(pq.as_ref());
         HybridPublicKey(pk_bytes)
     }
 
-    /// Hedged signing.
-    ///
-    /// sr25519: injects the caller-provided RNG into schnorrkel's signing
-    /// transcript to avoid relying on OS randomness. ML-DSA-44:
-    /// `try_sign_with_rng` adds fresh randomness for hedged security.
-    ///
-    /// Both components sign `M' = VERSION || LABEL || ctx || msg`.
-    fn sign(
-        sk: &HybridSecretKey,
-        msg: &[u8],
-        ctx: &[u8],
-        rng: &mut impl CryptoRngCore,
-    ) -> HybridSignature {
-        let msg_prime = prepare_message(
-            <Self as FixedHybridSuite>::VERSION,
-            <Self as FixedHybridSuite>::LABEL,
-            msg,
-            ctx,
-        );
+    fn compose_secret_key(
+        classical: &<Self::Classical as ClassicalSignatureAlgorithm>::SecretKeyBytes,
+        pq: &<Self::Pq as FixedPqSignatureAlgorithm>::SecretKeyBytes,
+    ) -> Self::SecretKey {
+        let mut sr25519_secret = [0u8; SR_SK_LEN];
+        sr25519_secret.copy_from_slice(classical.as_ref());
 
-        let sr_sig = classical_sr25519::sign(&sk.sr25519_secret, &msg_prime, rng);
-        let ml_sig = pq_mldsa44::sign(&sk.ml_dsa_sk, &msg_prime, rng);
+        let mut ml_dsa_sk = [0u8; ML_SK_LEN];
+        ml_dsa_sk.copy_from_slice(pq.as_ref());
 
-        build_signature(&sr_sig, &ml_sig)
+        HybridSecretKey {
+            sr25519_secret,
+            ml_dsa_sk,
+        }
     }
 
-    /// Deterministic signing with a network-derived nonce.
-    ///
-    /// Delegates to the classical sr25519 and PQ ML-DSA-44 deterministic signers.
-    fn sign_deterministic(
-        sk: &HybridSecretKey,
-        msg: &[u8],
-        ctx: &[u8],
-        nonce: &[u8],
-    ) -> HybridSignature {
-        let msg_prime = prepare_message(
-            <Self as FixedHybridSuite>::VERSION,
-            <Self as FixedHybridSuite>::LABEL,
-            msg,
-            ctx,
-        );
-        let sr_sig = classical_sr25519::sign_deterministic(&sk.sr25519_secret, &msg_prime, nonce);
-        // H3 follows the spec's ML-DSA deterministic mode: the network nonce is
-        // ignored and the PQ leg is derived from the key and message only.
-        let ml_sig = pq_mldsa44::sign_deterministic(&sk.ml_dsa_sk, &msg_prime);
-        build_signature(&sr_sig, &ml_sig)
+    fn compose_signature(
+        classical: &<Self::Classical as ClassicalSignatureAlgorithm>::SignatureBytes,
+        pq: &<Self::Pq as FixedPqSignatureAlgorithm>::SignatureBytes,
+    ) -> Self::Signature {
+        let mut sig = [0u8; HYBRID_SIG_LEN];
+        sig[..SR_SIG_LEN].copy_from_slice(classical.as_ref());
+        sig[SR_SIG_LEN..].copy_from_slice(pq.as_ref());
+        HybridSignature(sig)
     }
 
-    /// Standard verification. Works for signatures from both `sign` and
-    /// `sign_deterministic`. Both components must pass.
-    fn verify(pk: &HybridPublicKey, msg: &[u8], ctx: &[u8], sig: &HybridSignature) -> bool {
-        let msg_prime = prepare_message(
-            <Self as FixedHybridSuite>::VERSION,
-            <Self as FixedHybridSuite>::LABEL,
-            msg,
-            ctx,
-        );
-        verify_internal(pk, &msg_prime, sig)
+    fn split_public_key(pk: &Self::PublicKey) -> (&[u8], &[u8]) {
+        (&pk.0[..SR_PK_LEN], &pk.0[SR_PK_LEN..])
     }
 
-    /// Verification with nonce check.
-    ///
-    /// For ML-DSA-44 hybrids: equivalent to `verify` — ML-DSA-44 does not
-    /// embed a nonce in the signature, so there is nothing to check.
-    /// (Nonce verification applies to Falcon-512 hybrids where the 40-byte
-    /// nonce `r` is visible in the PQ signature component.)
-    fn verify_deterministic(
-        pk: &HybridPublicKey,
-        msg: &[u8],
-        ctx: &[u8],
-        sig: &HybridSignature,
-        _expected_nonce: &[u8],
-    ) -> bool {
-        let msg_prime = prepare_message(
-            <Self as FixedHybridSuite>::VERSION,
-            <Self as FixedHybridSuite>::LABEL,
-            msg,
-            ctx,
-        );
-        verify_internal(pk, &msg_prime, sig)
+    fn split_secret_key(sk: &Self::SecretKey) -> (&[u8], &[u8]) {
+        (&sk.sr25519_secret, &sk.ml_dsa_sk)
     }
-}
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-fn build_signature(sr_sig: &[u8; SR_SIG_LEN], ml_sig: &[u8; ML_SIG_LEN]) -> HybridSignature {
-    let mut sig = [0u8; HYBRID_SIG_LEN];
-    sig[..SR_SIG_LEN].copy_from_slice(sr_sig);
-    sig[SR_SIG_LEN..].copy_from_slice(ml_sig);
-    HybridSignature(sig)
-}
-
-/// Verify both components against `msg_prime`. Both must pass.
-fn verify_internal(pk: &HybridPublicKey, msg_prime: &[u8], sig: &HybridSignature) -> bool {
-    let sr_pk_bytes: &[u8; SR_PK_LEN] = pk.0[..SR_PK_LEN].try_into().expect("pk is 1344 bytes");
-    let ml_pk_bytes: &[u8; ML_PK_LEN] = pk.0[SR_PK_LEN..]
-        .try_into()
-        .expect("ml_pk slice is 1312 bytes");
-
-    let sr_sig_bytes: &[u8; SR_SIG_LEN] =
-        sig.0[..SR_SIG_LEN].try_into().expect("sig is 2484 bytes");
-    let ml_sig_bytes: &[u8; ML_SIG_LEN] = sig.0[SR_SIG_LEN..]
-        .try_into()
-        .expect("ml_sig slice is 2420 bytes");
-
-    // Check both legs before returning — do not short-circuit on sr_ok
-    let sr_ok = classical_sr25519::verify(sr_pk_bytes, msg_prime, sr_sig_bytes);
-    let ml_ok = pq_mldsa44::verify(ml_pk_bytes, msg_prime, ml_sig_bytes);
-
-    sr_ok && ml_ok
+    fn split_signature(sig: &Self::Signature) -> (&[u8], &[u8]) {
+        (&sig.0[..SR_SIG_LEN], &sig.0[SR_SIG_LEN..])
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +252,9 @@ fn verify_internal(pk: &HybridPublicKey, msg_prime: &[u8], sig: &HybridSignature
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::prepare_message;
+    use crate::suite::MASTER_SEED_LEN;
+    use crate::HybridSignatureScheme;
     use rand_core::OsRng;
 
     fn keygen() -> (HybridSecretKey, HybridPublicKey) {
