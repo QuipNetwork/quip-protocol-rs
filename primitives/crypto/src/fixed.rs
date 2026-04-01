@@ -65,6 +65,20 @@ pub trait FixedHybridComponents: FixedHybridSuite {
     type Pq: FixedPqSignatureAlgorithm;
 }
 
+// Merges classical and PQ component bytes.
+fn merge_parts<const TOTAL_LEN: usize, const LEFT_LEN: usize>(
+    classical: &[u8],
+    pq: &[u8],
+) -> [u8; TOTAL_LEN] {
+    debug_assert_eq!(classical.len(), LEFT_LEN);
+    debug_assert_eq!(pq.len(), TOTAL_LEN - LEFT_LEN);
+
+    let mut bytes = [0u8; TOTAL_LEN];
+    bytes[..LEFT_LEN].copy_from_slice(classical);
+    bytes[LEFT_LEN..].copy_from_slice(pq);
+    bytes
+}
+
 /// Generic fixed-size composite public key.
 ///
 /// `TOTAL_LEN` is the total serialized length and `LEFT_LEN` is the classical
@@ -147,13 +161,7 @@ impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> CompositePublicKey
     const LEN: usize = TOTAL_LEN;
 
     fn from_parts(classical: &[u8], pq: &[u8]) -> Self {
-        debug_assert_eq!(classical.len(), LEFT_LEN);
-        debug_assert_eq!(pq.len(), TOTAL_LEN - LEFT_LEN);
-
-        let mut bytes = [0u8; TOTAL_LEN];
-        bytes[..LEFT_LEN].copy_from_slice(classical);
-        bytes[LEFT_LEN..].copy_from_slice(pq);
-        Self::from_array(bytes)
+        Self::from_array(merge_parts::<TOTAL_LEN, LEFT_LEN>(classical, pq))
     }
 
     fn split(&self) -> (&[u8], &[u8]) {
@@ -224,13 +232,7 @@ impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> CompositeSignature
     const LEN: usize = TOTAL_LEN;
 
     fn from_parts(classical: &[u8], pq: &[u8]) -> Self {
-        debug_assert_eq!(classical.len(), LEFT_LEN);
-        debug_assert_eq!(pq.len(), TOTAL_LEN - LEFT_LEN);
-
-        let mut bytes = [0u8; TOTAL_LEN];
-        bytes[..LEFT_LEN].copy_from_slice(classical);
-        bytes[LEFT_LEN..].copy_from_slice(pq);
-        Self::from_array(bytes)
+        Self::from_array(merge_parts::<TOTAL_LEN, LEFT_LEN>(classical, pq))
     }
 
     fn split(&self) -> (&[u8], &[u8]) {
