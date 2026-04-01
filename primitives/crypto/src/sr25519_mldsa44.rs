@@ -42,21 +42,21 @@ pub const HYBRID_SIG_LEN: usize = SR_SIG_LEN + ML_SIG_LEN; // 2484
 
 /// Composite public key: `sr25519_pk (32B) || ml_dsa_pk (1312B)`.
 #[derive(Clone)]
-pub struct HybridPublicKey([u8; HYBRID_PK_LEN]);
+pub struct PublicKey([u8; HYBRID_PK_LEN]);
 
-impl AsRef<[u8]> for HybridPublicKey {
+impl AsRef<[u8]> for PublicKey {
     fn as_ref(&self) -> &[u8] {
         &self.0
     }
 }
 
-impl ConstantTimeEq for HybridPublicKey {
+impl ConstantTimeEq for PublicKey {
     fn ct_eq(&self, other: &Self) -> Choice {
         self.0.ct_eq(&other.0)
     }
 }
 
-impl HybridPublicKey {
+impl PublicKey {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, HybridSignatureError> {
         if bytes.len() != HYBRID_PK_LEN {
             return Err(HybridSignatureError::InvalidLength {
@@ -90,12 +90,12 @@ impl HybridPublicKey {
 ///
 /// Stores the 64-byte sr25519 secret key plus ML-DSA-44 private key bytes.
 #[derive(Zeroize, ZeroizeOnDrop)]
-pub struct HybridSecretKey {
+pub struct SecretKey {
     sr25519_secret: [u8; SR_SK_LEN],
     ml_dsa_sk: [u8; ML_SK_LEN],
 }
 
-impl HybridSecretKey {
+impl SecretKey {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, HybridSignatureError> {
         if bytes.len() != HYBRID_SK_LEN {
             return Err(HybridSignatureError::InvalidLength {
@@ -135,15 +135,15 @@ impl HybridSecretKey {
 
 /// Composite signature: `sr25519_sig (64B) || ml_dsa_sig (2420B)`.
 #[derive(Clone)]
-pub struct HybridSignature([u8; HYBRID_SIG_LEN]);
+pub struct Signature([u8; HYBRID_SIG_LEN]);
 
-impl AsRef<[u8]> for HybridSignature {
+impl AsRef<[u8]> for Signature {
     fn as_ref(&self) -> &[u8] {
         &self.0
     }
 }
 
-impl HybridSignature {
+impl Signature {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, HybridSignatureError> {
         if bytes.len() != HYBRID_SIG_LEN {
             return Err(HybridSignatureError::InvalidLength {
@@ -174,9 +174,9 @@ impl FixedHybridSuite for Sr25519MlDsa44 {
 }
 
 impl FixedHybridEncoding for Sr25519MlDsa44 {
-    type PublicKey = HybridPublicKey;
-    type SecretKey = HybridSecretKey;
-    type Signature = HybridSignature;
+    type PublicKey = PublicKey;
+    type SecretKey = SecretKey;
+    type Signature = Signature;
     type Classical = Sr25519;
     type Pq = MlDsa44;
 
@@ -185,15 +185,15 @@ impl FixedHybridEncoding for Sr25519MlDsa44 {
     const SIGNATURE_LEN: usize = HYBRID_SIG_LEN;
 
     fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey, HybridSignatureError> {
-        HybridPublicKey::from_bytes(bytes)
+        PublicKey::from_bytes(bytes)
     }
 
     fn secret_key_from_bytes(bytes: &[u8]) -> Result<Self::SecretKey, HybridSignatureError> {
-        HybridSecretKey::from_bytes(bytes)
+        SecretKey::from_bytes(bytes)
     }
 
     fn signature_from_bytes(bytes: &[u8]) -> Result<Self::Signature, HybridSignatureError> {
-        HybridSignature::from_bytes(bytes)
+        Signature::from_bytes(bytes)
     }
 
     fn compose_public_key(
@@ -203,7 +203,7 @@ impl FixedHybridEncoding for Sr25519MlDsa44 {
         let mut pk_bytes = [0u8; HYBRID_PK_LEN];
         pk_bytes[..SR_PK_LEN].copy_from_slice(classical.as_ref());
         pk_bytes[SR_PK_LEN..].copy_from_slice(pq.as_ref());
-        HybridPublicKey(pk_bytes)
+        PublicKey(pk_bytes)
     }
 
     fn compose_secret_key(
@@ -216,7 +216,7 @@ impl FixedHybridEncoding for Sr25519MlDsa44 {
         let mut ml_dsa_sk = [0u8; ML_SK_LEN];
         ml_dsa_sk.copy_from_slice(pq.as_ref());
 
-        HybridSecretKey {
+        SecretKey {
             sr25519_secret,
             ml_dsa_sk,
         }
@@ -229,7 +229,7 @@ impl FixedHybridEncoding for Sr25519MlDsa44 {
         let mut sig = [0u8; HYBRID_SIG_LEN];
         sig[..SR_SIG_LEN].copy_from_slice(classical.as_ref());
         sig[SR_SIG_LEN..].copy_from_slice(pq.as_ref());
-        HybridSignature(sig)
+        Signature(sig)
     }
 
     fn split_public_key(pk: &Self::PublicKey) -> (&[u8], &[u8]) {
@@ -257,7 +257,7 @@ mod tests {
     use crate::HybridSignatureScheme;
     use rand_core::OsRng;
 
-    fn keygen() -> (HybridSecretKey, HybridPublicKey) {
+    fn keygen() -> (SecretKey, PublicKey) {
         Sr25519MlDsa44::generate(&mut OsRng)
     }
 
@@ -444,7 +444,7 @@ mod tests {
     #[test]
     fn public_key_bytes_roundtrip() {
         let (_, pk) = keygen();
-        let decoded = HybridPublicKey::from_bytes(&pk.to_bytes()).unwrap();
+        let decoded = PublicKey::from_bytes(&pk.to_bytes()).unwrap();
         assert_eq!(pk.0, decoded.0);
     }
 
@@ -452,7 +452,7 @@ mod tests {
     fn secret_key_bytes_roundtrip() {
         let (sk, pk) = keygen();
         let sk_bytes = sk.to_bytes();
-        let decoded = HybridSecretKey::from_bytes(sk_bytes.as_ref()).unwrap();
+        let decoded = SecretKey::from_bytes(sk_bytes.as_ref()).unwrap();
         let decoded_bytes = decoded.to_bytes();
 
         assert_eq!(&*sk_bytes, &*decoded_bytes);
@@ -463,7 +463,7 @@ mod tests {
     fn signature_bytes_roundtrip() {
         let (sk, _) = keygen();
         let sig = Sr25519MlDsa44::sign(&sk, b"msg", b"", &mut OsRng);
-        let decoded = HybridSignature::from_bytes(&sig.to_bytes()).unwrap();
+        let decoded = Signature::from_bytes(&sig.to_bytes()).unwrap();
         assert_eq!(sig.0, decoded.0);
     }
 }

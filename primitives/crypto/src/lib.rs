@@ -13,15 +13,15 @@ mod suite;
 
 pub use ed25519_mldsa44::Ed25519MlDsa44;
 pub use ed25519_mldsa44::{
-    HybridPublicKey as Ed25519MlDsa44PublicKey, HybridSecretKey as Ed25519MlDsa44SecretKey,
-    HybridSignature as Ed25519MlDsa44Signature,
+    PublicKey as Ed25519MlDsa44PublicKey, SecretKey as Ed25519MlDsa44SecretKey,
+    Signature as Ed25519MlDsa44Signature,
 };
 pub use error::HybridSignatureError;
+pub use sr25519_mldsa44::Sr25519MlDsa44;
 pub use sr25519_mldsa44::{
-    HybridPublicKey as Sr25519MlDsa44PublicKey, HybridSecretKey as Sr25519MlDsa44SecretKey,
-    HybridSignature as Sr25519MlDsa44Signature,
+    PublicKey as Sr25519MlDsa44PublicKey, SecretKey as Sr25519MlDsa44SecretKey,
+    Signature as Sr25519MlDsa44Signature,
 };
-pub use sr25519_mldsa44::{HybridPublicKey, HybridSecretKey, HybridSignature, Sr25519MlDsa44};
 
 use rand_core::CryptoRngCore;
 use zeroize::Zeroize;
