@@ -6,12 +6,13 @@ repository = "https://gitlab.com/piqued/quip-protocol-rs.git"
 edition = "2021"
 
 [workspace]
-members = ["node", "pallets/template", "runtime"]
+members = ["node", "pallets/template", "pallets/xqvm", "runtime"]
 resolver = "2"
 
 [workspace.dependencies]
 quip-protocol-runtime = { path = "./runtime", default-features = false }
 pallet-template = { path = "./pallets/template", default-features = false }
+pallet-xqvm = { path = "./pallets/xqvm", default-features = false }
 clap = { version = "4.5.13" }
 frame-benchmarking-cli = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
 frame-metadata-hash-extension = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }

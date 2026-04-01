@@ -178,3 +178,22 @@ impl pallet_template::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type WeightInfo = pallet_template::weights::SubstrateWeight<Runtime>;
 }
+
+parameter_types! {
+	pub const MaxProgramSize: u32 = 65_536;
+	pub const MaxCallDataLen: u32 = 256;
+	pub const MaxOutputSlots: u32 = 256;
+	pub const MaxStepLimit: u64 = 10_000_000;
+	pub const XqvmWeightPerStep: Weight = Weight::from_parts(1_000, 0);
+}
+
+/// Configure the XQVM pallet for on-chain bytecode execution.
+impl pallet_xqvm::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type MaxProgramSize = MaxProgramSize;
+	type MaxCallDataLen = MaxCallDataLen;
+	type MaxOutputSlots = MaxOutputSlots;
+	type MaxStepLimit = MaxStepLimit;
+	type WeightPerStep = XqvmWeightPerStep;
+	type WeightInfo = ();
+}
