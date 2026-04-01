@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 sp-core = { workspace = true }
 schnorrkel = { workspace = true }
+ed25519-zebra = { version = "4", default-features = false }
 fips204 = "0.4"
 blake2 = "0.10"
 hkdf = "0.12"

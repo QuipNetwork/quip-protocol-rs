@@ -4,13 +4,23 @@ extern crate alloc;
 
 mod classical;
 mod domain;
+pub mod ed25519_mldsa44;
 mod error;
 mod fixed;
 mod pq;
 pub mod sr25519_mldsa44;
 mod suite;
 
+pub use ed25519_mldsa44::Ed25519MlDsa44;
+pub use ed25519_mldsa44::{
+    HybridPublicKey as Ed25519MlDsa44PublicKey, HybridSecretKey as Ed25519MlDsa44SecretKey,
+    HybridSignature as Ed25519MlDsa44Signature,
+};
 pub use error::HybridSignatureError;
+pub use sr25519_mldsa44::{
+    HybridPublicKey as Sr25519MlDsa44PublicKey, HybridSecretKey as Sr25519MlDsa44SecretKey,
+    HybridSignature as Sr25519MlDsa44Signature,
+};
 pub use sr25519_mldsa44::{HybridPublicKey, HybridSecretKey, HybridSignature, Sr25519MlDsa44};
 
 use rand_core::CryptoRngCore;
