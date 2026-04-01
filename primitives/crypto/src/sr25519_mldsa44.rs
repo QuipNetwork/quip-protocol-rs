@@ -12,11 +12,12 @@
 //! Domain label: `hybrid-sr25519-mldsa44-v1`
 
 use crate::classical::{sr25519 as classical_sr25519, ClassicalSignatureAlgorithm, Sr25519};
-use crate::fixed::FixedHybridEncoding;
+use crate::fixed::{self, FixedCompositeBytes, FixedHybridEncoding, FixedSignature};
 use crate::pq::{mldsa44 as pq_mldsa44, FixedPqSignatureAlgorithm, MlDsa44};
 use crate::suite::FixedHybridSuite;
-use crate::HybridSignatureError;
+use crate::{HybridSignatureError, HybridSignatureScheme};
 
+use rand_core::CryptoRngCore;
 use subtle::{Choice, ConstantTimeEq};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -86,6 +87,12 @@ impl PublicKey {
     }
 }
 
+impl FixedCompositeBytes<HYBRID_PK_LEN, SR_PK_LEN> for PublicKey {
+    fn from_array(bytes: [u8; HYBRID_PK_LEN]) -> Self {
+        Self(bytes)
+    }
+}
+
 /// Composite secret key. Zeroized on drop — no `Clone`.
 ///
 /// Stores the 64-byte sr25519 secret key plus ML-DSA-44 private key bytes.
@@ -134,33 +141,7 @@ impl SecretKey {
 }
 
 /// Composite signature: `sr25519_sig (64B) || ml_dsa_sig (2420B)`.
-#[derive(Clone)]
-pub struct Signature([u8; HYBRID_SIG_LEN]);
-
-impl AsRef<[u8]> for Signature {
-    fn as_ref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-impl Signature {
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, HybridSignatureError> {
-        if bytes.len() != HYBRID_SIG_LEN {
-            return Err(HybridSignatureError::InvalidLength {
-                expected: HYBRID_SIG_LEN,
-                actual: bytes.len(),
-            });
-        }
-
-        let mut out = [0u8; HYBRID_SIG_LEN];
-        out.copy_from_slice(bytes);
-        Ok(Self(out))
-    }
-
-    pub fn to_bytes(&self) -> [u8; HYBRID_SIG_LEN] {
-        self.0
-    }
-}
+pub type Signature = FixedSignature<Sr25519MlDsa44, HYBRID_SIG_LEN, SR_SIG_LEN>;
 
 // ---------------------------------------------------------------------------
 // Implementation
@@ -173,16 +154,14 @@ impl FixedHybridSuite for Sr25519MlDsa44 {
     const LABEL: &'static [u8] = b"hybrid-sr25519-mldsa44-v1\0";
 }
 
-impl FixedHybridEncoding for Sr25519MlDsa44 {
+impl FixedHybridEncoding<HYBRID_PK_LEN, HYBRID_SK_LEN, HYBRID_SIG_LEN, SR_PK_LEN, SR_SIG_LEN>
+    for Sr25519MlDsa44
+{
     type PublicKey = PublicKey;
     type SecretKey = SecretKey;
     type Signature = Signature;
     type Classical = Sr25519;
     type Pq = MlDsa44;
-
-    const PUBLIC_KEY_LEN: usize = HYBRID_PK_LEN;
-    const SECRET_KEY_LEN: usize = HYBRID_SK_LEN;
-    const SIGNATURE_LEN: usize = HYBRID_SIG_LEN;
 
     fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey, HybridSignatureError> {
         PublicKey::from_bytes(bytes)
@@ -190,20 +169,6 @@ impl FixedHybridEncoding for Sr25519MlDsa44 {
 
     fn secret_key_from_bytes(bytes: &[u8]) -> Result<Self::SecretKey, HybridSignatureError> {
         SecretKey::from_bytes(bytes)
-    }
-
-    fn signature_from_bytes(bytes: &[u8]) -> Result<Self::Signature, HybridSignatureError> {
-        Signature::from_bytes(bytes)
-    }
-
-    fn compose_public_key(
-        classical: &<Self::Classical as ClassicalSignatureAlgorithm>::PublicKeyBytes,
-        pq: &<Self::Pq as FixedPqSignatureAlgorithm>::PublicKeyBytes,
-    ) -> Self::PublicKey {
-        let mut pk_bytes = [0u8; HYBRID_PK_LEN];
-        pk_bytes[..SR_PK_LEN].copy_from_slice(classical.as_ref());
-        pk_bytes[SR_PK_LEN..].copy_from_slice(pq.as_ref());
-        PublicKey(pk_bytes)
     }
 
     fn compose_secret_key(
@@ -222,26 +187,124 @@ impl FixedHybridEncoding for Sr25519MlDsa44 {
         }
     }
 
-    fn compose_signature(
-        classical: &<Self::Classical as ClassicalSignatureAlgorithm>::SignatureBytes,
-        pq: &<Self::Pq as FixedPqSignatureAlgorithm>::SignatureBytes,
-    ) -> Self::Signature {
-        let mut sig = [0u8; HYBRID_SIG_LEN];
-        sig[..SR_SIG_LEN].copy_from_slice(classical.as_ref());
-        sig[SR_SIG_LEN..].copy_from_slice(pq.as_ref());
-        Signature(sig)
-    }
-
-    fn split_public_key(pk: &Self::PublicKey) -> (&[u8], &[u8]) {
-        (&pk.0[..SR_PK_LEN], &pk.0[SR_PK_LEN..])
-    }
-
     fn split_secret_key(sk: &Self::SecretKey) -> (&[u8], &[u8]) {
         (&sk.sr25519_secret, &sk.ml_dsa_sk)
     }
+}
 
-    fn split_signature(sig: &Self::Signature) -> (&[u8], &[u8]) {
-        (&sig.0[..SR_SIG_LEN], &sig.0[SR_SIG_LEN..])
+impl HybridSignatureScheme for Sr25519MlDsa44 {
+    type PublicKey = PublicKey;
+    type SecretKey = SecretKey;
+    type Signature = Signature;
+
+    fn public_key_len() -> usize {
+        HYBRID_PK_LEN
+    }
+
+    fn secret_key_len() -> usize {
+        HYBRID_SK_LEN
+    }
+
+    fn signature_max_len() -> usize {
+        HYBRID_SIG_LEN
+    }
+
+    fn generate(rng: &mut impl CryptoRngCore) -> (Self::SecretKey, Self::PublicKey) {
+        fixed::generate::<Self, HYBRID_PK_LEN, HYBRID_SK_LEN, HYBRID_SIG_LEN, SR_PK_LEN, SR_SIG_LEN>(
+            rng,
+        )
+    }
+
+    fn from_seed_slice(
+        seed: &[u8],
+    ) -> Result<(Self::SecretKey, Self::PublicKey), HybridSignatureError> {
+        fixed::from_seed_slice::<
+            Self,
+            HYBRID_PK_LEN,
+            HYBRID_SK_LEN,
+            HYBRID_SIG_LEN,
+            SR_PK_LEN,
+            SR_SIG_LEN,
+        >(seed)
+    }
+
+    fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey, HybridSignatureError> {
+        <Self as FixedHybridEncoding<
+            HYBRID_PK_LEN,
+            HYBRID_SK_LEN,
+            HYBRID_SIG_LEN,
+            SR_PK_LEN,
+            SR_SIG_LEN,
+        >>::public_key_from_bytes(bytes)
+    }
+
+    fn secret_key_from_bytes(bytes: &[u8]) -> Result<Self::SecretKey, HybridSignatureError> {
+        <Self as FixedHybridEncoding<
+            HYBRID_PK_LEN,
+            HYBRID_SK_LEN,
+            HYBRID_SIG_LEN,
+            SR_PK_LEN,
+            SR_SIG_LEN,
+        >>::secret_key_from_bytes(bytes)
+    }
+
+    fn signature_from_bytes(bytes: &[u8]) -> Result<Self::Signature, HybridSignatureError> {
+        <Self as FixedHybridEncoding<
+            HYBRID_PK_LEN,
+            HYBRID_SK_LEN,
+            HYBRID_SIG_LEN,
+            SR_PK_LEN,
+            SR_SIG_LEN,
+        >>::signature_from_bytes(bytes)
+    }
+
+    fn public(sk: &Self::SecretKey) -> Self::PublicKey {
+        fixed::public::<Self, HYBRID_PK_LEN, HYBRID_SK_LEN, HYBRID_SIG_LEN, SR_PK_LEN, SR_SIG_LEN>(
+            sk,
+        )
+    }
+
+    fn sign(
+        sk: &Self::SecretKey,
+        msg: &[u8],
+        ctx: &[u8],
+        rng: &mut impl CryptoRngCore,
+    ) -> Self::Signature {
+        fixed::sign::<Self, HYBRID_PK_LEN, HYBRID_SK_LEN, HYBRID_SIG_LEN, SR_PK_LEN, SR_SIG_LEN>(
+            sk, msg, ctx, rng,
+        )
+    }
+
+    fn sign_deterministic(
+        sk: &Self::SecretKey,
+        msg: &[u8],
+        ctx: &[u8],
+        nonce: &[u8],
+    ) -> Self::Signature {
+        fixed::sign_deterministic::<
+            Self,
+            HYBRID_PK_LEN,
+            HYBRID_SK_LEN,
+            HYBRID_SIG_LEN,
+            SR_PK_LEN,
+            SR_SIG_LEN,
+        >(sk, msg, ctx, nonce)
+    }
+
+    fn verify(pk: &Self::PublicKey, msg: &[u8], ctx: &[u8], sig: &Self::Signature) -> bool {
+        fixed::verify::<Self, HYBRID_PK_LEN, HYBRID_SK_LEN, HYBRID_SIG_LEN, SR_PK_LEN, SR_SIG_LEN>(
+            pk, msg, ctx, sig,
+        )
+    }
+
+    fn verify_deterministic(
+        pk: &Self::PublicKey,
+        msg: &[u8],
+        ctx: &[u8],
+        sig: &Self::Signature,
+        _expected_nonce: &[u8],
+    ) -> bool {
+        Self::verify(pk, msg, ctx, sig)
     }
 }
 
@@ -282,7 +345,7 @@ mod tests {
         let nonce = b"same-nonce";
         let sig1 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"", nonce);
         let sig2 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"", nonce);
-        assert_eq!(sig1.0, sig2.0);
+        assert_eq!(sig1.to_bytes(), sig2.to_bytes());
     }
 
     #[test]
@@ -290,7 +353,7 @@ mod tests {
         let (sk, _) = keygen();
         let sig1 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"", b"nonce-1");
         let sig2 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"", b"nonce-2");
-        assert_ne!(sig1.0, sig2.0);
+        assert_ne!(sig1.to_bytes(), sig2.to_bytes());
     }
 
     #[test]
@@ -403,9 +466,11 @@ mod tests {
         let (sk, _) = keygen();
         let sig1 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"", b"nonce-1");
         let sig2 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"", b"nonce-2");
+        let sig1_bytes = sig1.to_bytes();
+        let sig2_bytes = sig2.to_bytes();
 
-        assert_ne!(&sig1.0[..SR_SIG_LEN], &sig2.0[..SR_SIG_LEN]);
-        assert_eq!(&sig1.0[SR_SIG_LEN..], &sig2.0[SR_SIG_LEN..]);
+        assert_ne!(&sig1_bytes[..SR_SIG_LEN], &sig2_bytes[..SR_SIG_LEN]);
+        assert_eq!(&sig1_bytes[SR_SIG_LEN..], &sig2_bytes[SR_SIG_LEN..]);
     }
 
     #[test]
@@ -413,7 +478,7 @@ mod tests {
         let (sk, _) = keygen();
         let sig1 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"ctx-a", b"nonce");
         let sig2 = Sr25519MlDsa44::sign_deterministic(&sk, b"msg", b"ctx-b", b"nonce");
-        assert_ne!(sig1.0, sig2.0);
+        assert_ne!(sig1.to_bytes(), sig2.to_bytes());
     }
 
     #[test]
@@ -464,6 +529,6 @@ mod tests {
         let (sk, _) = keygen();
         let sig = Sr25519MlDsa44::sign(&sk, b"msg", b"", &mut OsRng);
         let decoded = Signature::from_bytes(&sig.to_bytes()).unwrap();
-        assert_eq!(sig.0, decoded.0);
+        assert_eq!(sig.to_bytes(), decoded.to_bytes());
     }
 }
