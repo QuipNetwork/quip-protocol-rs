@@ -24,8 +24,8 @@ scale-info = { features = ["derive"], workspace = true }
 sp-runtime.workspace = true
 
 # XQVM crates (no_std compatible)
-aglais-xqvm-vm = { path = "../../../aglais-xqvm/crates/vm", default-features = false }
-aglais-xqvm-bytecode = { path = "../../../aglais-xqvm/crates/bytecode", default-features = false }
+aglais-xqvm-vm = { git = "ssh://git@gitlab.com/piqued/aglais-xqvm.git", rev = "b7c41e1", default-features = false }
+aglais-xqvm-bytecode = { git = "ssh://git@gitlab.com/piqued/aglais-xqvm.git", rev = "b7c41e1", default-features = false }
 
 [dev-dependencies]
 sp-core = { default-features = true, workspace = true }
