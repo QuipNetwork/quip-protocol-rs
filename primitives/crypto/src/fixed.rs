@@ -7,7 +7,7 @@ use crate::classical::ClassicalSignatureAlgorithm;
 use crate::domain::prepare_message;
 use crate::pq::FixedPqSignatureAlgorithm;
 use crate::suite::{derive_component_seeds, FixedHybridSuite, MASTER_SEED_LEN};
-use crate::HybridSignatureError;
+use crate::{HybridSignatureError, Result};
 
 pub trait CompositePublicKey: AsRef<[u8]> + Clone + Sized {
     const LEN: usize;
@@ -21,7 +21,7 @@ pub trait CompositeSignature: AsRef<[u8]> + Sized {
 
     fn from_parts(classical: &[u8], pq: &[u8]) -> Self;
     fn split(&self) -> (&[u8], &[u8]);
-    fn from_bytes(bytes: &[u8]) -> Result<Self, HybridSignatureError>;
+    fn from_bytes(bytes: &[u8]) -> Result<Self>;
 }
 
 pub struct FixedSignature<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> {
@@ -49,7 +49,7 @@ impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> AsRef<[u8]>
 }
 
 impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> FixedSignature<S, TOTAL_LEN, LEFT_LEN> {
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, HybridSignatureError> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != TOTAL_LEN {
             return Err(HybridSignatureError::InvalidLength {
                 expected: TOTAL_LEN,
@@ -95,7 +95,7 @@ impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> CompositeSignature
         (&self.bytes[..LEFT_LEN], &self.bytes[LEFT_LEN..])
     }
 
-    fn from_bytes(bytes: &[u8]) -> Result<Self, HybridSignatureError> {
+    fn from_bytes(bytes: &[u8]) -> Result<Self> {
         <FixedSignature<S, TOTAL_LEN, LEFT_LEN>>::from_bytes(bytes)
     }
 }
@@ -108,9 +108,9 @@ pub trait FixedHybridEncoding: FixedHybridSuite {
     type Pq: FixedPqSignatureAlgorithm;
     const SECRET_KEY_LEN: usize;
 
-    fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey, HybridSignatureError>;
-    fn secret_key_from_bytes(bytes: &[u8]) -> Result<Self::SecretKey, HybridSignatureError>;
-    fn signature_from_bytes(bytes: &[u8]) -> Result<Self::Signature, HybridSignatureError> {
+    fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey>;
+    fn secret_key_from_bytes(bytes: &[u8]) -> Result<Self::SecretKey>;
+    fn signature_from_bytes(bytes: &[u8]) -> Result<Self::Signature> {
         Self::Signature::from_bytes(bytes)
     }
 
@@ -157,7 +157,7 @@ where
     )
 }
 
-pub fn from_seed_slice<S>(seed: &[u8]) -> Result<(S::SecretKey, S::PublicKey), HybridSignatureError>
+pub fn from_seed_slice<S>(seed: &[u8]) -> Result<(S::SecretKey, S::PublicKey)>
 where
     S: FixedHybridEncoding,
 {

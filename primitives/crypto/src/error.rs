@@ -32,3 +32,5 @@ impl core::fmt::Display for HybridSignatureError {
         }
     }
 }
+
+pub type Result<T> = core::result::Result<T, HybridSignatureError>;

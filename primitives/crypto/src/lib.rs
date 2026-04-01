@@ -4,21 +4,19 @@ extern crate alloc;
 
 mod classical;
 mod domain;
-pub mod ed25519_mldsa44;
 mod error;
 mod fixed;
 mod pq;
-pub mod sr25519_mldsa44;
-mod suite;
+pub mod suite;
 
-pub use ed25519_mldsa44::Ed25519MlDsa44;
-pub use ed25519_mldsa44::{
+pub use error::{HybridSignatureError, Result};
+pub use suite::ed25519_mldsa44::Ed25519MlDsa44;
+pub use suite::ed25519_mldsa44::{
     PublicKey as Ed25519MlDsa44PublicKey, SecretKey as Ed25519MlDsa44SecretKey,
     Signature as Ed25519MlDsa44Signature,
 };
-pub use error::HybridSignatureError;
-pub use sr25519_mldsa44::Sr25519MlDsa44;
-pub use sr25519_mldsa44::{
+pub use suite::sr25519_mldsa44::Sr25519MlDsa44;
+pub use suite::sr25519_mldsa44::{
     PublicKey as Sr25519MlDsa44PublicKey, SecretKey as Sr25519MlDsa44SecretKey,
     Signature as Sr25519MlDsa44Signature,
 };
@@ -47,12 +45,10 @@ pub trait HybridSignatureScheme {
     fn signature_max_len() -> usize;
 
     fn generate(rng: &mut impl CryptoRngCore) -> (Self::SecretKey, Self::PublicKey);
-    fn from_seed_slice(
-        seed: &[u8],
-    ) -> Result<(Self::SecretKey, Self::PublicKey), HybridSignatureError>;
-    fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey, HybridSignatureError>;
-    fn secret_key_from_bytes(bytes: &[u8]) -> Result<Self::SecretKey, HybridSignatureError>;
-    fn signature_from_bytes(bytes: &[u8]) -> Result<Self::Signature, HybridSignatureError>;
+    fn from_seed_slice(seed: &[u8]) -> Result<(Self::SecretKey, Self::PublicKey)>;
+    fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey>;
+    fn secret_key_from_bytes(bytes: &[u8]) -> Result<Self::SecretKey>;
+    fn signature_from_bytes(bytes: &[u8]) -> Result<Self::Signature>;
     fn public(sk: &Self::SecretKey) -> Self::PublicKey;
 
     /// Hedged signing. Safe for all use cases.

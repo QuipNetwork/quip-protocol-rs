@@ -1,7 +1,10 @@
+pub mod ed25519_mldsa44;
+pub mod sr25519_mldsa44;
+
 use hkdf::Hkdf;
 use sha2::Sha256;
 
-use crate::HybridSignatureError;
+use crate::{HybridSignatureError, Result};
 
 pub const HYBRID_SIGNATURE_VERSION: u8 = 0x01;
 pub const MASTER_SEED_LEN: usize = 32;
@@ -21,7 +24,7 @@ pub fn derive_component_seeds(
     seed: &[u8],
     classical_seed: &mut [u8; MASTER_SEED_LEN],
     pq_seed: &mut [u8; MASTER_SEED_LEN],
-) -> Result<(), HybridSignatureError> {
+) -> Result<()> {
     if seed.len() != MASTER_SEED_LEN {
         return Err(HybridSignatureError::InvalidSeedLength {
             expected: MASTER_SEED_LEN,
