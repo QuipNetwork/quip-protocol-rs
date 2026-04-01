@@ -15,6 +15,7 @@ use core::convert::TryFrom;
 
 use ed25519_zebra::{Signature, SigningKey, VerificationKey, VerificationKeyBytes};
 use rand_core::CryptoRngCore;
+use zeroize::Zeroizing;
 
 /// Length in bytes of an ed25519 seed.
 pub const SEED_LEN: usize = 32;
@@ -30,8 +31,8 @@ pub const SIGNATURE_LEN: usize = 64;
 /// Returns the public key plus the 64-byte secret key encoding used by this
 /// crate: `seed || public`.
 pub fn from_seed(seed: &[u8; SEED_LEN]) -> ([u8; PUBLIC_KEY_LEN], [u8; SECRET_KEY_LEN]) {
-    let signing_key = SigningKey::from(*seed);
-    let public: [u8; PUBLIC_KEY_LEN] = VerificationKeyBytes::from(&signing_key).into();
+    let signing_key = Zeroizing::new(SigningKey::from(*seed));
+    let public: [u8; PUBLIC_KEY_LEN] = VerificationKeyBytes::from(&*signing_key).into();
 
     let mut secret = [0u8; SECRET_KEY_LEN];
     secret[..SEED_LEN].copy_from_slice(seed);
@@ -53,8 +54,8 @@ pub fn validate_secret_key(bytes: &[u8; SECRET_KEY_LEN]) -> bool {
     let seed: &[u8; SEED_LEN] = bytes[..SEED_LEN].try_into().expect("seed length");
     let public: &[u8; PUBLIC_KEY_LEN] = bytes[SEED_LEN..].try_into().expect("public key length");
 
-    let signing_key = SigningKey::from(*seed);
-    let expected_public: [u8; PUBLIC_KEY_LEN] = VerificationKeyBytes::from(&signing_key).into();
+    let signing_key = Zeroizing::new(SigningKey::from(*seed));
+    let expected_public: [u8; PUBLIC_KEY_LEN] = VerificationKeyBytes::from(&*signing_key).into();
 
     expected_public == *public && validate_public_key(public)
 }
@@ -62,8 +63,8 @@ pub fn validate_secret_key(bytes: &[u8; SECRET_KEY_LEN]) -> bool {
 /// Derives the ed25519 public key from a serialized secret key.
 pub fn public_key_from_secret(secret: &[u8; SECRET_KEY_LEN]) -> [u8; PUBLIC_KEY_LEN] {
     let seed: &[u8; SEED_LEN] = secret[..SEED_LEN].try_into().expect("seed length");
-    let signing_key = SigningKey::from(*seed);
-    VerificationKeyBytes::from(&signing_key).into()
+    let signing_key = Zeroizing::new(SigningKey::from(*seed));
+    VerificationKeyBytes::from(&*signing_key).into()
 }
 
 /// Signs `msg_prime` using native deterministic Ed25519.
@@ -88,7 +89,7 @@ pub fn sign_deterministic(
     _nonce: &[u8],
 ) -> [u8; SIGNATURE_LEN] {
     let seed: &[u8; SEED_LEN] = secret[..SEED_LEN].try_into().expect("seed length");
-    let signing_key = SigningKey::from(*seed);
+    let signing_key = Zeroizing::new(SigningKey::from(*seed));
     signing_key.sign(msg_prime).to_bytes()
 }
 

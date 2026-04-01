@@ -20,7 +20,7 @@ use blake2::digest::{Update, VariableOutput};
 use blake2::Blake2bVar;
 use rand_core::CryptoRngCore;
 use sp_core::{sr25519, Pair};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Length in bytes of an sr25519 mini-secret seed.
 pub const SEED_LEN: usize = 32;
@@ -54,13 +54,14 @@ pub fn validate_public_key(bytes: &[u8; PUBLIC_KEY_LEN]) -> bool {
 
 /// Validates a serialized sr25519 secret key.
 pub fn validate_secret_key(bytes: &[u8; SECRET_KEY_LEN]) -> bool {
-    sr25519::Pair::from_seed_slice(bytes).is_ok()
+    schnorrkel::SecretKey::from_bytes(bytes).is_ok()
 }
 
 /// Derives the sr25519 public key from serialized secret-key bytes.
 pub fn public_key_from_secret(secret: &[u8; SECRET_KEY_LEN]) -> [u8; PUBLIC_KEY_LEN] {
-    let pair = sr25519::Pair::from_seed_slice(secret).expect("stored sr25519 secret key is valid");
-    *pair.public().as_array_ref()
+    let secret =
+        schnorrkel::SecretKey::from_bytes(secret).expect("stored sr25519 secret key is valid");
+    secret.to_public().to_bytes()
 }
 
 /// Signs `msg_prime` with hedged sr25519 signing.
@@ -72,7 +73,7 @@ pub fn sign(
     msg_prime: &[u8],
     rng: &mut impl CryptoRngCore,
 ) -> [u8; SIGNATURE_LEN] {
-    let keypair = keypair_from_secret(secret);
+    let keypair = Zeroizing::new(keypair_from_secret(secret));
     let transcript = schnorrkel::context::attach_rng(
         schnorrkel::signing_context(SUBSTRATE_SIGNING_CONTEXT).bytes(msg_prime),
         rng,
@@ -90,9 +91,13 @@ pub fn sign_deterministic(
     msg_prime: &[u8],
     nonce: &[u8],
 ) -> [u8; SIGNATURE_LEN] {
-    let rng_seed = blake2_256_secret_parts(&[secret.as_ref(), nonce, msg_prime]);
-    let keypair = keypair_from_secret(secret);
-    let mut det_rng = Blake2Rng::new(rng_seed);
+    let rng_seed = Zeroizing::new(blake2_256_secret_parts(&[
+        secret.as_ref(),
+        nonce,
+        msg_prime,
+    ]));
+    let keypair = Zeroizing::new(keypair_from_secret(secret));
+    let mut det_rng = Blake2Rng::new(*rng_seed);
     let transcript = schnorrkel::context::attach_rng(
         schnorrkel::signing_context(SUBSTRATE_SIGNING_CONTEXT).bytes(msg_prime),
         &mut det_rng,
@@ -111,6 +116,7 @@ pub fn verify(
     sr25519::Pair::verify(&signature, msg_prime, &public)
 }
 
+#[derive(Zeroize, ZeroizeOnDrop)]
 /// Small deterministic RNG used by sr25519 deterministic signing.
 ///
 /// It expands a 32-byte seed into an arbitrary number of bytes by hashing
