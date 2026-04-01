@@ -12,7 +12,9 @@
 //! Domain label: `hybrid-sr25519-mldsa44-v1`
 
 use crate::classical::{sr25519 as classical_sr25519, ClassicalSignatureAlgorithm, Sr25519};
-use crate::fixed::{self, FixedCompositeBytes, FixedHybridEncoding, FixedSignature};
+use crate::fixed::{
+    self, CompositePublicKey, CompositeSignature, FixedHybridEncoding, FixedSignature,
+};
 use crate::pq::{mldsa44 as pq_mldsa44, FixedPqSignatureAlgorithm, MlDsa44};
 use crate::suite::FixedHybridSuite;
 use crate::{HybridSignatureError, HybridSignatureScheme};
@@ -87,9 +89,21 @@ impl PublicKey {
     }
 }
 
-impl FixedCompositeBytes<HYBRID_PK_LEN, SR_PK_LEN> for PublicKey {
-    fn from_array(bytes: [u8; HYBRID_PK_LEN]) -> Self {
+impl CompositePublicKey for PublicKey {
+    const LEN: usize = HYBRID_PK_LEN;
+
+    fn from_parts(classical: &[u8], pq: &[u8]) -> Self {
+        debug_assert_eq!(classical.len(), SR_PK_LEN);
+        debug_assert_eq!(pq.len(), ML_PK_LEN);
+
+        let mut bytes = [0u8; HYBRID_PK_LEN];
+        bytes[..SR_PK_LEN].copy_from_slice(classical);
+        bytes[SR_PK_LEN..].copy_from_slice(pq);
         Self(bytes)
+    }
+
+    fn split(&self) -> (&[u8], &[u8]) {
+        (&self.0[..SR_PK_LEN], &self.0[SR_PK_LEN..])
     }
 }
 
@@ -154,14 +168,13 @@ impl FixedHybridSuite for Sr25519MlDsa44 {
     const LABEL: &'static [u8] = b"hybrid-sr25519-mldsa44-v1\0";
 }
 
-impl FixedHybridEncoding<HYBRID_PK_LEN, HYBRID_SK_LEN, HYBRID_SIG_LEN, SR_PK_LEN, SR_SIG_LEN>
-    for Sr25519MlDsa44
-{
+impl FixedHybridEncoding for Sr25519MlDsa44 {
     type PublicKey = PublicKey;
     type SecretKey = SecretKey;
     type Signature = Signature;
     type Classical = Sr25519;
     type Pq = MlDsa44;
+    const SECRET_KEY_LEN: usize = HYBRID_SK_LEN;
 
     fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey, HybridSignatureError> {
         PublicKey::from_bytes(bytes)
@@ -198,70 +211,41 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
     type Signature = Signature;
 
     fn public_key_len() -> usize {
-        HYBRID_PK_LEN
+        <Self::PublicKey as CompositePublicKey>::LEN
     }
 
     fn secret_key_len() -> usize {
-        HYBRID_SK_LEN
+        <Self as FixedHybridEncoding>::SECRET_KEY_LEN
     }
 
     fn signature_max_len() -> usize {
-        HYBRID_SIG_LEN
+        <Self::Signature as CompositeSignature>::LEN
     }
 
     fn generate(rng: &mut impl CryptoRngCore) -> (Self::SecretKey, Self::PublicKey) {
-        fixed::generate::<Self, HYBRID_PK_LEN, HYBRID_SK_LEN, HYBRID_SIG_LEN, SR_PK_LEN, SR_SIG_LEN>(
-            rng,
-        )
+        fixed::generate::<Self>(rng)
     }
 
     fn from_seed_slice(
         seed: &[u8],
     ) -> Result<(Self::SecretKey, Self::PublicKey), HybridSignatureError> {
-        fixed::from_seed_slice::<
-            Self,
-            HYBRID_PK_LEN,
-            HYBRID_SK_LEN,
-            HYBRID_SIG_LEN,
-            SR_PK_LEN,
-            SR_SIG_LEN,
-        >(seed)
+        fixed::from_seed_slice::<Self>(seed)
     }
 
     fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey, HybridSignatureError> {
-        <Self as FixedHybridEncoding<
-            HYBRID_PK_LEN,
-            HYBRID_SK_LEN,
-            HYBRID_SIG_LEN,
-            SR_PK_LEN,
-            SR_SIG_LEN,
-        >>::public_key_from_bytes(bytes)
+        <Self as FixedHybridEncoding>::public_key_from_bytes(bytes)
     }
 
     fn secret_key_from_bytes(bytes: &[u8]) -> Result<Self::SecretKey, HybridSignatureError> {
-        <Self as FixedHybridEncoding<
-            HYBRID_PK_LEN,
-            HYBRID_SK_LEN,
-            HYBRID_SIG_LEN,
-            SR_PK_LEN,
-            SR_SIG_LEN,
-        >>::secret_key_from_bytes(bytes)
+        <Self as FixedHybridEncoding>::secret_key_from_bytes(bytes)
     }
 
     fn signature_from_bytes(bytes: &[u8]) -> Result<Self::Signature, HybridSignatureError> {
-        <Self as FixedHybridEncoding<
-            HYBRID_PK_LEN,
-            HYBRID_SK_LEN,
-            HYBRID_SIG_LEN,
-            SR_PK_LEN,
-            SR_SIG_LEN,
-        >>::signature_from_bytes(bytes)
+        <Self as FixedHybridEncoding>::signature_from_bytes(bytes)
     }
 
     fn public(sk: &Self::SecretKey) -> Self::PublicKey {
-        fixed::public::<Self, HYBRID_PK_LEN, HYBRID_SK_LEN, HYBRID_SIG_LEN, SR_PK_LEN, SR_SIG_LEN>(
-            sk,
-        )
+        fixed::public::<Self>(sk)
     }
 
     fn sign(
@@ -270,9 +254,7 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
         ctx: &[u8],
         rng: &mut impl CryptoRngCore,
     ) -> Self::Signature {
-        fixed::sign::<Self, HYBRID_PK_LEN, HYBRID_SK_LEN, HYBRID_SIG_LEN, SR_PK_LEN, SR_SIG_LEN>(
-            sk, msg, ctx, rng,
-        )
+        fixed::sign::<Self>(sk, msg, ctx, rng)
     }
 
     fn sign_deterministic(
@@ -281,20 +263,11 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
         ctx: &[u8],
         nonce: &[u8],
     ) -> Self::Signature {
-        fixed::sign_deterministic::<
-            Self,
-            HYBRID_PK_LEN,
-            HYBRID_SK_LEN,
-            HYBRID_SIG_LEN,
-            SR_PK_LEN,
-            SR_SIG_LEN,
-        >(sk, msg, ctx, nonce)
+        fixed::sign_deterministic::<Self>(sk, msg, ctx, nonce)
     }
 
     fn verify(pk: &Self::PublicKey, msg: &[u8], ctx: &[u8], sig: &Self::Signature) -> bool {
-        fixed::verify::<Self, HYBRID_PK_LEN, HYBRID_SK_LEN, HYBRID_SIG_LEN, SR_PK_LEN, SR_SIG_LEN>(
-            pk, msg, ctx, sig,
-        )
+        fixed::verify::<Self>(pk, msg, ctx, sig)
     }
 
     fn verify_deterministic(

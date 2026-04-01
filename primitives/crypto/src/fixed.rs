@@ -9,25 +9,19 @@ use crate::pq::FixedPqSignatureAlgorithm;
 use crate::suite::{derive_component_seeds, FixedHybridSuite, MASTER_SEED_LEN};
 use crate::HybridSignatureError;
 
-pub trait FixedCompositeBytes<const TOTAL_LEN: usize, const LEFT_LEN: usize>:
-    AsRef<[u8]> + Sized
-{
-    fn from_array(bytes: [u8; TOTAL_LEN]) -> Self;
+pub trait CompositePublicKey: AsRef<[u8]> + Clone + Sized {
+    const LEN: usize;
 
-    fn from_parts(left: &[u8], right: &[u8]) -> Self {
-        debug_assert_eq!(left.len(), LEFT_LEN);
-        debug_assert_eq!(right.len(), TOTAL_LEN - LEFT_LEN);
+    fn from_parts(classical: &[u8], pq: &[u8]) -> Self;
+    fn split(&self) -> (&[u8], &[u8]);
+}
 
-        let mut bytes = [0u8; TOTAL_LEN];
-        bytes[..LEFT_LEN].copy_from_slice(left);
-        bytes[LEFT_LEN..].copy_from_slice(right);
-        Self::from_array(bytes)
-    }
+pub trait CompositeSignature: AsRef<[u8]> + Sized {
+    const LEN: usize;
 
-    fn split_bytes(&self) -> (&[u8], &[u8]) {
-        let bytes = self.as_ref();
-        (&bytes[..LEFT_LEN], &bytes[LEFT_LEN..])
-    }
+    fn from_parts(classical: &[u8], pq: &[u8]) -> Self;
+    fn split(&self) -> (&[u8], &[u8]);
+    fn from_bytes(bytes: &[u8]) -> Result<Self, HybridSignatureError>;
 }
 
 pub struct FixedSignature<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> {
@@ -73,9 +67,7 @@ impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> FixedSignature<S, TOTAL_L
     }
 }
 
-impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> FixedCompositeBytes<TOTAL_LEN, LEFT_LEN>
-    for FixedSignature<S, TOTAL_LEN, LEFT_LEN>
-{
+impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> FixedSignature<S, TOTAL_LEN, LEFT_LEN> {
     fn from_array(bytes: [u8; TOTAL_LEN]) -> Self {
         Self {
             bytes,
@@ -84,46 +76,49 @@ impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> FixedCompositeBytes<TOTAL
     }
 }
 
-pub trait FixedHybridEncoding<
-    const PUBLIC_KEY_LEN: usize,
-    const SECRET_KEY_LEN: usize,
-    const SIGNATURE_LEN: usize,
-    const CLASSICAL_PUBLIC_KEY_LEN: usize,
-    const CLASSICAL_SIGNATURE_LEN: usize,
->: FixedHybridSuite
+impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> CompositeSignature
+    for FixedSignature<S, TOTAL_LEN, LEFT_LEN>
 {
-    type PublicKey: FixedCompositeBytes<PUBLIC_KEY_LEN, CLASSICAL_PUBLIC_KEY_LEN> + Clone;
+    const LEN: usize = TOTAL_LEN;
+
+    fn from_parts(classical: &[u8], pq: &[u8]) -> Self {
+        debug_assert_eq!(classical.len(), LEFT_LEN);
+        debug_assert_eq!(pq.len(), TOTAL_LEN - LEFT_LEN);
+
+        let mut bytes = [0u8; TOTAL_LEN];
+        bytes[..LEFT_LEN].copy_from_slice(classical);
+        bytes[LEFT_LEN..].copy_from_slice(pq);
+        Self::from_array(bytes)
+    }
+
+    fn split(&self) -> (&[u8], &[u8]) {
+        (&self.bytes[..LEFT_LEN], &self.bytes[LEFT_LEN..])
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Result<Self, HybridSignatureError> {
+        <FixedSignature<S, TOTAL_LEN, LEFT_LEN>>::from_bytes(bytes)
+    }
+}
+
+pub trait FixedHybridEncoding: FixedHybridSuite {
+    type PublicKey: CompositePublicKey;
     type SecretKey: Zeroize;
-    type Signature: FixedCompositeBytes<SIGNATURE_LEN, CLASSICAL_SIGNATURE_LEN>;
+    type Signature: CompositeSignature;
     type Classical: ClassicalSignatureAlgorithm;
     type Pq: FixedPqSignatureAlgorithm;
+    const SECRET_KEY_LEN: usize;
 
     fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey, HybridSignatureError>;
     fn secret_key_from_bytes(bytes: &[u8]) -> Result<Self::SecretKey, HybridSignatureError>;
     fn signature_from_bytes(bytes: &[u8]) -> Result<Self::Signature, HybridSignatureError> {
-        if bytes.len() != SIGNATURE_LEN {
-            return Err(HybridSignatureError::InvalidLength {
-                expected: SIGNATURE_LEN,
-                actual: bytes.len(),
-            });
-        }
-
-        let mut out = [0u8; SIGNATURE_LEN];
-        out.copy_from_slice(bytes);
-        Ok(<Self::Signature as FixedCompositeBytes<
-            SIGNATURE_LEN,
-            CLASSICAL_SIGNATURE_LEN,
-        >>::from_array(out))
+        Self::Signature::from_bytes(bytes)
     }
 
     fn compose_public_key(
         classical: &<Self::Classical as ClassicalSignatureAlgorithm>::PublicKeyBytes,
         pq: &<Self::Pq as FixedPqSignatureAlgorithm>::PublicKeyBytes,
     ) -> Self::PublicKey {
-        <Self::PublicKey as FixedCompositeBytes<
-            PUBLIC_KEY_LEN,
-            CLASSICAL_PUBLIC_KEY_LEN,
-        >>::from_parts(classical.as_ref(), pq.as_ref())
+        Self::PublicKey::from_parts(classical.as_ref(), pq.as_ref())
     }
     fn compose_secret_key(
         classical: &<Self::Classical as ClassicalSignatureAlgorithm>::SecretKeyBytes,
@@ -133,44 +128,20 @@ pub trait FixedHybridEncoding<
         classical: &<Self::Classical as ClassicalSignatureAlgorithm>::SignatureBytes,
         pq: &<Self::Pq as FixedPqSignatureAlgorithm>::SignatureBytes,
     ) -> Self::Signature {
-        <Self::Signature as FixedCompositeBytes<SIGNATURE_LEN, CLASSICAL_SIGNATURE_LEN>>::from_parts(
-            classical.as_ref(),
-            pq.as_ref(),
-        )
+        Self::Signature::from_parts(classical.as_ref(), pq.as_ref())
     }
     fn split_public_key(pk: &Self::PublicKey) -> (&[u8], &[u8]) {
-        <Self::PublicKey as FixedCompositeBytes<
-            PUBLIC_KEY_LEN,
-            CLASSICAL_PUBLIC_KEY_LEN,
-        >>::split_bytes(pk)
+        pk.split()
     }
     fn split_secret_key(sk: &Self::SecretKey) -> (&[u8], &[u8]);
     fn split_signature(sig: &Self::Signature) -> (&[u8], &[u8]) {
-        <Self::Signature as FixedCompositeBytes<
-            SIGNATURE_LEN,
-            CLASSICAL_SIGNATURE_LEN,
-        >>::split_bytes(sig)
+        sig.split()
     }
 }
 
-pub fn generate<
-    S,
-    const PUBLIC_KEY_LEN: usize,
-    const SECRET_KEY_LEN: usize,
-    const SIGNATURE_LEN: usize,
-    const CLASSICAL_PUBLIC_KEY_LEN: usize,
-    const CLASSICAL_SIGNATURE_LEN: usize,
->(
-    rng: &mut impl CryptoRngCore,
-) -> (S::SecretKey, S::PublicKey)
+pub fn generate<S>(rng: &mut impl CryptoRngCore) -> (S::SecretKey, S::PublicKey)
 where
-    S: FixedHybridEncoding<
-        PUBLIC_KEY_LEN,
-        SECRET_KEY_LEN,
-        SIGNATURE_LEN,
-        CLASSICAL_PUBLIC_KEY_LEN,
-        CLASSICAL_SIGNATURE_LEN,
-    >,
+    S: FixedHybridEncoding,
 {
     let mut classical_seed = [0u8; MASTER_SEED_LEN];
     rng.fill_bytes(&mut classical_seed);
@@ -186,24 +157,9 @@ where
     )
 }
 
-pub fn from_seed_slice<
-    S,
-    const PUBLIC_KEY_LEN: usize,
-    const SECRET_KEY_LEN: usize,
-    const SIGNATURE_LEN: usize,
-    const CLASSICAL_PUBLIC_KEY_LEN: usize,
-    const CLASSICAL_SIGNATURE_LEN: usize,
->(
-    seed: &[u8],
-) -> Result<(S::SecretKey, S::PublicKey), HybridSignatureError>
+pub fn from_seed_slice<S>(seed: &[u8]) -> Result<(S::SecretKey, S::PublicKey), HybridSignatureError>
 where
-    S: FixedHybridEncoding<
-        PUBLIC_KEY_LEN,
-        SECRET_KEY_LEN,
-        SIGNATURE_LEN,
-        CLASSICAL_PUBLIC_KEY_LEN,
-        CLASSICAL_SIGNATURE_LEN,
-    >,
+    S: FixedHybridEncoding,
 {
     let mut classical_seed = [0u8; MASTER_SEED_LEN];
     let mut pq_seed = [0u8; MASTER_SEED_LEN];
@@ -222,24 +178,9 @@ where
     ))
 }
 
-pub fn public<
-    S,
-    const PUBLIC_KEY_LEN: usize,
-    const SECRET_KEY_LEN: usize,
-    const SIGNATURE_LEN: usize,
-    const CLASSICAL_PUBLIC_KEY_LEN: usize,
-    const CLASSICAL_SIGNATURE_LEN: usize,
->(
-    sk: &S::SecretKey,
-) -> S::PublicKey
+pub fn public<S>(sk: &S::SecretKey) -> S::PublicKey
 where
-    S: FixedHybridEncoding<
-        PUBLIC_KEY_LEN,
-        SECRET_KEY_LEN,
-        SIGNATURE_LEN,
-        CLASSICAL_PUBLIC_KEY_LEN,
-        CLASSICAL_SIGNATURE_LEN,
-    >,
+    S: FixedHybridEncoding,
 {
     let (classical_sk, pq_sk) = S::split_secret_key(sk);
     let classical_pk =
@@ -248,27 +189,14 @@ where
     S::compose_public_key(&classical_pk, &pq_pk)
 }
 
-pub fn sign<
-    S,
-    const PUBLIC_KEY_LEN: usize,
-    const SECRET_KEY_LEN: usize,
-    const SIGNATURE_LEN: usize,
-    const CLASSICAL_PUBLIC_KEY_LEN: usize,
-    const CLASSICAL_SIGNATURE_LEN: usize,
->(
+pub fn sign<S>(
     sk: &S::SecretKey,
     msg: &[u8],
     ctx: &[u8],
     rng: &mut impl CryptoRngCore,
 ) -> S::Signature
 where
-    S: FixedHybridEncoding<
-        PUBLIC_KEY_LEN,
-        SECRET_KEY_LEN,
-        SIGNATURE_LEN,
-        CLASSICAL_PUBLIC_KEY_LEN,
-        CLASSICAL_SIGNATURE_LEN,
-    >,
+    S: FixedHybridEncoding,
 {
     let msg_prime = prepare_message(S::VERSION, S::LABEL, msg, ctx);
     let (classical_sk, pq_sk) = S::split_secret_key(sk);
@@ -278,27 +206,14 @@ where
     S::compose_signature(&classical_sig, &pq_sig)
 }
 
-pub fn sign_deterministic<
-    S,
-    const PUBLIC_KEY_LEN: usize,
-    const SECRET_KEY_LEN: usize,
-    const SIGNATURE_LEN: usize,
-    const CLASSICAL_PUBLIC_KEY_LEN: usize,
-    const CLASSICAL_SIGNATURE_LEN: usize,
->(
+pub fn sign_deterministic<S>(
     sk: &S::SecretKey,
     msg: &[u8],
     ctx: &[u8],
     nonce: &[u8],
 ) -> S::Signature
 where
-    S: FixedHybridEncoding<
-        PUBLIC_KEY_LEN,
-        SECRET_KEY_LEN,
-        SIGNATURE_LEN,
-        CLASSICAL_PUBLIC_KEY_LEN,
-        CLASSICAL_SIGNATURE_LEN,
-    >,
+    S: FixedHybridEncoding,
 {
     let msg_prime = prepare_message(S::VERSION, S::LABEL, msg, ctx);
     let (classical_sk, pq_sk) = S::split_secret_key(sk);
@@ -311,59 +226,17 @@ where
     S::compose_signature(&classical_sig, &pq_sig)
 }
 
-pub fn verify<
-    S,
-    const PUBLIC_KEY_LEN: usize,
-    const SECRET_KEY_LEN: usize,
-    const SIGNATURE_LEN: usize,
-    const CLASSICAL_PUBLIC_KEY_LEN: usize,
-    const CLASSICAL_SIGNATURE_LEN: usize,
->(
-    pk: &S::PublicKey,
-    msg: &[u8],
-    ctx: &[u8],
-    sig: &S::Signature,
-) -> bool
+pub fn verify<S>(pk: &S::PublicKey, msg: &[u8], ctx: &[u8], sig: &S::Signature) -> bool
 where
-    S: FixedHybridEncoding<
-        PUBLIC_KEY_LEN,
-        SECRET_KEY_LEN,
-        SIGNATURE_LEN,
-        CLASSICAL_PUBLIC_KEY_LEN,
-        CLASSICAL_SIGNATURE_LEN,
-    >,
+    S: FixedHybridEncoding,
 {
     let msg_prime = prepare_message(S::VERSION, S::LABEL, msg, ctx);
-    verify_components::<
-        S,
-        PUBLIC_KEY_LEN,
-        SECRET_KEY_LEN,
-        SIGNATURE_LEN,
-        CLASSICAL_PUBLIC_KEY_LEN,
-        CLASSICAL_SIGNATURE_LEN,
-    >(pk, &msg_prime, sig)
+    verify_components::<S>(pk, &msg_prime, sig)
 }
 
-fn verify_components<
-    S,
-    const PUBLIC_KEY_LEN: usize,
-    const SECRET_KEY_LEN: usize,
-    const SIGNATURE_LEN: usize,
-    const CLASSICAL_PUBLIC_KEY_LEN: usize,
-    const CLASSICAL_SIGNATURE_LEN: usize,
->(
-    pk: &S::PublicKey,
-    msg_prime: &[u8],
-    sig: &S::Signature,
-) -> bool
+fn verify_components<S>(pk: &S::PublicKey, msg_prime: &[u8], sig: &S::Signature) -> bool
 where
-    S: FixedHybridEncoding<
-        PUBLIC_KEY_LEN,
-        SECRET_KEY_LEN,
-        SIGNATURE_LEN,
-        CLASSICAL_PUBLIC_KEY_LEN,
-        CLASSICAL_SIGNATURE_LEN,
-    >,
+    S: FixedHybridEncoding,
 {
     let (classical_pk, pq_pk) = S::split_public_key(pk);
     let (classical_sig, pq_sig) = S::split_signature(sig);
