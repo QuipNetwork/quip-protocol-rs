@@ -5,6 +5,7 @@ extern crate alloc;
 mod domain;
 mod error;
 pub mod sr25519_mldsa44;
+mod suite;
 
 pub use error::HybridSignatureError;
 pub use sr25519_mldsa44::{HybridPublicKey, HybridSecretKey, HybridSignature, Sr25519MlDsa44};

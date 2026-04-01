@@ -12,15 +12,14 @@
 //! Domain label: `hybrid-sr25519-mldsa44-v1`
 
 use crate::domain::prepare_message;
+use crate::suite::{derive_component_seeds, FixedHybridSuite, MASTER_SEED_LEN};
 use crate::{HybridSignatureError, HybridSignatureScheme};
 
 use blake2::digest::{Update, VariableOutput};
 use blake2::Blake2bVar;
 use fips204::ml_dsa_44;
 use fips204::traits::{KeyGen, SerDes, Signer, Verifier as _};
-use hkdf::Hkdf;
 use rand_core::CryptoRngCore;
-use sha2::Sha256;
 use sp_core::{sr25519, Pair};
 use subtle::{Choice, ConstantTimeEq};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
@@ -29,17 +28,10 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 // Constants
 // ---------------------------------------------------------------------------
 
-const VERSION: u8 = 0x01;
-const LABEL: &[u8] = b"hybrid-sr25519-mldsa44-v1\0";
-const HKDF_SALT: &[u8] = b"hybrid-sig";
-const HKDF_CLASSICAL_INFO: &[u8] = b"classical";
-const HKDF_PQ_INFO: &[u8] = b"pq";
-
 const SR_PK_LEN: usize = 32;
 const SR_SK_LEN: usize = 64;
 const SR_SIG_LEN: usize = 64;
 
-const MASTER_SEED_LEN: usize = 32;
 const ML_PK_LEN: usize = 1312;
 const ML_SK_LEN: usize = 2560;
 const ML_SIG_LEN: usize = 2420;
@@ -181,6 +173,10 @@ impl HybridSignature {
 /// Zero-sized type implementing [`HybridSignatureScheme`] for H3.
 pub struct Sr25519MlDsa44;
 
+impl FixedHybridSuite for Sr25519MlDsa44 {
+    const LABEL: &'static [u8] = b"hybrid-sr25519-mldsa44-v1\0";
+}
+
 impl HybridSignatureScheme for Sr25519MlDsa44 {
     type PublicKey = HybridPublicKey;
     type SecretKey = HybridSecretKey;
@@ -301,7 +297,12 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
         ctx: &[u8],
         rng: &mut impl CryptoRngCore,
     ) -> HybridSignature {
-        let msg_prime = prepare_message(VERSION, LABEL, msg, ctx);
+        let msg_prime = prepare_message(
+            <Self as FixedHybridSuite>::VERSION,
+            <Self as FixedHybridSuite>::LABEL,
+            msg,
+            ctx,
+        );
 
         let sr_sig = sr25519_sign_hedged(&sk.sr25519_secret, &msg_prime, rng);
 
@@ -323,7 +324,12 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
         ctx: &[u8],
         nonce: &[u8],
     ) -> HybridSignature {
-        let msg_prime = prepare_message(VERSION, LABEL, msg, ctx);
+        let msg_prime = prepare_message(
+            <Self as FixedHybridSuite>::VERSION,
+            <Self as FixedHybridSuite>::LABEL,
+            msg,
+            ctx,
+        );
         let sr_sig = sr25519_sign_det(&sk.sr25519_secret, &msg_prime, nonce);
         // H3 follows the spec's ML-DSA deterministic mode: the network nonce is
         // ignored and the PQ leg is derived from the key and message only.
@@ -334,7 +340,12 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
     /// Standard verification. Works for signatures from both `sign` and
     /// `sign_deterministic`. Both components must pass.
     fn verify(pk: &HybridPublicKey, msg: &[u8], ctx: &[u8], sig: &HybridSignature) -> bool {
-        let msg_prime = prepare_message(VERSION, LABEL, msg, ctx);
+        let msg_prime = prepare_message(
+            <Self as FixedHybridSuite>::VERSION,
+            <Self as FixedHybridSuite>::LABEL,
+            msg,
+            ctx,
+        );
         verify_internal(pk, &msg_prime, sig)
     }
 
@@ -351,7 +362,12 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
         sig: &HybridSignature,
         _expected_nonce: &[u8],
     ) -> bool {
-        let msg_prime = prepare_message(VERSION, LABEL, msg, ctx);
+        let msg_prime = prepare_message(
+            <Self as FixedHybridSuite>::VERSION,
+            <Self as FixedHybridSuite>::LABEL,
+            msg,
+            ctx,
+        );
         verify_internal(pk, &msg_prime, sig)
     }
 }
@@ -359,26 +375,6 @@ impl HybridSignatureScheme for Sr25519MlDsa44 {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-fn derive_component_seeds(
-    seed: &[u8],
-    classical_seed: &mut [u8; MASTER_SEED_LEN],
-    pq_seed: &mut [u8; MASTER_SEED_LEN],
-) -> Result<(), HybridSignatureError> {
-    if seed.len() != MASTER_SEED_LEN {
-        return Err(HybridSignatureError::InvalidSeedLength {
-            expected: MASTER_SEED_LEN,
-            actual: seed.len(),
-        });
-    }
-
-    let hkdf = Hkdf::<Sha256>::new(Some(HKDF_SALT), seed);
-    hkdf.expand(HKDF_CLASSICAL_INFO, classical_seed)
-        .expect("32-byte HKDF expansion is always valid");
-    hkdf.expand(HKDF_PQ_INFO, pq_seed)
-        .expect("32-byte HKDF expansion is always valid");
-    Ok(())
-}
 
 /// Counter-mode Blake2-256 PRNG used to drive `attach_rng` in
 /// `sign_deterministic`.  Seeded from `H(sk || nonce || msg')`.
@@ -673,7 +669,12 @@ mod tests {
     #[test]
     fn sr25519_component_is_deterministic() {
         let (sk, _) = keygen();
-        let msg_prime = prepare_message(VERSION, LABEL, b"msg", &[]);
+        let msg_prime = prepare_message(
+            <Sr25519MlDsa44 as FixedHybridSuite>::VERSION,
+            <Sr25519MlDsa44 as FixedHybridSuite>::LABEL,
+            b"msg",
+            &[],
+        );
         let sig1 = sr25519_sign_det(&sk.sr25519_secret, &msg_prime, b"nonce");
         let sig2 = sr25519_sign_det(&sk.sr25519_secret, &msg_prime, b"nonce");
         let b1: &[u8] = sig1.as_ref();
@@ -684,7 +685,12 @@ mod tests {
     #[test]
     fn mldsa44_component_is_deterministic() {
         let (sk, _) = keygen();
-        let msg_prime = prepare_message(VERSION, LABEL, b"msg", &[]);
+        let msg_prime = prepare_message(
+            <Sr25519MlDsa44 as FixedHybridSuite>::VERSION,
+            <Sr25519MlDsa44 as FixedHybridSuite>::LABEL,
+            b"msg",
+            &[],
+        );
         let sig1 = mldsa44_sign_det(&sk.ml_dsa_sk, &msg_prime);
         let sig2 = mldsa44_sign_det(&sk.ml_dsa_sk, &msg_prime);
         assert_eq!(sig1, sig2, "ML-DSA-44 component is not deterministic");
