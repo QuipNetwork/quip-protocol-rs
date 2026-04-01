@@ -1,3 +1,22 @@
+//! Hybrid signature primitives for the Quip protocol.
+//!
+//! This crate currently provides fixed-size hybrid signature suites that pair a
+//! classical signature algorithm with ML-DSA-44:
+//! - [`Ed25519MlDsa44`]
+//! - [`Sr25519MlDsa44`]
+//!
+//! Internally, the crate is organized into a few layers:
+//! - [`classical`] and [`pq`] adapt concrete component algorithms into a common
+//!   byte-oriented interface
+//! - [`fixed`] contains the reusable engine for fixed-size hybrid suites
+//! - [`suite`] contains concrete suite definitions, labels, and wrapper types
+//! - [`seed`] and [`domain`] provide shared seed-expansion and message-binding
+//!   helpers
+//!
+//! The public API is centered around [`HybridSignatureScheme`], which exposes
+//! generation, serialization, signing, and verification for a concrete hybrid
+//! suite.
+
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
@@ -37,22 +56,43 @@ use zeroize::Zeroize;
 ///   in the signature (Falcon-512 hybrids). For ML-DSA-44 hybrids this is equivalent
 ///   to `verify`.
 pub trait HybridSignatureScheme {
+    /// Serialized public-key type for the suite.
     type PublicKey: AsRef<[u8]> + Clone;
+    /// Serialized secret-key type for the suite.
     type SecretKey: Zeroize;
+    /// Serialized signature type for the suite.
     type Signature: AsRef<[u8]>;
 
+    /// Returns the serialized public-key length in bytes.
     fn public_key_len() -> usize;
+    /// Returns the serialized secret-key length in bytes.
     fn secret_key_len() -> usize;
+    /// Returns the maximum serialized signature length in bytes.
     fn signature_max_len() -> usize;
 
+    /// Generates a fresh keypair.
     fn generate(rng: &mut impl CryptoRngCore) -> (Self::SecretKey, Self::PublicKey);
+
+    /// Derives a deterministic keypair from a 32-byte master seed.
     fn from_seed_slice(seed: &[u8]) -> Result<(Self::SecretKey, Self::PublicKey)>;
+
+    /// Parses and validates a serialized public key.
     fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey>;
+
+    /// Parses and validates a serialized secret key.
     fn secret_key_from_bytes(bytes: &[u8]) -> Result<Self::SecretKey>;
+
+    /// Parses and validates a serialized signature.
     fn signature_from_bytes(bytes: &[u8]) -> Result<Self::Signature>;
+
+    /// Derives the public key from a secret key.
     fn public(sk: &Self::SecretKey) -> Self::PublicKey;
 
     /// Hedged signing. Safe for all use cases.
+    ///
+    /// `ctx` is an optional application-specific context that is folded into
+    /// the domain-separated message before the component signatures are
+    /// produced.
     fn sign(
         sk: &Self::SecretKey,
         msg: &[u8],
@@ -61,6 +101,9 @@ pub trait HybridSignatureScheme {
     ) -> Self::Signature;
 
     /// Deterministic signing with a network-derived nonce.
+    ///
+    /// `ctx` is an optional application-specific context that is folded into
+    /// the domain-separated message before signing.
     ///
     /// `nonce` MUST be unique per `(key, msg)` pair — typically
     /// `H(state_root || block_number || msg)`.
@@ -72,9 +115,13 @@ pub trait HybridSignatureScheme {
     ) -> Self::Signature;
 
     /// Standard verification. Works for signatures from both signing functions.
+    ///
+    /// `ctx` must exactly match the context used during signing.
     fn verify(pk: &Self::PublicKey, msg: &[u8], ctx: &[u8], sig: &Self::Signature) -> bool;
 
     /// Verification with nonce check.
+    ///
+    /// `ctx` must exactly match the context used during signing.
     ///
     /// For Falcon-512 hybrids: extracts the nonce embedded in the PQ component
     /// and compares it to `expected_nonce`.

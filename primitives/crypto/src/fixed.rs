@@ -1,3 +1,15 @@
+//! Shared engine for fixed-size hybrid signature suites.
+//!
+//! This module factors out the common composition logic for suites whose
+//! classical and PQ components both have fixed-size serialized encodings. It
+//! owns:
+//! - generic fixed-size public-key and signature wrappers
+//! - suite traits describing how component algorithms are combined
+//! - shared generate / derive / sign / verify flows
+//!
+//! Concrete suites in [`crate::suite`] provide the suite label, choose a
+//! classical backend, choose a PQ backend, and define the secret-key wrapper.
+
 use core::marker::PhantomData;
 
 use rand_core::CryptoRngCore;
@@ -11,26 +23,52 @@ use crate::seed::{derive_component_seeds, MASTER_SEED_LEN};
 use crate::suite::FixedHybridSuite;
 use crate::{HybridSignatureError, Result};
 
+/// Trait implemented by composite public-key wrappers.
+///
+/// The fixed hybrid engine only needs to concatenate component bytes, split
+/// them back out, and know the total serialized length.
 pub trait CompositePublicKey: AsRef<[u8]> + Clone + Sized {
+    /// Serialized length in bytes.
     const LEN: usize;
 
+    /// Builds a composite public key from classical and PQ public-key bytes.
     fn from_parts(classical: &[u8], pq: &[u8]) -> Self;
+
+    /// Splits a composite public key into classical and PQ byte slices.
     fn split(&self) -> (&[u8], &[u8]);
 }
 
+/// Trait implemented by composite signature wrappers.
 pub trait CompositeSignature: AsRef<[u8]> + Sized {
+    /// Serialized length in bytes.
     const LEN: usize;
 
+    /// Builds a composite signature from classical and PQ signature bytes.
     fn from_parts(classical: &[u8], pq: &[u8]) -> Self;
+
+    /// Splits a composite signature into classical and PQ byte slices.
     fn split(&self) -> (&[u8], &[u8]);
+
+    /// Parses a serialized composite signature.
     fn from_bytes(bytes: &[u8]) -> Result<Self>;
 }
 
+/// Minimal suite metadata needed by the generic public-key wrapper.
+///
+/// This is deliberately smaller than [`FixedHybridEncoding`] so a public-key
+/// type can depend only on component algorithm choices and suite metadata,
+/// without depending on secret-key composition.
 pub trait FixedHybridComponents: FixedHybridSuite {
+    /// Classical component algorithm.
     type Classical: ClassicalSignatureAlgorithm;
+    /// Post-quantum component algorithm.
     type Pq: FixedPqSignatureAlgorithm;
 }
 
+/// Generic fixed-size composite public key.
+///
+/// `TOTAL_LEN` is the total serialized length and `LEFT_LEN` is the classical
+/// component length. The PQ component occupies the remaining suffix.
 pub struct FixedPublicKey<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> {
     bytes: [u8; TOTAL_LEN],
     marker: PhantomData<fn() -> S>,
@@ -67,6 +105,7 @@ impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> FixedPublicKey<S, TOTAL_L
 where
     S: FixedHybridComponents,
 {
+    /// Parses and validates a serialized composite public key.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != TOTAL_LEN {
             return Err(HybridSignatureError::InvalidLength {
@@ -122,6 +161,10 @@ impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> CompositePublicKey
     }
 }
 
+/// Generic fixed-size composite signature.
+///
+/// `TOTAL_LEN` is the total serialized length and `LEFT_LEN` is the classical
+/// component length. The PQ component occupies the remaining suffix.
 pub struct FixedSignature<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> {
     bytes: [u8; TOTAL_LEN],
     marker: PhantomData<fn() -> S>,
@@ -147,6 +190,7 @@ impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> AsRef<[u8]>
 }
 
 impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> FixedSignature<S, TOTAL_LEN, LEFT_LEN> {
+    /// Parses a serialized composite signature.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != TOTAL_LEN {
             return Err(HybridSignatureError::InvalidLength {
@@ -198,43 +242,70 @@ impl<S, const TOTAL_LEN: usize, const LEFT_LEN: usize> CompositeSignature
     }
 }
 
+/// Suite-specific hooks required by the generic fixed-size hybrid engine.
+///
+/// Concrete suites select their component algorithms, choose the public-key,
+/// secret-key, and signature wrapper types, and define how a secret key is
+/// composed and split.
 pub trait FixedHybridEncoding: FixedHybridComponents {
+    /// Composite public-key wrapper.
     type PublicKey: CompositePublicKey;
+    /// Composite secret-key wrapper.
     type SecretKey: Zeroize;
+    /// Composite signature wrapper.
     type Signature: CompositeSignature;
+    /// Serialized secret-key length in bytes.
     const SECRET_KEY_LEN: usize;
 
+    /// Parses and validates a serialized public key.
     fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey>;
+
+    /// Parses and validates a serialized secret key.
     fn secret_key_from_bytes(bytes: &[u8]) -> Result<Self::SecretKey>;
+
+    /// Parses and validates a serialized signature.
     fn signature_from_bytes(bytes: &[u8]) -> Result<Self::Signature> {
         Self::Signature::from_bytes(bytes)
     }
 
+    /// Combines classical and PQ public-key bytes into the suite's public-key
+    /// wrapper.
     fn compose_public_key(
         classical: &<Self::Classical as ClassicalSignatureAlgorithm>::PublicKeyBytes,
         pq: &<Self::Pq as FixedPqSignatureAlgorithm>::PublicKeyBytes,
     ) -> Self::PublicKey {
         Self::PublicKey::from_parts(classical.as_ref(), pq.as_ref())
     }
+    /// Combines classical and PQ secret-key bytes into the suite's secret-key
+    /// wrapper.
     fn compose_secret_key(
         classical: &<Self::Classical as ClassicalSignatureAlgorithm>::SecretKeyBytes,
         pq: &<Self::Pq as FixedPqSignatureAlgorithm>::SecretKeyBytes,
     ) -> Self::SecretKey;
+
+    /// Combines classical and PQ signature bytes into the suite's signature
+    /// wrapper.
     fn compose_signature(
         classical: &<Self::Classical as ClassicalSignatureAlgorithm>::SignatureBytes,
         pq: &<Self::Pq as FixedPqSignatureAlgorithm>::SignatureBytes,
     ) -> Self::Signature {
         Self::Signature::from_parts(classical.as_ref(), pq.as_ref())
     }
+    /// Splits a composite public key into classical and PQ byte slices.
     fn split_public_key(pk: &Self::PublicKey) -> (&[u8], &[u8]) {
         pk.split()
     }
+
+    /// Splits a composite secret key into classical and PQ byte slices.
     fn split_secret_key(sk: &Self::SecretKey) -> (&[u8], &[u8]);
+
+    /// Splits a composite signature into classical and PQ byte slices.
     fn split_signature(sig: &Self::Signature) -> (&[u8], &[u8]) {
         sig.split()
     }
 }
 
+/// Generates a fresh keypair for a fixed-size hybrid suite.
 pub fn generate<S>(rng: &mut impl CryptoRngCore) -> (S::SecretKey, S::PublicKey)
 where
     S: FixedHybridEncoding,
@@ -253,6 +324,7 @@ where
     )
 }
 
+/// Derives a deterministic keypair from a 32-byte master seed.
 pub fn from_seed_slice<S>(seed: &[u8]) -> Result<(S::SecretKey, S::PublicKey)>
 where
     S: FixedHybridEncoding,
@@ -274,6 +346,7 @@ where
     ))
 }
 
+/// Derives the public key for a suite from its secret key.
 pub fn public<S>(sk: &S::SecretKey) -> S::PublicKey
 where
     S: FixedHybridEncoding,
@@ -285,6 +358,7 @@ where
     S::compose_public_key(&classical_pk, &pq_pk)
 }
 
+/// Produces a hedged composite signature for a fixed-size hybrid suite.
 pub fn sign<S>(
     sk: &S::SecretKey,
     msg: &[u8],
@@ -302,6 +376,7 @@ where
     S::compose_signature(&classical_sig, &pq_sig)
 }
 
+/// Produces a deterministic composite signature for a fixed-size hybrid suite.
 pub fn sign_deterministic<S>(
     sk: &S::SecretKey,
     msg: &[u8],
@@ -322,6 +397,7 @@ where
     S::compose_signature(&classical_sig, &pq_sig)
 }
 
+/// Verifies a composite signature for a fixed-size hybrid suite.
 pub fn verify<S>(pk: &S::PublicKey, msg: &[u8], ctx: &[u8], sig: &S::Signature) -> bool
 where
     S: FixedHybridEncoding,
@@ -330,6 +406,7 @@ where
     verify_components::<S>(pk, &msg_prime, sig)
 }
 
+/// Verifies the component signatures against an already prepared `msg_prime`.
 fn verify_components<S>(pk: &S::PublicKey, msg_prime: &[u8], sig: &S::Signature) -> bool
 where
     S: FixedHybridEncoding,

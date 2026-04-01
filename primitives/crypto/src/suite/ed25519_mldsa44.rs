@@ -31,8 +31,11 @@ const ML_PK_LEN: usize = pq_mldsa44::PUBLIC_KEY_LEN;
 const ML_SK_LEN: usize = pq_mldsa44::SECRET_KEY_LEN;
 const ML_SIG_LEN: usize = pq_mldsa44::SIGNATURE_LEN;
 
+/// Length in bytes of an H1 public key.
 pub const HYBRID_PK_LEN: usize = ED_PK_LEN + ML_PK_LEN;
+/// Length in bytes of an H1 secret key.
 pub const HYBRID_SK_LEN: usize = ED_SK_LEN + ML_SK_LEN;
+/// Length in bytes of an H1 signature.
 pub const HYBRID_SIG_LEN: usize = ED_SIG_LEN + ML_SIG_LEN;
 
 /// Composite public key: `ed25519_pk (32B) || ml_dsa_pk (1312B)`.
@@ -48,6 +51,7 @@ pub struct SecretKey {
 }
 
 impl SecretKey {
+    /// Parses and validates a serialized H1 secret key.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != HYBRID_SK_LEN {
             return Err(HybridSignatureError::InvalidLength {
@@ -77,6 +81,10 @@ impl SecretKey {
         })
     }
 
+    /// Serializes the secret key into `ed25519_sk || ml_dsa_sk`.
+    ///
+    /// The returned buffer is wrapped in [`Zeroizing`] because it contains
+    /// secret material.
     pub fn to_bytes(&self) -> Zeroizing<[u8; HYBRID_SK_LEN]> {
         let mut out = Zeroizing::new([0u8; HYBRID_SK_LEN]);
         out[..ED_SK_LEN].copy_from_slice(&self.ed25519_secret);
@@ -114,6 +122,7 @@ impl FixedHybridEncoding for Ed25519MlDsa44 {
         SecretKey::from_bytes(bytes)
     }
 
+    /// Builds the suite secret key from serialized component secret keys.
     fn compose_secret_key(
         classical: &<Self::Classical as ClassicalSignatureAlgorithm>::SecretKeyBytes,
         pq: &<Self::Pq as FixedPqSignatureAlgorithm>::SecretKeyBytes,
@@ -130,6 +139,7 @@ impl FixedHybridEncoding for Ed25519MlDsa44 {
         }
     }
 
+    /// Splits the suite secret key into classical and PQ serialized components.
     fn split_secret_key(sk: &Self::SecretKey) -> (&[u8], &[u8]) {
         (&sk.ed25519_secret, &sk.ml_dsa_sk)
     }

@@ -1,18 +1,35 @@
+//! Error types shared by the hybrid signature crate.
+
 #[cfg_attr(feature = "std", derive(thiserror::Error))]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Errors returned while parsing or deriving hybrid key and signature types.
 pub enum HybridSignatureError {
+    /// A serialized value had the wrong fixed length.
     #[cfg_attr(
         feature = "std",
         error("invalid length: expected {expected}, got {actual}")
     )]
-    InvalidLength { expected: usize, actual: usize },
+    InvalidLength {
+        /// Expected serialized length in bytes.
+        expected: usize,
+        /// Actual serialized length in bytes.
+        actual: usize,
+    },
+    /// A master seed had the wrong length.
     #[cfg_attr(
         feature = "std",
         error("invalid seed length: expected {expected}, got {actual}")
     )]
-    InvalidSeedLength { expected: usize, actual: usize },
+    InvalidSeedLength {
+        /// Expected master-seed length in bytes.
+        expected: usize,
+        /// Actual master-seed length in bytes.
+        actual: usize,
+    },
+    /// A public key failed decoding or semantic validation.
     #[cfg_attr(feature = "std", error("invalid public key"))]
     InvalidPublicKey,
+    /// A secret key failed decoding or semantic validation.
     #[cfg_attr(feature = "std", error("invalid secret key"))]
     InvalidSecretKey,
 }
@@ -33,4 +50,5 @@ impl core::fmt::Display for HybridSignatureError {
     }
 }
 
+/// Convenience result alias used throughout the crate.
 pub type Result<T> = core::result::Result<T, HybridSignatureError>;
