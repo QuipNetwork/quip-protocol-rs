@@ -52,7 +52,7 @@ pub mod opaque {
 
 impl_opaque_keys! {
     pub struct SessionKeys {
-        pub aura: Aura,
+        pub babe: Babe,
         pub grandpa: Grandpa,
     }
 }
@@ -79,8 +79,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 mod block_times {
     /// This determines the average expected block time that we are targeting. Blocks will be
     /// produced at a minimum duration defined by `SLOT_DURATION`. `SLOT_DURATION` is picked up by
-    /// `pallet_timestamp` which is in turn picked up by `pallet_aura` to implement `fn
-    /// slot_duration()`.
+    /// `pallet_timestamp` which is in turn picked up by `pallet_babe`.
     ///
     /// Change this to adjust the block time.
     pub const MILLI_SECS_PER_BLOCK: u64 = 6000;
@@ -105,6 +104,13 @@ pub const MICRO_UNIT: Balance = 1_000_000;
 
 /// Existential deposit.
 pub const EXISTENTIAL_DEPOSIT: Balance = MILLI_UNIT;
+
+/// The BABE epoch configuration at genesis.
+pub const BABE_GENESIS_EPOCH_CONFIG: sp_consensus_babe::BabeEpochConfiguration =
+    sp_consensus_babe::BabeEpochConfiguration {
+        c: (1, 4),
+        allowed_slots: sp_consensus_babe::AllowedSlots::PrimaryAndSecondaryPlainSlots,
+    };
 
 /// The version information used to identify this runtime when compiled natively.
 #[cfg(feature = "std")]
@@ -205,7 +211,7 @@ mod runtime {
     pub type Timestamp = pallet_timestamp;
 
     #[runtime::pallet_index(2)]
-    pub type Aura = pallet_aura;
+    pub type Babe = pallet_babe;
 
     #[runtime::pallet_index(3)]
     pub type Grandpa = pallet_grandpa;

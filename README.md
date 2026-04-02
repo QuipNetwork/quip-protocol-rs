@@ -162,7 +162,7 @@ following:
   forks](https://docs.substrate.io/fundamentals/consensus/#finalization-and-forks)
   and other [consensus
   mechanisms](https://docs.substrate.io/fundamentals/consensus/#default-consensus-models)
-  such as Aura for block authoring and GRANDPA for finality.
+  such as BABE for block authoring and GRANDPA for finality.
 
 
 ### Runtime

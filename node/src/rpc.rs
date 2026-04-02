@@ -9,22 +9,37 @@ use std::sync::Arc;
 
 use jsonrpsee::RpcModule;
 use quip_protocol_runtime::{opaque::Block, AccountId, Balance, Nonce};
+use sc_consensus_babe::BabeWorkerHandle;
 use sc_transaction_pool_api::TransactionPool;
 use sp_api::ProvideRuntimeApi;
 use sp_block_builder::BlockBuilder;
 use sp_blockchain::{Error as BlockChainError, HeaderBackend, HeaderMetadata};
+use sp_consensus::SelectChain;
+use sp_keystore::KeystorePtr;
+
+/// Extra dependencies for BABE.
+pub struct BabeDeps {
+    /// A handle to the BABE worker for issuing requests.
+    pub babe_worker_handle: BabeWorkerHandle<Block>,
+    /// The keystore that manages the keys of the node.
+    pub keystore: KeystorePtr,
+}
 
 /// Full client dependencies.
-pub struct FullDeps<C, P> {
+pub struct FullDeps<C, P, SC> {
     /// The client instance to use.
     pub client: Arc<C>,
     /// Transaction pool instance.
     pub pool: Arc<P>,
+    /// The SelectChain strategy.
+    pub select_chain: SC,
+    /// BABE specific dependencies.
+    pub babe: BabeDeps,
 }
 
 /// Instantiate all full RPC extensions.
-pub fn create_full<C, P>(
-    deps: FullDeps<C, P>,
+pub fn create_full<C, P, SC>(
+    deps: FullDeps<C, P, SC>,
 ) -> Result<RpcModule<()>, Box<dyn std::error::Error + Send + Sync>>
 where
     C: ProvideRuntimeApi<Block>,
@@ -32,17 +47,30 @@ where
     C: Send + Sync + 'static,
     C::Api: substrate_frame_rpc_system::AccountNonceApi<Block, AccountId, Nonce>,
     C::Api: pallet_transaction_payment_rpc::TransactionPaymentRuntimeApi<Block, Balance>,
+    C::Api: sp_consensus_babe::BabeApi<Block>,
     C::Api: BlockBuilder<Block>,
     P: TransactionPool + 'static,
+    SC: SelectChain<Block> + Clone + 'static,
 {
     use pallet_transaction_payment_rpc::{TransactionPayment, TransactionPaymentApiServer};
+    use sc_consensus_babe_rpc::{Babe, BabeApiServer};
     use substrate_frame_rpc_system::{System, SystemApiServer};
 
     let mut module = RpcModule::new(());
-    let FullDeps { client, pool } = deps;
+    let FullDeps {
+        client,
+        pool,
+        select_chain,
+        babe,
+    } = deps;
+    let BabeDeps {
+        babe_worker_handle,
+        keystore,
+    } = babe;
 
     module.merge(System::new(client.clone(), pool).into_rpc())?;
-    module.merge(TransactionPayment::new(client).into_rpc())?;
+    module.merge(TransactionPayment::new(client.clone()).into_rpc())?;
+    module.merge(Babe::new(client, babe_worker_handle, keystore, select_chain).into_rpc())?;
 
     // Extend this RPC with a custom API by using the following syntax.
     // `YourRpcStruct` should have a reference to a client, which is needed
