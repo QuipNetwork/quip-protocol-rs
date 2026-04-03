@@ -72,6 +72,8 @@ sp-transaction-pool = { git = "https://github.com/paritytech/polkadot-sdk.git", 
 sp-version = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2603", default-features = false }
 substrate-wasm-builder = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2603", default-features = false }
 schnorrkel = { version = "0.11.5", default-features = false }
+
+
 [workspace.lints.rust]
 suspicious_double_ref_op = { level = "allow", priority = 2 }
 # `substrate_runtime` is a common `cfg` condition name used in the repo.

@@ -10,6 +10,7 @@
 //!   byte-oriented interface
 //! - [`fixed`] contains the reusable engine for fixed-size hybrid suites
 //! - [`suite`] contains concrete suite definitions, labels, and wrapper types
+//! - [`substrate`] contains Substrate-facing wrappers for selected suites
 //! - [`seed`] and [`domain`] provide shared seed-expansion and message-binding
 //!   helpers
 //!
@@ -27,6 +28,8 @@ mod error;
 mod fixed;
 mod pq;
 mod seed;
+#[cfg(feature = "std")]
+pub mod substrate;
 pub mod suite;
 
 pub use error::{HybridSignatureError, Result};

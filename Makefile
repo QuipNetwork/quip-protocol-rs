@@ -1,2 +1,2 @@
 polkadot-sdk:
-	git clone git@github.com:QuipNetwork/polkadot-sdk.git
+	git clone --branch polkadot-stable2603 git@github.com:QuipNetwork/polkadot-sdk.git

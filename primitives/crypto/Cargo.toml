@@ -11,6 +11,8 @@ publish = false
 workspace = true
 
 [dependencies]
+codec = { workspace = true }
+scale-info = { workspace = true }
 sp-core = { workspace = true }
 schnorrkel = { workspace = true }
 ed25519-zebra = { version = "4", default-features = false }
@@ -25,4 +27,8 @@ thiserror = { version = "1", optional = true }
 
 [features]
 default = ["std"]
-std = ["sp-core/std", "dep:thiserror"]
+std = ["sp-core/std", "sp-core/full_crypto", "dep:thiserror"]
+full_crypto = ["sp-core/full_crypto"]
+
+[dev-dependencies]
+sp-application-crypto = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2603", default-features = false, features = ["std"] }
