@@ -32,12 +32,12 @@ use frame_support::{
 use pallet_grandpa::AuthorityId as GrandpaId;
 use sp_api::impl_runtime_apis;
 use sp_core::{crypto::KeyTypeId, OpaqueMetadata};
-use sp_session::OpaqueGeneratedSessionKeys;
 use sp_runtime::{
     traits::{Block as BlockT, NumberFor},
     transaction_validity::{TransactionSource, TransactionValidity},
     ApplyExtrinsicResult,
 };
+use sp_session::OpaqueGeneratedSessionKeys;
 use sp_version::RuntimeVersion;
 
 // Local module imports
