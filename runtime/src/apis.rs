@@ -32,6 +32,7 @@ use frame_support::{
 use pallet_grandpa::AuthorityId as GrandpaId;
 use sp_api::impl_runtime_apis;
 use sp_core::{crypto::KeyTypeId, OpaqueMetadata};
+use sp_session::OpaqueGeneratedSessionKeys;
 use sp_runtime::{
     traits::{Block as BlockT, NumberFor},
     transaction_validity::{TransactionSource, TransactionValidity},
@@ -160,8 +161,8 @@ impl_runtime_apis! {
     }
 
     impl sp_session::SessionKeys<Block> for Runtime {
-        fn generate_session_keys(seed: Option<Vec<u8>>) -> Vec<u8> {
-            SessionKeys::generate(seed)
+        fn generate_session_keys(owner: Vec<u8>, seed: Option<Vec<u8>>) -> OpaqueGeneratedSessionKeys {
+            SessionKeys::generate(owner.as_slice(), seed).into()
         }
 
         fn decode_session_keys(

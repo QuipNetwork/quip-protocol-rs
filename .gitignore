@@ -22,3 +22,6 @@ Thumbs.db
 *.profdata
 /coverage/
 /grcov/
+
+# External repositories
+polkadot-sdk

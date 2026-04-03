@@ -67,6 +67,7 @@ pub fn new_partial(config: &Configuration) -> Result<Service, ServiceError> {
             config,
             telemetry.as_ref().map(|(_, telemetry)| telemetry.handle()),
             executor,
+            Default::default(),
         )?;
     let client = Arc::new(client);
 
@@ -207,6 +208,7 @@ pub fn new_full<
             warp_sync_config: Some(WarpSyncConfig::WithProvider(warp_sync)),
             block_relay: None,
             metrics,
+            spawn_essential_handle: task_manager.spawn_essential_handle(),
         })?;
 
     if config.offchain_worker.enabled {
