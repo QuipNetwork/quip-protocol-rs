@@ -7731,6 +7731,7 @@ dependencies = [
  "schnorrkel",
  "sha2 0.10.9",
  "sp-application-crypto",
+ "sp-consensus-babe",
  "sp-core",
  "subtle 2.6.1",
  "thiserror 1.0.69",

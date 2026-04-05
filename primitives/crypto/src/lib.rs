@@ -137,3 +137,43 @@ pub trait HybridSignatureScheme {
         expected_nonce: &[u8],
     ) -> bool;
 }
+
+/// Common interface for hybrid VRF constructions.
+///
+/// This trait is intentionally smaller than the eventual BABE crypto interface.
+/// It captures the minimum operations needed to build BABE-facing helpers and
+/// proof types around a concrete hybrid VRF implementation:
+/// - derive the consensus-facing hybrid VRF output from an input
+/// - produce a hybrid VRF proof
+/// - derive bytes from the hybrid output
+/// - verify a proof against a public key
+pub trait HybridVrf {
+    /// Public-key type used to verify VRF proofs.
+    type PublicKey;
+    /// VRF input type.
+    type VrfInput;
+    /// VRF signing data type.
+    type VrfSignData;
+    /// Consensus-facing VRF output type.
+    type VrfOutput;
+    /// VRF proof / signature type.
+    type VrfSignature;
+
+    /// Derives the consensus-facing hybrid VRF output for the given input.
+    fn vrf_output(&self, input: &Self::VrfInput) -> Self::VrfOutput;
+
+    /// Produces a hybrid VRF proof for the given sign data.
+    fn vrf_sign(&self, data: &Self::VrfSignData) -> Self::VrfSignature;
+
+    /// Expands the hybrid VRF output into `N` bytes for protocol use.
+    fn make_bytes<const N: usize>(&self, context: &[u8], input: &Self::VrfInput) -> [u8; N]
+    where
+        [u8; N]: Default;
+
+    /// Verifies a hybrid VRF proof.
+    fn vrf_verify(
+        public: &Self::PublicKey,
+        data: &Self::VrfSignData,
+        signature: &Self::VrfSignature,
+    ) -> bool;
+}

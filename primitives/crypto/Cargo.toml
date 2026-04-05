@@ -32,3 +32,4 @@ full_crypto = ["sp-core/full_crypto"]
 
 [dev-dependencies]
 sp-application-crypto = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2603", default-features = false, features = ["std"] }
+sp-consensus-babe = { workspace = true, default-features = false, features = ["std"] }

@@ -9,30 +9,51 @@
 //! - a `Pair` backed by the suite's 32-byte master seed
 //! - proof that `app_crypto!` can wrap the module
 //!
+//! Phase 2 adds:
+//! - BABE-oriented hybrid VRF input/output/proof types
+//! - `sp_core::crypto::VrfSecret` / `VrfPublic` implementations
+//! - BABE transcript helpers matching upstream slot/epoch/randomness layout
+//!
 //! Intentional omissions:
-//! - no keystore / `RuntimePublic` integration yet
-//! - no BABE-specific VRF types here yet
+//! - no keystore integration yet
+//! - no `app_crypto!` forwarding for hybrid VRF methods yet
 
 use alloc::vec::Vec;
+use core::fmt;
 
 use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
+use hkdf::Hkdf;
 use scale_info::TypeInfo;
+use sha2::{Digest, Sha256};
 use sp_core::crypto::{
     CryptoType, CryptoTypeId, Derive, DeriveError, DeriveJunction, PublicBytes, SecretStringError,
-    SignatureBytes,
+    SignatureBytes, VrfCrypto, VrfPublic, VrfSecret,
 };
 use sp_core::proof_of_possession::NonAggregatable;
+use sp_core::sr25519;
+use sp_core::Pair as _;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+use crate::fixed::FixedHybridEncoding;
+use crate::pq::mldsa44 as pq_mldsa44;
 use crate::seed::MASTER_SEED_LEN;
 use crate::suite::sr25519_mldsa44::{
     PublicKey as HybridPublicKey, SecretKey as HybridSecretKey, Signature as HybridSignature,
     Sr25519MlDsa44, HYBRID_PK_LEN, HYBRID_SIG_LEN,
 };
-use crate::HybridSignatureScheme;
+use crate::{HybridSignatureScheme, HybridVrf};
 
 /// Unique identifier for the H3 hybrid crypto scheme.
 pub const CRYPTO_ID: CryptoTypeId = CryptoTypeId(*b"h344");
+
+const HYBRID_VRF_LABEL: &[u8] = b"hybrid-vrf";
+/// Length in bytes of the consensus-facing hybrid VRF output.
+pub const VRF_OUTPUT_LENGTH: usize = 32;
+
+const SR25519_PUBLIC_KEY_LEN: usize = 32;
+const PQ_PUBLIC_KEY_LEN: usize = pq_mldsa44::PUBLIC_KEY_LEN;
+const PQ_SECRET_KEY_LEN: usize = pq_mldsa44::SECRET_KEY_LEN;
+const PQ_SIGNATURE_LEN: usize = pq_mldsa44::SIGNATURE_LEN;
 
 #[doc(hidden)]
 pub struct HybridPublicTag;
@@ -109,6 +130,39 @@ impl TryFrom<Public> for HybridPublicKey {
     }
 }
 
+impl Public {
+    fn split_components(&self) -> ([u8; SR25519_PUBLIC_KEY_LEN], [u8; PQ_PUBLIC_KEY_LEN]) {
+        let bytes = self.as_ref();
+
+        let mut classical = [0u8; SR25519_PUBLIC_KEY_LEN];
+        classical.copy_from_slice(&bytes[..SR25519_PUBLIC_KEY_LEN]);
+
+        let mut pq = [0u8; PQ_PUBLIC_KEY_LEN];
+        pq.copy_from_slice(&bytes[SR25519_PUBLIC_KEY_LEN..]);
+
+        (classical, pq)
+    }
+
+    /// Recomputes the hybrid output from a proof after verifying it.
+    pub fn vrf_output(&self, data: &VrfSignData, signature: &VrfSignature) -> Option<VrfOutput> {
+        self.vrf_verify(data, signature).then(|| signature.output())
+    }
+
+    /// Derives protocol bytes from a verified hybrid VRF proof.
+    pub fn make_bytes<const N: usize>(
+        &self,
+        context: &[u8],
+        data: &VrfSignData,
+        signature: &VrfSignature,
+    ) -> Option<[u8; N]>
+    where
+        [u8; N]: Default,
+    {
+        self.vrf_output(data, signature)
+            .map(|output| output.make_bytes(context))
+    }
+}
+
 /// Substrate-style encoded H3 signature.
 #[derive(Clone, Eq, PartialEq, Hash, Encode, Decode, DecodeWithMemTracking, TypeInfo)]
 pub struct Signature(InnerSignature);
@@ -175,6 +229,152 @@ impl TryFrom<Signature> for HybridSignature {
 /// non-aggregatable scheme.
 pub type ProofOfPossession = Signature;
 
+/// BABE-facing hybrid VRF input.
+///
+/// The underlying sr25519 transcript is paired with a canonical byte encoding
+/// of the logical input so the PQ binding can sign stable bytes rather than an
+/// opaque Merlin transcript object.
+#[derive(Clone)]
+pub struct VrfInput {
+    sr25519: sr25519::vrf::VrfInput,
+    binding_input: Vec<u8>,
+}
+
+impl VrfInput {
+    /// Builds a hybrid VRF input from an sr25519 transcript plus a canonical
+    /// byte encoding of the same logical input.
+    pub fn new(sr25519: sr25519::vrf::VrfInput, binding_input: Vec<u8>) -> Self {
+        Self {
+            sr25519,
+            binding_input,
+        }
+    }
+
+    /// Returns the canonical byte encoding used for PQ binding.
+    pub fn binding_input(&self) -> &[u8] {
+        &self.binding_input
+    }
+
+    /// Clones the underlying sr25519 transcript.
+    pub fn clone_sr25519(&self) -> sr25519::vrf::VrfInput {
+        self.sr25519.clone()
+    }
+}
+
+/// Hybrid VRF signing data.
+#[derive(Clone)]
+pub struct VrfSignData {
+    input: VrfInput,
+}
+
+impl From<VrfInput> for VrfSignData {
+    fn from(input: VrfInput) -> Self {
+        Self { input }
+    }
+}
+
+impl AsRef<VrfInput> for VrfSignData {
+    fn as_ref(&self) -> &VrfInput {
+        &self.input
+    }
+}
+
+impl VrfSignData {
+    /// Builds sign data from a hybrid VRF input.
+    pub fn new(input: VrfInput) -> Self {
+        input.into()
+    }
+
+    /// Returns the wrapped hybrid VRF input.
+    pub fn input(&self) -> &VrfInput {
+        &self.input
+    }
+
+    /// Clones the underlying sr25519 signing data.
+    pub fn clone_sr25519(&self) -> sr25519::vrf::VrfSignData {
+        self.input.sr25519.clone().into_sign_data()
+    }
+}
+
+/// Consensus-facing hybrid VRF output.
+///
+/// This is the 32-byte `hybrid_output = H(vrf_output || pq_sig)` value that
+/// BABE should eventually consume for leader election, `make_bytes`, and epoch
+/// randomness.
+#[derive(
+    Clone, Eq, PartialEq, Hash, Encode, Decode, DecodeWithMemTracking, MaxEncodedLen, TypeInfo,
+)]
+pub struct VrfOutput([u8; VRF_OUTPUT_LENGTH]);
+
+impl AsRef<[u8]> for VrfOutput {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for VrfOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("VrfOutput").field(&self.as_ref()).finish()
+    }
+}
+
+impl VrfOutput {
+    fn from_parts(
+        pre_output: &sr25519::vrf::VrfPreOutput,
+        pq_signature: &[u8; PQ_SIGNATURE_LEN],
+    ) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(pre_output.0.as_bytes());
+        hasher.update(pq_signature);
+
+        let digest = hasher.finalize();
+        let mut out = [0u8; VRF_OUTPUT_LENGTH];
+        out.copy_from_slice(&digest);
+        Self(out)
+    }
+
+    /// Expands the hybrid output into `N` bytes using HKDF-SHA256.
+    pub fn make_bytes<const N: usize>(&self, context: &[u8]) -> [u8; N]
+    where
+        [u8; N]: Default,
+    {
+        let hkdf = Hkdf::<Sha256>::from_prk(&self.0)
+            .expect("32-byte hybrid output is a valid HKDF pseudo-random key");
+        let mut out = [0u8; N];
+        hkdf.expand(context, &mut out)
+            .expect("HKDF output length is valid");
+        out
+    }
+}
+
+/// Hybrid H3 VRF proof.
+///
+/// This keeps the native sr25519 VRF proof material intact and adds the
+/// ML-DSA-44 binding signature over `H(\"hybrid-vrf\" || input || vrf_output)`.
+#[derive(Clone, Eq, PartialEq, Encode, Decode, MaxEncodedLen, TypeInfo)]
+pub struct VrfSignature {
+    /// Native sr25519 VRF proof material.
+    pub sr25519: sr25519::vrf::VrfSignature,
+    /// ML-DSA-44 binding signature over the canonical input/output hash.
+    pub pq_signature: [u8; PQ_SIGNATURE_LEN],
+}
+
+impl fmt::Debug for VrfSignature {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VrfSignature")
+            .field("sr25519", &self.sr25519)
+            .field("pq_signature", &self.pq_signature.as_slice())
+            .finish()
+    }
+}
+
+impl VrfSignature {
+    /// Returns the consensus-facing hybrid output bound to this proof.
+    pub fn output(&self) -> VrfOutput {
+        VrfOutput::from_parts(&self.sr25519.pre_output, &self.pq_signature)
+    }
+}
+
 /// Hybrid keypair backed by the 32-byte suite master seed.
 ///
 /// The pair stores only the master seed and a cached public key. The expanded
@@ -207,6 +407,44 @@ impl Pair {
         Sr25519MlDsa44::from_seed_slice(&self.seed)
             .expect("pair seed is validated on construction; qed")
             .0
+    }
+
+    fn sr25519_pair(secret: &HybridSecretKey) -> sr25519::Pair {
+        let (classical, _) = <Sr25519MlDsa44 as FixedHybridEncoding>::split_secret_key(secret);
+        sr25519::Pair::from_seed_slice(classical)
+            .expect("stored H3 secret key contains a valid sr25519 secret")
+    }
+
+    fn pq_secret_bytes(secret: &HybridSecretKey) -> &[u8; PQ_SECRET_KEY_LEN] {
+        let (_, pq) = <Sr25519MlDsa44 as FixedHybridEncoding>::split_secret_key(secret);
+        pq.try_into()
+            .expect("stored H3 secret key contains a fixed-size ML-DSA secret")
+    }
+
+    fn pq_binding_signature(
+        input: &VrfInput,
+        pre_output: &sr25519::vrf::VrfPreOutput,
+        pq_secret: &[u8; PQ_SECRET_KEY_LEN],
+    ) -> [u8; PQ_SIGNATURE_LEN] {
+        let message = binding_message(input, pre_output);
+        pq_mldsa44::sign_deterministic(pq_secret, &message)
+    }
+
+    /// Computes the consensus-facing hybrid VRF output for a BABE input.
+    pub fn vrf_output(&self, input: &VrfInput) -> VrfOutput {
+        let secret = self.expanded_secret();
+        let pq_secret = Self::pq_secret_bytes(&secret);
+        let sr25519_pre_output = Self::sr25519_pair(&secret).vrf_pre_output(&input.clone_sr25519());
+        let pq_signature = Self::pq_binding_signature(input, &sr25519_pre_output, pq_secret);
+        VrfOutput::from_parts(&sr25519_pre_output, &pq_signature)
+    }
+
+    /// Expands the hybrid VRF output into protocol bytes.
+    pub fn make_bytes<const N: usize>(&self, context: &[u8], input: &VrfInput) -> [u8; N]
+    where
+        [u8; N]: Default,
+    {
+        self.vrf_output(input).make_bytes(context)
     }
 }
 
@@ -264,12 +502,148 @@ impl sp_core::crypto::Pair for Pair {
     }
 }
 
+impl VrfCrypto for Pair {
+    type VrfInput = VrfInput;
+    type VrfPreOutput = VrfOutput;
+    type VrfSignData = VrfSignData;
+    type VrfSignature = VrfSignature;
+}
+
+impl VrfSecret for Pair {
+    fn vrf_pre_output(&self, data: &Self::VrfInput) -> Self::VrfPreOutput {
+        self.vrf_output(data)
+    }
+
+    fn vrf_sign(&self, data: &Self::VrfSignData) -> Self::VrfSignature {
+        let secret = self.expanded_secret();
+        let pq_secret = Self::pq_secret_bytes(&secret);
+        let sr25519 = Self::sr25519_pair(&secret).vrf_sign(&data.clone_sr25519());
+        let pq_signature = Self::pq_binding_signature(data.input(), &sr25519.pre_output, pq_secret);
+
+        VrfSignature {
+            sr25519,
+            pq_signature,
+        }
+    }
+}
+
+impl VrfCrypto for Public {
+    type VrfInput = VrfInput;
+    type VrfPreOutput = VrfOutput;
+    type VrfSignData = VrfSignData;
+    type VrfSignature = VrfSignature;
+}
+
+impl VrfPublic for Public {
+    fn vrf_verify(&self, data: &Self::VrfSignData, signature: &Self::VrfSignature) -> bool {
+        let (classical, pq) = self.split_components();
+        let classical = sr25519::Public::from_raw(classical);
+
+        if !classical.vrf_verify(&data.clone_sr25519(), &signature.sr25519) {
+            return false;
+        }
+
+        let message = binding_message(data.input(), &signature.sr25519.pre_output);
+        pq_mldsa44::verify(&pq, &message, &signature.pq_signature)
+    }
+}
+
+impl HybridVrf for Pair {
+    type PublicKey = Public;
+    type VrfInput = VrfInput;
+    type VrfSignData = VrfSignData;
+    type VrfOutput = VrfOutput;
+    type VrfSignature = VrfSignature;
+
+    fn vrf_output(&self, input: &Self::VrfInput) -> Self::VrfOutput {
+        self.vrf_output(input)
+    }
+
+    fn vrf_sign(&self, data: &Self::VrfSignData) -> Self::VrfSignature {
+        <Self as VrfSecret>::vrf_sign(self, data)
+    }
+
+    fn make_bytes<const N: usize>(&self, context: &[u8], input: &Self::VrfInput) -> [u8; N]
+    where
+        [u8; N]: Default,
+    {
+        self.make_bytes(context, input)
+    }
+
+    fn vrf_verify(
+        public: &Self::PublicKey,
+        data: &Self::VrfSignData,
+        signature: &Self::VrfSignature,
+    ) -> bool {
+        public.vrf_verify(data, signature)
+    }
+}
+
+/// BABE-facing transcript helpers for the hybrid H3 wrapper.
+pub mod babe {
+    use super::{VrfInput, VrfSignData};
+    use alloc::vec::Vec;
+
+    /// VRF context used for BABE per-slot randomness generation.
+    pub const RANDOMNESS_VRF_CONTEXT: &[u8] = b"BabeVRFInOutContext";
+    /// Length in bytes of BABE randomness.
+    pub const RANDOMNESS_LENGTH: usize = 32;
+    /// BABE randomness type.
+    pub type Randomness = [u8; RANDOMNESS_LENGTH];
+
+    const BABE_ENGINE_ID: &[u8] = b"BABE";
+
+    /// Builds the BABE transcript plus canonical binding bytes from the
+    /// upstream `(randomness, slot, epoch)` tuple.
+    pub fn make_vrf_transcript(randomness: &Randomness, slot: u64, epoch: u64) -> VrfInput {
+        let slot_bytes = slot.to_le_bytes();
+        let epoch_bytes = epoch.to_le_bytes();
+
+        let transcript = sp_core::sr25519::vrf::VrfInput::new(
+            BABE_ENGINE_ID,
+            &[
+                (b"slot number", &slot_bytes),
+                (b"current epoch", &epoch_bytes),
+                (b"chain randomness", randomness),
+            ],
+        );
+
+        let mut binding_input = Vec::with_capacity(4 + 8 + 8 + RANDOMNESS_LENGTH);
+        binding_input.extend_from_slice(BABE_ENGINE_ID);
+        binding_input.extend_from_slice(&slot_bytes);
+        binding_input.extend_from_slice(&epoch_bytes);
+        binding_input.extend_from_slice(randomness);
+
+        VrfInput::new(transcript, binding_input)
+    }
+
+    /// Builds hybrid VRF signing data matching BABE's slot/epoch/randomness
+    /// transcript shape.
+    pub fn make_vrf_sign_data(randomness: &Randomness, slot: u64, epoch: u64) -> VrfSignData {
+        make_vrf_transcript(randomness, slot, epoch).into()
+    }
+}
+
+fn binding_message(
+    input: &VrfInput,
+    pre_output: &sr25519::vrf::VrfPreOutput,
+) -> [u8; VRF_OUTPUT_LENGTH] {
+    let mut hasher = Sha256::new();
+    hasher.update(HYBRID_VRF_LABEL);
+    hasher.update(input.binding_input());
+    hasher.update(pre_output.0.as_bytes());
+
+    let digest = hasher.finalize();
+    let mut out = [0u8; VRF_OUTPUT_LENGTH];
+    out.copy_from_slice(&digest);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::suite::sr25519_mldsa44::Sr25519MlDsa44;
-
-    use sp_core::crypto::Pair as _;
+    use sp_core::crypto::{VrfPublic, VrfSecret};
 
     mod app {
         use crate::substrate::sr25519_mldsa44 as hybrid;
@@ -320,5 +694,80 @@ mod tests {
         let pair_again = Pair::from_string("//Alice", None).unwrap();
 
         assert_eq!(pair.public().as_ref(), pair_again.public().as_ref());
+    }
+
+    #[test]
+    fn hybrid_vrf_roundtrip_works() {
+        let seed = [13u8; MASTER_SEED_LEN];
+        let pair = Pair::from_seed(&seed);
+        let public = pair.public();
+        let randomness = [5u8; babe::RANDOMNESS_LENGTH];
+        let sign_data = babe::make_vrf_sign_data(&randomness, 7, 11);
+
+        let signature = VrfSecret::vrf_sign(&pair, &sign_data);
+
+        assert!(VrfPublic::vrf_verify(&public, &sign_data, &signature));
+        assert_eq!(
+            pair.make_bytes::<32>(babe::RANDOMNESS_VRF_CONTEXT, sign_data.input()),
+            public
+                .make_bytes::<32>(babe::RANDOMNESS_VRF_CONTEXT, &sign_data, &signature)
+                .unwrap(),
+        );
+    }
+
+    #[test]
+    fn hybrid_vrf_rejects_tampered_pq_binding() {
+        let seed = [17u8; MASTER_SEED_LEN];
+        let pair = Pair::from_seed(&seed);
+        let public = pair.public();
+        let randomness = [9u8; babe::RANDOMNESS_LENGTH];
+        let sign_data = babe::make_vrf_sign_data(&randomness, 3, 19);
+        let mut signature = VrfSecret::vrf_sign(&pair, &sign_data);
+
+        signature.pq_signature[0] ^= 0x01;
+
+        assert!(!VrfPublic::vrf_verify(&public, &sign_data, &signature));
+        assert!(public
+            .make_bytes::<32>(babe::RANDOMNESS_VRF_CONTEXT, &sign_data, &signature)
+            .is_none());
+    }
+
+    #[test]
+    fn hybrid_vrf_output_matches_signed_proof_output() {
+        let seed = [19u8; MASTER_SEED_LEN];
+        let pair = Pair::from_seed(&seed);
+        let randomness = [3u8; babe::RANDOMNESS_LENGTH];
+        let input = babe::make_vrf_transcript(&randomness, 21, 2);
+        let sign_data = VrfSignData::new(input.clone());
+
+        let output = pair.vrf_output(&input);
+        let signature = VrfSecret::vrf_sign(&pair, &sign_data);
+
+        assert_eq!(output.as_ref(), signature.output().as_ref());
+    }
+
+    #[test]
+    fn babe_transcript_helper_matches_upstream_sr25519_shape() {
+        let seed = [23u8; MASTER_SEED_LEN];
+        let pair = sr25519::Pair::from_seed(&seed);
+        let randomness = [7u8; babe::RANDOMNESS_LENGTH];
+        let slot = 42u64;
+        let epoch = 6u64;
+
+        let upstream = sp_consensus_babe::make_vrf_sign_data(
+            &randomness,
+            sp_consensus_babe::Slot::from(slot),
+            epoch,
+        );
+        let hybrid = babe::make_vrf_sign_data(&randomness, slot, epoch);
+
+        let upstream_signature = pair.vrf_sign(&upstream);
+        let hybrid_signature = pair.vrf_sign(&hybrid.clone_sr25519());
+
+        assert_eq!(upstream_signature.pre_output, hybrid_signature.pre_output);
+        assert!(pair.public().vrf_verify(&upstream, &upstream_signature));
+        assert!(pair
+            .public()
+            .vrf_verify(&hybrid.clone_sr25519(), &hybrid_signature));
     }
 }
