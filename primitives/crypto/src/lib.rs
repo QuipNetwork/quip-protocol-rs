@@ -28,7 +28,6 @@ mod error;
 mod fixed;
 mod pq;
 mod seed;
-#[cfg(feature = "std")]
 pub mod substrate;
 pub mod suite;
 

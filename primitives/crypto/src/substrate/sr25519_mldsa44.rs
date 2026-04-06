@@ -27,21 +27,29 @@ use scale_info::TypeInfo;
 use sha2::{Digest, Sha256};
 use sp_core::crypto::{
     CryptoType, CryptoTypeId, Derive, DeriveError, DeriveJunction, PublicBytes, SecretStringError,
-    SignatureBytes, VrfCrypto, VrfPublic, VrfSecret,
+    SignatureBytes, VrfCrypto, VrfPublic,
 };
+#[cfg(any(feature = "std", feature = "full_crypto"))]
+use sp_core::crypto::VrfSecret;
 use sp_core::proof_of_possession::NonAggregatable;
 use sp_core::sr25519;
+#[cfg(any(feature = "std", feature = "full_crypto"))]
 use sp_core::Pair as _;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+#[cfg(any(feature = "std", feature = "full_crypto"))]
 use crate::fixed::FixedHybridEncoding;
 use crate::pq::mldsa44 as pq_mldsa44;
 use crate::seed::MASTER_SEED_LEN;
 use crate::suite::sr25519_mldsa44::{
-    PublicKey as HybridPublicKey, SecretKey as HybridSecretKey, Signature as HybridSignature,
-    Sr25519MlDsa44, HYBRID_PK_LEN, HYBRID_SIG_LEN,
+    PublicKey as HybridPublicKey, Signature as HybridSignature, Sr25519MlDsa44, HYBRID_PK_LEN,
+    HYBRID_SIG_LEN,
 };
-use crate::{HybridSignatureScheme, HybridVrf};
+#[cfg(any(feature = "std", feature = "full_crypto"))]
+use crate::suite::sr25519_mldsa44::SecretKey as HybridSecretKey;
+use crate::HybridSignatureScheme;
+#[cfg(any(feature = "std", feature = "full_crypto"))]
+use crate::HybridVrf;
 
 /// Unique identifier for the H3 hybrid crypto scheme.
 pub const CRYPTO_ID: CryptoTypeId = CryptoTypeId(*b"h344");
@@ -52,6 +60,7 @@ pub const VRF_OUTPUT_LENGTH: usize = 32;
 
 const SR25519_PUBLIC_KEY_LEN: usize = 32;
 const PQ_PUBLIC_KEY_LEN: usize = pq_mldsa44::PUBLIC_KEY_LEN;
+#[cfg(any(feature = "std", feature = "full_crypto"))]
 const PQ_SECRET_KEY_LEN: usize = pq_mldsa44::SECRET_KEY_LEN;
 const PQ_SIGNATURE_LEN: usize = pq_mldsa44::SIGNATURE_LEN;
 
@@ -403,24 +412,28 @@ impl Pair {
         })
     }
 
+    #[cfg(any(feature = "std", feature = "full_crypto"))]
     fn expanded_secret(&self) -> HybridSecretKey {
         Sr25519MlDsa44::from_seed_slice(&self.seed)
             .expect("pair seed is validated on construction; qed")
             .0
     }
 
+    #[cfg(any(feature = "std", feature = "full_crypto"))]
     fn sr25519_pair(secret: &HybridSecretKey) -> sr25519::Pair {
         let (classical, _) = <Sr25519MlDsa44 as FixedHybridEncoding>::split_secret_key(secret);
         sr25519::Pair::from_seed_slice(classical)
             .expect("stored H3 secret key contains a valid sr25519 secret")
     }
 
+    #[cfg(any(feature = "std", feature = "full_crypto"))]
     fn pq_secret_bytes(secret: &HybridSecretKey) -> &[u8; PQ_SECRET_KEY_LEN] {
         let (_, pq) = <Sr25519MlDsa44 as FixedHybridEncoding>::split_secret_key(secret);
         pq.try_into()
             .expect("stored H3 secret key contains a fixed-size ML-DSA secret")
     }
 
+    #[cfg(any(feature = "std", feature = "full_crypto"))]
     fn pq_binding_signature(
         input: &VrfInput,
         pre_output: &sr25519::vrf::VrfPreOutput,
@@ -431,6 +444,7 @@ impl Pair {
     }
 
     /// Computes the consensus-facing hybrid VRF output for a BABE input.
+    #[cfg(any(feature = "std", feature = "full_crypto"))]
     pub fn vrf_output(&self, input: &VrfInput) -> VrfOutput {
         let secret = self.expanded_secret();
         let pq_secret = Self::pq_secret_bytes(&secret);
@@ -440,6 +454,7 @@ impl Pair {
     }
 
     /// Expands the hybrid VRF output into protocol bytes.
+    #[cfg(any(feature = "std", feature = "full_crypto"))]
     pub fn make_bytes<const N: usize>(&self, context: &[u8], input: &VrfInput) -> [u8; N]
     where
         [u8; N]: Default,
@@ -477,6 +492,7 @@ impl sp_core::crypto::Pair for Pair {
         Self::from_master_seed(owned_seed)
     }
 
+    #[cfg(any(feature = "std", feature = "full_crypto"))]
     fn sign(&self, message: &[u8]) -> Self::Signature {
         let secret = self.expanded_secret();
         Sr25519MlDsa44::sign_deterministic(&secret, message, b"", b"").into()
@@ -509,6 +525,7 @@ impl VrfCrypto for Pair {
     type VrfSignature = VrfSignature;
 }
 
+#[cfg(any(feature = "std", feature = "full_crypto"))]
 impl VrfSecret for Pair {
     fn vrf_pre_output(&self, data: &Self::VrfInput) -> Self::VrfPreOutput {
         self.vrf_output(data)
@@ -548,6 +565,7 @@ impl VrfPublic for Public {
     }
 }
 
+#[cfg(any(feature = "std", feature = "full_crypto"))]
 impl HybridVrf for Pair {
     type PublicKey = Public;
     type VrfInput = VrfInput;
