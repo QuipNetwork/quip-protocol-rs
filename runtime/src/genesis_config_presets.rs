@@ -20,11 +20,20 @@ use crate::{
 };
 use alloc::{vec, vec::Vec};
 use frame_support::build_struct_json_patch;
+use quip_crypto_primitives::substrate::sr25519_mldsa44::Pair as HybridBabePair;
 use serde_json::Value;
 use sp_consensus_babe::AuthorityId as BabeId;
 use sp_consensus_grandpa::AuthorityId as GrandpaId;
 use sp_genesis_builder::{self, PresetId};
 use sp_keyring::Sr25519Keyring;
+use sp_core::Pair as _;
+
+fn babe_authority_from_seed(seed: &str) -> BabeId {
+    HybridBabePair::from_string(seed, None)
+        .expect("well-known dev seeds are valid for hybrid BABE authorities")
+        .public()
+        .into()
+}
 
 // Returns the genesis config presets populated with given parameters.
 fn testnet_genesis(
@@ -62,7 +71,7 @@ fn testnet_genesis(
 pub fn development_config_genesis() -> Value {
     testnet_genesis(
         vec![(
-            sp_keyring::Sr25519Keyring::Alice.public().into(),
+            babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Alice.to_seed()),
             sp_keyring::Ed25519Keyring::Alice.public().into(),
         )],
         vec![
@@ -80,11 +89,11 @@ pub fn local_config_genesis() -> Value {
     testnet_genesis(
         vec![
             (
-                sp_keyring::Sr25519Keyring::Alice.public().into(),
+                babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Alice.to_seed()),
                 sp_keyring::Ed25519Keyring::Alice.public().into(),
             ),
             (
-                sp_keyring::Sr25519Keyring::Bob.public().into(),
+                babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Bob.to_seed()),
                 sp_keyring::Ed25519Keyring::Bob.public().into(),
             ),
         ],

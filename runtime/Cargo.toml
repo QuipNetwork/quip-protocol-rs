@@ -33,6 +33,7 @@ pallet-template.workspace = true
 pallet-timestamp.workspace = true
 pallet-transaction-payment.workspace = true
 pallet-transaction-payment-rpc-runtime-api.workspace = true
+quip-crypto-primitives = { path = "../primitives/crypto", default-features = false }
 scale-info = { features = ["derive", "serde"], workspace = true }
 serde_json = { workspace = true, default-features = false, features = [
   "alloc",
@@ -75,6 +76,7 @@ std = [
   "pallet-timestamp/std",
   "pallet-transaction-payment-rpc-runtime-api/std",
   "pallet-transaction-payment/std",
+  "quip-crypto-primitives/std",
   "scale-info/std",
   "serde_json/std",
   "sp-api/std",

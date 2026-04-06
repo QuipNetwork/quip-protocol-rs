@@ -27,8 +27,8 @@ use scale_info::TypeInfo;
 use sha2::{Digest, Sha256};
 use sp_application_crypto::RuntimePublic;
 use sp_core::crypto::{
-    CryptoType, CryptoTypeId, Derive, DeriveError, DeriveJunction, PublicBytes, SecretStringError,
-    SignatureBytes, VrfCrypto, VrfPublic,
+    ByteArray, CryptoType, CryptoTypeId, Derive, DeriveError, DeriveJunction, PublicBytes,
+    SecretStringError, SignatureBytes, VrfCrypto, VrfPublic,
 };
 #[cfg(any(feature = "std", feature = "full_crypto"))]
 use sp_core::crypto::VrfSecret;
@@ -177,23 +177,29 @@ impl RuntimePublic for Public {
     type Signature = Signature;
     type ProofOfPossession = ProofOfPossession;
 
-    fn all(_key_type: sp_application_crypto::KeyTypeId) -> alloc::vec::Vec<Self> {
-        alloc::vec::Vec::new()
+    fn all(key_type: sp_application_crypto::KeyTypeId) -> alloc::vec::Vec<Self> {
+        sp_io::crypto::crypto_public_keys(key_type, CRYPTO_ID.0)
+            .into_iter()
+            .filter_map(|public| Self::from_slice(&public).ok())
+            .collect()
     }
 
     fn generate_pair(
-        _key_type: sp_application_crypto::KeyTypeId,
-        _seed: Option<alloc::vec::Vec<u8>>,
+        key_type: sp_application_crypto::KeyTypeId,
+        seed: Option<alloc::vec::Vec<u8>>,
     ) -> Self {
-        panic!("hybrid runtime key generation is not implemented yet; requires custom host functions")
+        let public = sp_io::crypto::crypto_generate(key_type, CRYPTO_ID.0, seed);
+        Self::from_slice(&public)
+            .expect("crypto host returned a valid hybrid H3 public key")
     }
 
     fn sign<M: AsRef<[u8]>>(
         &self,
-        _key_type: sp_application_crypto::KeyTypeId,
-        _msg: &M,
+        key_type: sp_application_crypto::KeyTypeId,
+        msg: &M,
     ) -> Option<Self::Signature> {
-        None
+        sp_io::crypto::crypto_sign_with(key_type, CRYPTO_ID.0, self.as_ref(), msg.as_ref())
+            .and_then(|signature| Signature::from_slice(&signature).ok())
     }
 
     fn verify<M: AsRef<[u8]>>(&self, msg: &M, signature: &Self::Signature) -> bool {
@@ -202,10 +208,17 @@ impl RuntimePublic for Public {
 
     fn generate_proof_of_possession(
         &mut self,
-        _key_type: sp_application_crypto::KeyTypeId,
-        _owner: &[u8],
+        key_type: sp_application_crypto::KeyTypeId,
+        owner: &[u8],
     ) -> Option<Self::ProofOfPossession> {
-        None
+        let proof_of_possession_statement = Pair::proof_of_possession_statement(owner);
+        sp_io::crypto::crypto_sign_with(
+            key_type,
+            CRYPTO_ID.0,
+            self.as_ref(),
+            &proof_of_possession_statement,
+        )
+        .and_then(|signature| Signature::from_slice(&signature).ok())
     }
 
     fn verify_proof_of_possession(&self, owner: &[u8], pop: &Self::ProofOfPossession) -> bool {
@@ -426,6 +439,19 @@ impl VrfSignature {
     /// Returns the consensus-facing hybrid output bound to this proof.
     pub fn output(&self) -> VrfOutput {
         VrfOutput::from_parts(&self.sr25519.pre_output, &self.pq_signature)
+    }
+
+    /// Builds a hybrid VRF proof from an sr25519 proof with an all-zero PQ
+    /// binding.
+    ///
+    /// This exists only for legacy test/support code that fabricates BABE VRF
+    /// signatures without a real PQ signer. Production paths should create
+    /// proofs via [`VrfSecret::vrf_sign`] on the hybrid pair instead.
+    pub fn from_sr25519_with_zero_pq(sr25519: sr25519::vrf::VrfSignature) -> Self {
+        Self {
+            sr25519,
+            pq_signature: [0u8; PQ_SIGNATURE_LEN],
+        }
     }
 }
 
@@ -685,6 +711,18 @@ pub mod babe {
     pub fn make_vrf_sign_data(randomness: &Randomness, slot: u64, epoch: u64) -> VrfSignData {
         make_vrf_transcript(randomness, slot, epoch).into()
     }
+
+    /// Builds the upstream sr25519 BABE signing data corresponding to the same
+    /// logical `(randomness, slot, epoch)` input.
+    pub fn make_sr25519_vrf_sign_data(
+        randomness: &Randomness,
+        slot: u64,
+        epoch: u64,
+    ) -> sp_core::sr25519::vrf::VrfSignData {
+        make_vrf_transcript(randomness, slot, epoch)
+            .clone_sr25519()
+            .into_sign_data()
+    }
 }
 
 fn binding_message(
@@ -817,11 +855,7 @@ mod tests {
         let slot = 42u64;
         let epoch = 6u64;
 
-        let upstream = sp_consensus_babe::make_vrf_sign_data(
-            &randomness,
-            sp_consensus_babe::Slot::from(slot),
-            epoch,
-        );
+        let upstream = babe::make_sr25519_vrf_sign_data(&randomness, slot, epoch);
         let hybrid = babe::make_vrf_sign_data(&randomness, slot, epoch);
 
         let upstream_signature = pair.vrf_sign(&upstream);
