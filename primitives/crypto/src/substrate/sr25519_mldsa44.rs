@@ -25,6 +25,7 @@ use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use hkdf::Hkdf;
 use scale_info::TypeInfo;
 use sha2::{Digest, Sha256};
+use sp_application_crypto::RuntimePublic;
 use sp_core::crypto::{
     CryptoType, CryptoTypeId, Derive, DeriveError, DeriveJunction, PublicBytes, SecretStringError,
     SignatureBytes, VrfCrypto, VrfPublic,
@@ -33,8 +34,8 @@ use sp_core::crypto::{
 use sp_core::crypto::VrfSecret;
 use sp_core::proof_of_possession::NonAggregatable;
 use sp_core::sr25519;
-#[cfg(any(feature = "std", feature = "full_crypto"))]
 use sp_core::Pair as _;
+use sp_core::proof_of_possession::ProofOfPossessionVerifier;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[cfg(any(feature = "std", feature = "full_crypto"))]
@@ -169,6 +170,50 @@ impl Public {
     {
         self.vrf_output(data, signature)
             .map(|output| output.make_bytes(context))
+    }
+}
+
+impl RuntimePublic for Public {
+    type Signature = Signature;
+    type ProofOfPossession = ProofOfPossession;
+
+    fn all(_key_type: sp_application_crypto::KeyTypeId) -> alloc::vec::Vec<Self> {
+        alloc::vec::Vec::new()
+    }
+
+    fn generate_pair(
+        _key_type: sp_application_crypto::KeyTypeId,
+        _seed: Option<alloc::vec::Vec<u8>>,
+    ) -> Self {
+        panic!("hybrid runtime key generation is not implemented yet; requires custom host functions")
+    }
+
+    fn sign<M: AsRef<[u8]>>(
+        &self,
+        _key_type: sp_application_crypto::KeyTypeId,
+        _msg: &M,
+    ) -> Option<Self::Signature> {
+        None
+    }
+
+    fn verify<M: AsRef<[u8]>>(&self, msg: &M, signature: &Self::Signature) -> bool {
+        Pair::verify(signature, msg, self)
+    }
+
+    fn generate_proof_of_possession(
+        &mut self,
+        _key_type: sp_application_crypto::KeyTypeId,
+        _owner: &[u8],
+    ) -> Option<Self::ProofOfPossession> {
+        None
+    }
+
+    fn verify_proof_of_possession(&self, owner: &[u8], pop: &Self::ProofOfPossession) -> bool {
+        Pair::verify_proof_of_possession(owner, pop, self)
+    }
+
+    fn to_raw_vec(&self) -> alloc::vec::Vec<u8> {
+        sp_core::crypto::ByteArray::to_raw_vec(self)
     }
 }
 
