@@ -11,23 +11,36 @@ publish = false
 workspace = true
 
 [dependencies]
-codec = { workspace = true }
-scale-info = { workspace = true }
-sp-core = { workspace = true }
-schnorrkel = { workspace = true }
+codec = { workspace = true, default-features = false }
+scale-info = { workspace = true, default-features = false }
+sp-core = { workspace = true, default-features = false }
+schnorrkel = { workspace = true, default-features = false }
 ed25519-zebra = { version = "4", default-features = false }
-fips204 = "0.4"
-blake2 = "0.10"
-hkdf = "0.12"
-sha2 = "0.10" # can't be bumped to 0.11 as it breaks other dependencies.
-subtle = "2.6"
-zeroize = { version = "1", features = ["derive"] }
-rand_core = "0.6" # can't be bumped due to schnorrkel and fips204 depending on this api version.
+fips204 = { version = "0.4", default-features = false, features = ["ml-dsa-44"]}
+blake2 = { version = "0.10", default-features = false }
+hkdf = { version = "0.12", default-features = false }
+sha2 = { version = "0.10", default-features = false } # can't be bumped to 0.11 as it breaks other dependencies.
+subtle = { version = "2.6", default-features = false }
+zeroize = { version = "1", default-features = false, features = ["derive"] }
+rand_core = { version = "0.6", default-features = false  } # can't be bumped due to schnorrkel and fips204 depending on this api version.
 thiserror = { version = "1", optional = true }
 
 [features]
 default = ["std"]
-std = ["sp-core/std", "sp-core/full_crypto", "dep:thiserror"]
+std = [
+    "codec/std",
+    "scale-info/std",
+    "sp-core/std",
+    "sp-core/full_crypto",
+    "dep:thiserror",
+    "rand_core/std",
+    "subtle/std",
+    "blake2/std",
+    "hkdf/std",
+    "sha2/std",
+    "zeroize/std",
+    "fips204/default"
+]
 full_crypto = ["sp-core/full_crypto"]
 
 [dev-dependencies]
