@@ -35,7 +35,7 @@ impl frame_system::Config for Test {
 }
 
 parameter_types! {
-    pub const MaxProgramSize: u32 = 4096;
+    pub const MaxProgramSize: u32 = 65_536;
     pub const MaxCallDataLen: u32 = 32;
     pub const MaxOutputSlots: u32 = 32;
     pub const MaxStepLimit: u64 = 100_000;

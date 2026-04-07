@@ -11,6 +11,7 @@ resolver = "2"
 
 [workspace.dependencies]
 quip-protocol-runtime = { path = "./runtime", default-features = false }
+solochain-template-runtime = { path = "./runtime", default-features = false, package = "quip-protocol-runtime" }
 pallet-template = { path = "./pallets/template", default-features = false }
 pallet-xqvm = { path = "./pallets/xqvm", default-features = false }
 clap = { version = "4.5.13" }
