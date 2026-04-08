@@ -14,7 +14,7 @@ workspace = true
 codec = { workspace = true, default-features = false }
 scale-info = { workspace = true, default-features = false }
 sp-core = { workspace = true, default-features = false }
-sp-application-crypto = { path = "/Users/romanuseinov/projects/quip/polkadot-sdk/substrate/primitives/application-crypto", default-features = false }
+sp-application-crypto = { workspace = true, default-features = false }
 sp-io = { workspace = true, default-features = false }
 schnorrkel = { workspace = true, default-features = false }
 ed25519-zebra = { version = "4", default-features = false }
