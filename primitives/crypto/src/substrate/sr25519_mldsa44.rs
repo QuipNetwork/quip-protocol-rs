@@ -1,22 +1,13 @@
 //! Substrate-facing wrapper for the H3 `sr25519 + ML-DSA-44` suite.
 //!
-//! This module exposes `sp_core`-style `Public`, `Signature`, and `Pair`
-//! types so the H3 suite can later be wrapped with
-//! `sp_application_crypto::app_crypto!`.
+//! This module is intentionally split in two layers:
+//! - a shared Substrate/app-crypto signature wrapper core in
+//!   [`crate::substrate::signature`]
+//! - H3-specific VRF and BABE helpers defined here
 //!
-//! Scope of this first phase:
-//! - stable Substrate-compatible public key and signature types
-//! - a `Pair` backed by the suite's 32-byte master seed
-//! - proof that `app_crypto!` can wrap the module
-//!
-//! Phase 2 adds:
-//! - BABE-oriented hybrid VRF input/output/proof types
-//! - `sp_core::crypto::VrfSecret` / `VrfPublic` implementations
-//! - BABE transcript helpers matching upstream slot/epoch/randomness layout
-//!
-//! Intentional omissions:
-//! - no keystore integration yet
-//! - no `app_crypto!` forwarding for hybrid VRF methods yet
+//! The shared core is reusable by non-VRF suites such as the planned H1
+//! `ed25519 + ML-DSA-44` GRANDPA wrapper. This file keeps only the logic that
+//! is specific to H3's hybrid VRF construction.
 
 use alloc::vec::Vec;
 use core::fmt;
@@ -25,30 +16,23 @@ use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use hkdf::Hkdf;
 use scale_info::TypeInfo;
 use sha2::{Digest, Sha256};
-use sp_application_crypto::RuntimePublic;
-use sp_core::crypto::{
-    ByteArray, CryptoType, CryptoTypeId, Derive, DeriveError, DeriveJunction, PublicBytes,
-    SecretStringError, SignatureBytes, VrfCrypto, VrfPublic,
-};
 #[cfg(any(feature = "std", feature = "full_crypto"))]
 use sp_core::crypto::VrfSecret;
-use sp_core::proof_of_possession::NonAggregatable;
+use sp_core::crypto::{CryptoTypeId, DeriveError, DeriveJunction, VrfCrypto, VrfPublic};
 use sp_core::sr25519;
 use sp_core::Pair as _;
-use sp_core::proof_of_possession::ProofOfPossessionVerifier;
-use zeroize::{Zeroize, ZeroizeOnDrop};
 
 #[cfg(any(feature = "std", feature = "full_crypto"))]
 use crate::fixed::FixedHybridEncoding;
 use crate::pq::mldsa44 as pq_mldsa44;
 use crate::seed::MASTER_SEED_LEN;
-use crate::suite::sr25519_mldsa44::{
-    PublicKey as HybridPublicKey, Signature as HybridSignature, Sr25519MlDsa44, HYBRID_PK_LEN,
-    HYBRID_SIG_LEN,
+use crate::substrate::signature::{
+    Pair as SignaturePair, Public as SignaturePublic, Signature as SignatureWrapper,
+    SubstrateSignatureScheme,
 };
 #[cfg(any(feature = "std", feature = "full_crypto"))]
 use crate::suite::sr25519_mldsa44::SecretKey as HybridSecretKey;
-use crate::HybridSignatureScheme;
+use crate::suite::sr25519_mldsa44::{Sr25519MlDsa44, HYBRID_PK_LEN, HYBRID_SIG_LEN};
 #[cfg(any(feature = "std", feature = "full_crypto"))]
 use crate::HybridVrf;
 
@@ -65,236 +49,63 @@ const PQ_PUBLIC_KEY_LEN: usize = pq_mldsa44::PUBLIC_KEY_LEN;
 const PQ_SECRET_KEY_LEN: usize = pq_mldsa44::SECRET_KEY_LEN;
 const PQ_SIGNATURE_LEN: usize = pq_mldsa44::SIGNATURE_LEN;
 
+/// Shared Substrate-signature wrapper marker for H3.
 #[doc(hidden)]
-pub struct HybridPublicTag;
-#[doc(hidden)]
-pub struct HybridSignatureTag;
+pub struct SubstrateH3;
 
-type InnerPublic = PublicBytes<HYBRID_PK_LEN, HybridPublicTag>;
-type InnerSignature = SignatureBytes<HYBRID_SIG_LEN, HybridSignatureTag>;
+impl SubstrateSignatureScheme for SubstrateH3 {
+    type Suite = Sr25519MlDsa44;
+    const CRYPTO_ID: CryptoTypeId = CRYPTO_ID;
+
+    fn derive_seed<Iter: Iterator<Item = DeriveJunction>>(
+        seed: [u8; MASTER_SEED_LEN],
+        path: Iter,
+    ) -> Result<[u8; MASTER_SEED_LEN], DeriveError> {
+        let sr25519_pair = sr25519::Pair::from_seed(&seed);
+        let (_derived_pair, derived_seed) = sr25519_pair.derive(path, Some(seed))?;
+        derived_seed.ok_or(DeriveError::SoftKeyInPath)
+    }
+}
 
 /// Substrate-style encoded H3 public key.
-#[derive(
-    Clone,
-    Eq,
-    PartialEq,
-    Ord,
-    PartialOrd,
-    Hash,
-    Encode,
-    Decode,
-    DecodeWithMemTracking,
-    MaxEncodedLen,
-    TypeInfo,
-)]
-pub struct Public(InnerPublic);
-
-impl CryptoType for Public {
-    type Pair = Pair;
-}
-
-impl AsRef<[u8]> for Public {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
-impl AsMut<[u8]> for Public {
-    fn as_mut(&mut self) -> &mut [u8] {
-        self.0.as_mut()
-    }
-}
-
-impl sp_core::crypto::ByteArray for Public {
-    const LEN: usize = <InnerPublic as sp_core::crypto::ByteArray>::LEN;
-}
-
-impl Derive for Public {}
-impl sp_core::crypto::Public for Public {}
-
-impl core::fmt::Debug for Public {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_tuple("Public").field(&self.as_ref()).finish()
-    }
-}
-
-impl<'a> TryFrom<&'a [u8]> for Public {
-    type Error = ();
-
-    fn try_from(data: &'a [u8]) -> Result<Self, Self::Error> {
-        InnerPublic::try_from(data).map(Self)
-    }
-}
-
-impl From<HybridPublicKey> for Public {
-    fn from(public: HybridPublicKey) -> Self {
-        Self(InnerPublic::from(public.to_bytes()))
-    }
-}
-
-impl TryFrom<Public> for HybridPublicKey {
-    type Error = ();
-
-    fn try_from(public: Public) -> Result<Self, Self::Error> {
-        HybridPublicKey::from_bytes(public.as_ref()).map_err(|_| ())
-    }
-}
-
-impl Public {
-    fn split_components(&self) -> ([u8; SR25519_PUBLIC_KEY_LEN], [u8; PQ_PUBLIC_KEY_LEN]) {
-        let bytes = self.as_ref();
-
-        let mut classical = [0u8; SR25519_PUBLIC_KEY_LEN];
-        classical.copy_from_slice(&bytes[..SR25519_PUBLIC_KEY_LEN]);
-
-        let mut pq = [0u8; PQ_PUBLIC_KEY_LEN];
-        pq.copy_from_slice(&bytes[SR25519_PUBLIC_KEY_LEN..]);
-
-        (classical, pq)
-    }
-
-    /// Recomputes the hybrid output from a proof after verifying it.
-    pub fn vrf_output(&self, data: &VrfSignData, signature: &VrfSignature) -> Option<VrfOutput> {
-        self.vrf_verify(data, signature).then(|| signature.output())
-    }
-
-    /// Derives protocol bytes from a verified hybrid VRF proof.
-    pub fn make_bytes<const N: usize>(
-        &self,
-        context: &[u8],
-        data: &VrfSignData,
-        signature: &VrfSignature,
-    ) -> Option<[u8; N]>
-    where
-        [u8; N]: Default,
-    {
-        self.vrf_output(data, signature)
-            .map(|output| output.make_bytes(context))
-    }
-}
-
-impl RuntimePublic for Public {
-    type Signature = Signature;
-    type ProofOfPossession = ProofOfPossession;
-
-    fn all(key_type: sp_application_crypto::KeyTypeId) -> alloc::vec::Vec<Self> {
-        sp_io::crypto::crypto_public_keys(key_type, CRYPTO_ID.0)
-            .into_iter()
-            .filter_map(|public| Self::from_slice(&public).ok())
-            .collect()
-    }
-
-    fn generate_pair(
-        key_type: sp_application_crypto::KeyTypeId,
-        seed: Option<alloc::vec::Vec<u8>>,
-    ) -> Self {
-        let public = sp_io::crypto::crypto_generate(key_type, CRYPTO_ID.0, seed);
-        Self::from_slice(&public)
-            .expect("crypto host returned a valid hybrid H3 public key")
-    }
-
-    fn sign<M: AsRef<[u8]>>(
-        &self,
-        key_type: sp_application_crypto::KeyTypeId,
-        msg: &M,
-    ) -> Option<Self::Signature> {
-        sp_io::crypto::crypto_sign_with(key_type, CRYPTO_ID.0, self.as_ref(), msg.as_ref())
-            .and_then(|signature| Signature::from_slice(&signature).ok())
-    }
-
-    fn verify<M: AsRef<[u8]>>(&self, msg: &M, signature: &Self::Signature) -> bool {
-        Pair::verify(signature, msg, self)
-    }
-
-    fn generate_proof_of_possession(
-        &mut self,
-        key_type: sp_application_crypto::KeyTypeId,
-        owner: &[u8],
-    ) -> Option<Self::ProofOfPossession> {
-        let proof_of_possession_statement = Pair::proof_of_possession_statement(owner);
-        sp_io::crypto::crypto_sign_with(
-            key_type,
-            CRYPTO_ID.0,
-            self.as_ref(),
-            &proof_of_possession_statement,
-        )
-        .and_then(|signature| Signature::from_slice(&signature).ok())
-    }
-
-    fn verify_proof_of_possession(&self, owner: &[u8], pop: &Self::ProofOfPossession) -> bool {
-        Pair::verify_proof_of_possession(owner, pop, self)
-    }
-
-    fn to_raw_vec(&self) -> alloc::vec::Vec<u8> {
-        sp_core::crypto::ByteArray::to_raw_vec(self)
-    }
-}
+pub type Public = SignaturePublic<SubstrateH3, HYBRID_PK_LEN, HYBRID_SIG_LEN>;
 
 /// Substrate-style encoded H3 signature.
-#[derive(Clone, Eq, PartialEq, Hash, Encode, Decode, DecodeWithMemTracking, TypeInfo)]
-pub struct Signature(InnerSignature);
-
-impl CryptoType for Signature {
-    type Pair = Pair;
-}
-
-impl AsRef<[u8]> for Signature {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
-impl AsMut<[u8]> for Signature {
-    fn as_mut(&mut self) -> &mut [u8] {
-        self.0.as_mut()
-    }
-}
-
-impl sp_core::crypto::ByteArray for Signature {
-    const LEN: usize = <InnerSignature as sp_core::crypto::ByteArray>::LEN;
-}
-
-impl sp_core::crypto::Signature for Signature {}
-
-impl core::fmt::Debug for Signature {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_tuple("Signature").field(&self.as_ref()).finish()
-    }
-}
-
-impl<'a> TryFrom<&'a [u8]> for Signature {
-    type Error = ();
-
-    fn try_from(data: &'a [u8]) -> Result<Self, Self::Error> {
-        InnerSignature::try_from(data).map(Self)
-    }
-}
-
-impl TryFrom<Vec<u8>> for Signature {
-    type Error = ();
-
-    fn try_from(data: Vec<u8>) -> Result<Self, Self::Error> {
-        Self::try_from(&data[..])
-    }
-}
-
-impl From<HybridSignature> for Signature {
-    fn from(signature: HybridSignature) -> Self {
-        Self(InnerSignature::from(signature.to_bytes()))
-    }
-}
-
-impl TryFrom<Signature> for HybridSignature {
-    type Error = ();
-
-    fn try_from(signature: Signature) -> Result<Self, Self::Error> {
-        HybridSignature::from_bytes(signature.as_ref()).map_err(|_| ())
-    }
-}
+pub type Signature = SignatureWrapper<SubstrateH3, HYBRID_PK_LEN, HYBRID_SIG_LEN>;
 
 /// Proof of possession is the same as a normal signature for this
 /// non-aggregatable scheme.
 pub type ProofOfPossession = Signature;
+
+/// Hybrid keypair backed by the 32-byte suite master seed.
+///
+/// The pair stores only the master seed and a cached public key. The expanded
+/// suite secret key is reconstructed on demand for signing.
+pub type Pair = SignaturePair<SubstrateH3, HYBRID_PK_LEN, HYBRID_SIG_LEN>;
+
+fn split_public_components(
+    public: &Public,
+) -> ([u8; SR25519_PUBLIC_KEY_LEN], [u8; PQ_PUBLIC_KEY_LEN]) {
+    let bytes = public.as_ref();
+
+    let mut classical = [0u8; SR25519_PUBLIC_KEY_LEN];
+    classical.copy_from_slice(&bytes[..SR25519_PUBLIC_KEY_LEN]);
+
+    let mut pq = [0u8; PQ_PUBLIC_KEY_LEN];
+    pq.copy_from_slice(&bytes[SR25519_PUBLIC_KEY_LEN..]);
+
+    (classical, pq)
+}
+
+fn verified_public_output(
+    public: &Public,
+    data: &VrfSignData,
+    signature: &VrfSignature,
+) -> Option<VrfOutput> {
+    public
+        .vrf_verify(data, signature)
+        .then(|| signature.output())
+}
 
 /// BABE-facing hybrid VRF input.
 ///
@@ -417,7 +228,7 @@ impl VrfOutput {
 /// Hybrid H3 VRF proof.
 ///
 /// This keeps the native sr25519 VRF proof material intact and adds the
-/// ML-DSA-44 binding signature over `H(\"hybrid-vrf\" || input || vrf_output)`.
+/// ML-DSA-44 binding signature over `H("hybrid-vrf" || input || vrf_output)`.
 #[derive(Clone, Eq, PartialEq, Encode, Decode, MaxEncodedLen, TypeInfo)]
 pub struct VrfSignature {
     /// Native sr25519 VRF proof material.
@@ -455,141 +266,48 @@ impl VrfSignature {
     }
 }
 
-/// Hybrid keypair backed by the 32-byte suite master seed.
-///
-/// The pair stores only the master seed and a cached public key. The expanded
-/// suite secret key is reconstructed on demand for signing.
-#[derive(Clone, Zeroize, ZeroizeOnDrop)]
-pub struct Pair {
-    seed: [u8; MASTER_SEED_LEN],
-    #[zeroize(skip)]
-    public: Public,
+#[cfg(any(feature = "std", feature = "full_crypto"))]
+fn sr25519_pair(secret: &HybridSecretKey) -> sr25519::Pair {
+    let (classical, _) = <Sr25519MlDsa44 as FixedHybridEncoding>::split_secret_key(secret);
+    sr25519::Pair::from_seed_slice(classical)
+        .expect("stored H3 secret key contains a valid sr25519 secret")
 }
 
-impl CryptoType for Pair {
-    type Pair = Self;
+#[cfg(any(feature = "std", feature = "full_crypto"))]
+fn pq_secret_bytes(secret: &HybridSecretKey) -> &[u8; PQ_SECRET_KEY_LEN] {
+    let (_, pq) = <Sr25519MlDsa44 as FixedHybridEncoding>::split_secret_key(secret);
+    pq.try_into()
+        .expect("stored H3 secret key contains a fixed-size ML-DSA secret")
 }
 
-impl NonAggregatable for Pair {}
-
-impl Pair {
-    fn from_master_seed(seed: [u8; MASTER_SEED_LEN]) -> Result<Self, SecretStringError> {
-        let (_secret, public) =
-            Sr25519MlDsa44::from_seed_slice(&seed).map_err(|_| SecretStringError::InvalidSeed)?;
-
-        Ok(Self {
-            seed,
-            public: public.into(),
-        })
-    }
-
-    #[cfg(any(feature = "std", feature = "full_crypto"))]
-    fn expanded_secret(&self) -> HybridSecretKey {
-        Sr25519MlDsa44::from_seed_slice(&self.seed)
-            .expect("pair seed is validated on construction; qed")
-            .0
-    }
-
-    #[cfg(any(feature = "std", feature = "full_crypto"))]
-    fn sr25519_pair(secret: &HybridSecretKey) -> sr25519::Pair {
-        let (classical, _) = <Sr25519MlDsa44 as FixedHybridEncoding>::split_secret_key(secret);
-        sr25519::Pair::from_seed_slice(classical)
-            .expect("stored H3 secret key contains a valid sr25519 secret")
-    }
-
-    #[cfg(any(feature = "std", feature = "full_crypto"))]
-    fn pq_secret_bytes(secret: &HybridSecretKey) -> &[u8; PQ_SECRET_KEY_LEN] {
-        let (_, pq) = <Sr25519MlDsa44 as FixedHybridEncoding>::split_secret_key(secret);
-        pq.try_into()
-            .expect("stored H3 secret key contains a fixed-size ML-DSA secret")
-    }
-
-    #[cfg(any(feature = "std", feature = "full_crypto"))]
-    fn pq_binding_signature(
-        input: &VrfInput,
-        pre_output: &sr25519::vrf::VrfPreOutput,
-        pq_secret: &[u8; PQ_SECRET_KEY_LEN],
-    ) -> [u8; PQ_SIGNATURE_LEN] {
-        let message = binding_message(input, pre_output);
-        pq_mldsa44::sign_deterministic(pq_secret, &message)
-    }
-
-    /// Computes the consensus-facing hybrid VRF output for a BABE input.
-    #[cfg(any(feature = "std", feature = "full_crypto"))]
-    pub fn vrf_output(&self, input: &VrfInput) -> VrfOutput {
-        let secret = self.expanded_secret();
-        let pq_secret = Self::pq_secret_bytes(&secret);
-        let sr25519_pre_output = Self::sr25519_pair(&secret).vrf_pre_output(&input.clone_sr25519());
-        let pq_signature = Self::pq_binding_signature(input, &sr25519_pre_output, pq_secret);
-        VrfOutput::from_parts(&sr25519_pre_output, &pq_signature)
-    }
-
-    /// Expands the hybrid VRF output into protocol bytes.
-    #[cfg(any(feature = "std", feature = "full_crypto"))]
-    pub fn make_bytes<const N: usize>(&self, context: &[u8], input: &VrfInput) -> [u8; N]
-    where
-        [u8; N]: Default,
-    {
-        self.vrf_output(input).make_bytes(context)
-    }
+#[cfg(any(feature = "std", feature = "full_crypto"))]
+fn pq_binding_signature(
+    input: &VrfInput,
+    pre_output: &sr25519::vrf::VrfPreOutput,
+    pq_secret: &[u8; PQ_SECRET_KEY_LEN],
+) -> [u8; PQ_SIGNATURE_LEN] {
+    let message = binding_message(input, pre_output);
+    pq_mldsa44::sign_deterministic(pq_secret, &message)
 }
 
-impl sp_core::crypto::Pair for Pair {
-    type Public = Public;
-    type Seed = [u8; MASTER_SEED_LEN];
-    type Signature = Signature;
-    type ProofOfPossession = ProofOfPossession;
-
-    fn derive<Iter: Iterator<Item = DeriveJunction>>(
-        &self,
-        path: Iter,
-        seed: Option<Self::Seed>,
-    ) -> Result<(Self, Option<Self::Seed>), DeriveError> {
-        let base_seed = seed.unwrap_or(self.seed);
-        let sr25519_pair = sp_core::sr25519::Pair::from_seed(&base_seed);
-        let (_derived_pair, derived_seed) = sr25519_pair.derive(path, Some(base_seed))?;
-        let derived_seed = derived_seed.ok_or(DeriveError::SoftKeyInPath)?;
-        let pair = Self::from_master_seed(derived_seed).map_err(|_| DeriveError::SoftKeyInPath)?;
-        Ok((pair, Some(derived_seed)))
-    }
-
-    fn from_seed_slice(seed: &[u8]) -> Result<Self, SecretStringError> {
-        if seed.len() != MASTER_SEED_LEN {
-            return Err(SecretStringError::InvalidSeedLength);
-        }
-
-        let mut owned_seed = [0u8; MASTER_SEED_LEN];
-        owned_seed.copy_from_slice(seed);
-        Self::from_master_seed(owned_seed)
-    }
-
-    #[cfg(any(feature = "std", feature = "full_crypto"))]
-    fn sign(&self, message: &[u8]) -> Self::Signature {
-        let secret = self.expanded_secret();
-        Sr25519MlDsa44::sign_deterministic(&secret, message, b"", b"").into()
-    }
-
-    fn verify<M: AsRef<[u8]>>(sig: &Self::Signature, message: M, pubkey: &Self::Public) -> bool {
-        let Ok(public) = HybridPublicKey::from_bytes(pubkey.as_ref()) else {
-            return false;
-        };
-        let Ok(signature) = HybridSignature::from_bytes(sig.as_ref()) else {
-            return false;
-        };
-
-        Sr25519MlDsa44::verify(&public, message.as_ref(), b"", &signature)
-    }
-
-    fn public(&self) -> Self::Public {
-        self.public.clone()
-    }
-
-    fn to_raw_vec(&self) -> Vec<u8> {
-        self.seed.to_vec()
-    }
+#[cfg(any(feature = "std", feature = "full_crypto"))]
+fn pair_vrf_output(pair: &Pair, input: &VrfInput) -> VrfOutput {
+    let secret = pair.expanded_secret();
+    let pq_secret = pq_secret_bytes(&secret);
+    let sr25519_pre_output = sr25519_pair(&secret).vrf_pre_output(&input.clone_sr25519());
+    let pq_signature = pq_binding_signature(input, &sr25519_pre_output, pq_secret);
+    VrfOutput::from_parts(&sr25519_pre_output, &pq_signature)
 }
 
-impl VrfCrypto for Pair {
+#[cfg(any(feature = "std", feature = "full_crypto"))]
+fn pair_make_bytes<const N: usize>(pair: &Pair, context: &[u8], input: &VrfInput) -> [u8; N]
+where
+    [u8; N]: Default,
+{
+    pair_vrf_output(pair, input).make_bytes(context)
+}
+
+impl VrfCrypto for SignaturePair<SubstrateH3, HYBRID_PK_LEN, HYBRID_SIG_LEN> {
     type VrfInput = VrfInput;
     type VrfPreOutput = VrfOutput;
     type VrfSignData = VrfSignData;
@@ -597,16 +315,16 @@ impl VrfCrypto for Pair {
 }
 
 #[cfg(any(feature = "std", feature = "full_crypto"))]
-impl VrfSecret for Pair {
+impl VrfSecret for SignaturePair<SubstrateH3, HYBRID_PK_LEN, HYBRID_SIG_LEN> {
     fn vrf_pre_output(&self, data: &Self::VrfInput) -> Self::VrfPreOutput {
-        self.vrf_output(data)
+        pair_vrf_output(self, data)
     }
 
     fn vrf_sign(&self, data: &Self::VrfSignData) -> Self::VrfSignature {
         let secret = self.expanded_secret();
-        let pq_secret = Self::pq_secret_bytes(&secret);
-        let sr25519 = Self::sr25519_pair(&secret).vrf_sign(&data.clone_sr25519());
-        let pq_signature = Self::pq_binding_signature(data.input(), &sr25519.pre_output, pq_secret);
+        let pq_secret = pq_secret_bytes(&secret);
+        let sr25519 = sr25519_pair(&secret).vrf_sign(&data.clone_sr25519());
+        let pq_signature = pq_binding_signature(data.input(), &sr25519.pre_output, pq_secret);
 
         VrfSignature {
             sr25519,
@@ -615,16 +333,16 @@ impl VrfSecret for Pair {
     }
 }
 
-impl VrfCrypto for Public {
+impl VrfCrypto for SignaturePublic<SubstrateH3, HYBRID_PK_LEN, HYBRID_SIG_LEN> {
     type VrfInput = VrfInput;
     type VrfPreOutput = VrfOutput;
     type VrfSignData = VrfSignData;
     type VrfSignature = VrfSignature;
 }
 
-impl VrfPublic for Public {
+impl VrfPublic for SignaturePublic<SubstrateH3, HYBRID_PK_LEN, HYBRID_SIG_LEN> {
     fn vrf_verify(&self, data: &Self::VrfSignData, signature: &Self::VrfSignature) -> bool {
-        let (classical, pq) = self.split_components();
+        let (classical, pq) = split_public_components(self);
         let classical = sr25519::Public::from_raw(classical);
 
         if !classical.vrf_verify(&data.clone_sr25519(), &signature.sr25519) {
@@ -637,7 +355,7 @@ impl VrfPublic for Public {
 }
 
 #[cfg(any(feature = "std", feature = "full_crypto"))]
-impl HybridVrf for Pair {
+impl HybridVrf for SignaturePair<SubstrateH3, HYBRID_PK_LEN, HYBRID_SIG_LEN> {
     type PublicKey = Public;
     type VrfInput = VrfInput;
     type VrfSignData = VrfSignData;
@@ -645,7 +363,7 @@ impl HybridVrf for Pair {
     type VrfSignature = VrfSignature;
 
     fn vrf_output(&self, input: &Self::VrfInput) -> Self::VrfOutput {
-        self.vrf_output(input)
+        pair_vrf_output(self, input)
     }
 
     fn vrf_sign(&self, data: &Self::VrfSignData) -> Self::VrfSignature {
@@ -656,7 +374,7 @@ impl HybridVrf for Pair {
     where
         [u8; N]: Default,
     {
-        self.make_bytes(context, input)
+        pair_make_bytes(self, context, input)
     }
 
     fn vrf_verify(
@@ -740,10 +458,33 @@ fn binding_message(
     out
 }
 
+/// Recomputes the hybrid output from a proof after verifying it.
+pub fn vrf_output(
+    public: &Public,
+    data: &VrfSignData,
+    signature: &VrfSignature,
+) -> Option<VrfOutput> {
+    verified_public_output(public, data, signature)
+}
+
+/// Derives protocol bytes from a verified hybrid VRF proof.
+pub fn make_bytes<const N: usize>(
+    public: &Public,
+    context: &[u8],
+    data: &VrfSignData,
+    signature: &VrfSignature,
+) -> Option<[u8; N]>
+where
+    [u8; N]: Default,
+{
+    vrf_output(public, data, signature).map(|output| output.make_bytes(context))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::suite::sr25519_mldsa44::Sr25519MlDsa44;
+    use crate::HybridSignatureScheme;
     use sp_core::crypto::{VrfPublic, VrfSecret};
 
     mod app {
@@ -759,11 +500,11 @@ mod tests {
         let (secret, public) = Sr25519MlDsa44::from_seed_slice(&seed).unwrap();
         let signature = Sr25519MlDsa44::sign_deterministic(&secret, b"hello", b"", b"");
 
-        let wrapped_public: Public = public.clone().into();
-        let wrapped_signature: Signature = signature.clone().into();
+        let wrapped_public = Public::from_suite_public(public.clone());
+        let wrapped_signature = Signature::from_suite_signature(signature.clone());
 
-        let decoded_public = HybridPublicKey::try_from(wrapped_public).unwrap();
-        let decoded_signature = HybridSignature::try_from(wrapped_signature).unwrap();
+        let decoded_public = wrapped_public.to_suite_public().unwrap();
+        let decoded_signature = wrapped_signature.to_suite_signature().unwrap();
 
         assert_eq!(decoded_public.as_ref(), public.as_ref());
         assert_eq!(decoded_signature.as_ref(), signature.as_ref());
@@ -809,10 +550,14 @@ mod tests {
 
         assert!(VrfPublic::vrf_verify(&public, &sign_data, &signature));
         assert_eq!(
-            pair.make_bytes::<32>(babe::RANDOMNESS_VRF_CONTEXT, sign_data.input()),
-            public
-                .make_bytes::<32>(babe::RANDOMNESS_VRF_CONTEXT, &sign_data, &signature)
-                .unwrap(),
+            pair_make_bytes::<32>(&pair, babe::RANDOMNESS_VRF_CONTEXT, sign_data.input()),
+            make_bytes::<32>(
+                &public,
+                babe::RANDOMNESS_VRF_CONTEXT,
+                &sign_data,
+                &signature
+            )
+            .unwrap(),
         );
     }
 
@@ -828,9 +573,13 @@ mod tests {
         signature.pq_signature[0] ^= 0x01;
 
         assert!(!VrfPublic::vrf_verify(&public, &sign_data, &signature));
-        assert!(public
-            .make_bytes::<32>(babe::RANDOMNESS_VRF_CONTEXT, &sign_data, &signature)
-            .is_none());
+        assert!(make_bytes::<32>(
+            &public,
+            babe::RANDOMNESS_VRF_CONTEXT,
+            &sign_data,
+            &signature
+        )
+        .is_none());
     }
 
     #[test]
@@ -841,7 +590,7 @@ mod tests {
         let input = babe::make_vrf_transcript(&randomness, 21, 2);
         let sign_data = VrfSignData::new(input.clone());
 
-        let output = pair.vrf_output(&input);
+        let output = pair_vrf_output(&pair, &input);
         let signature = VrfSecret::vrf_sign(&pair, &sign_data);
 
         assert_eq!(output.as_ref(), signature.output().as_ref());

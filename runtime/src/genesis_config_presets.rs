@@ -20,17 +20,26 @@ use crate::{
 };
 use alloc::{vec, vec::Vec};
 use frame_support::build_struct_json_patch;
+use quip_crypto_primitives::substrate::ed25519_mldsa44::Pair as HybridGrandpaPair;
 use quip_crypto_primitives::substrate::sr25519_mldsa44::Pair as HybridBabePair;
 use serde_json::Value;
 use sp_consensus_babe::AuthorityId as BabeId;
 use sp_consensus_grandpa::AuthorityId as GrandpaId;
+use sp_core::Pair as _;
+use sp_keyring::Ed25519Keyring;
 use sp_genesis_builder::{self, PresetId};
 use sp_keyring::Sr25519Keyring;
-use sp_core::Pair as _;
 
 fn babe_authority_from_seed(seed: &str) -> BabeId {
     HybridBabePair::from_string(seed, None)
         .expect("well-known dev seeds are valid for hybrid BABE authorities")
+        .public()
+        .into()
+}
+
+fn grandpa_authority_from_seed(seed: &str) -> GrandpaId {
+    HybridGrandpaPair::from_string(seed, None)
+        .expect("well-known dev seeds are valid for hybrid GRANDPA authorities")
         .public()
         .into()
 }
@@ -72,7 +81,7 @@ pub fn development_config_genesis() -> Value {
     testnet_genesis(
         vec![(
             babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Alice.to_seed()),
-            sp_keyring::Ed25519Keyring::Alice.public().into(),
+            grandpa_authority_from_seed(&Ed25519Keyring::Alice.to_seed()),
         )],
         vec![
             Sr25519Keyring::Alice.to_account_id(),
@@ -90,11 +99,11 @@ pub fn local_config_genesis() -> Value {
         vec![
             (
                 babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Alice.to_seed()),
-                sp_keyring::Ed25519Keyring::Alice.public().into(),
+                grandpa_authority_from_seed(&Ed25519Keyring::Alice.to_seed()),
             ),
             (
                 babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Bob.to_seed()),
-                sp_keyring::Ed25519Keyring::Bob.public().into(),
+                grandpa_authority_from_seed(&Ed25519Keyring::Bob.to_seed()),
             ),
         ],
         Sr25519Keyring::iter()
