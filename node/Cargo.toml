@@ -59,7 +59,7 @@ sc-transaction-pool.default-features = true
 sc-transaction-pool.workspace = true
 sc-transaction-pool-api.default-features = true
 sc-transaction-pool-api.workspace = true
-solochain-template-runtime = { workspace = true, package = "quip-protocol-runtime" }
+quip-protocol-runtime.workspace = true
 sp-api.default-features = true
 sp-api.workspace = true
 sp-block-builder.default-features = true
@@ -95,7 +95,7 @@ substrate-build-script-utils.workspace = true
 
 [features]
 default = ["std"]
-std = ["solochain-template-runtime/std"]
+std = ["quip-protocol-runtime/std"]
 # Dependencies that are only required if runtime benchmarking should be build.
 runtime-benchmarks = [
   "frame-benchmarking-cli/runtime-benchmarks",
