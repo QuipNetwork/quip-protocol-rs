@@ -1,1 +1,27 @@
-target/
+# Rust workspace build output
+/target/
+
+# Keep Cargo.lock tracked for this workspace.
+
+# rustfmt / editor backups
+**/*.rs.bk
+*.swp
+*.swo
+*~
+
+# IDEs and editors
+/.idea/
+/.vscode/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Coverage / profiling output
+*.profraw
+*.profdata
+/coverage/
+/grcov/
+
+# External repositories
+polkadot-sdk

@@ -6,83 +6,86 @@ repository = "https://gitlab.com/piqued/quip-protocol-rs.git"
 edition = "2021"
 
 [workspace]
-members = [
-    "node",
-    "pallets/template",
-    "runtime",
-]
+members = ["node", "pallets/template", "runtime"]
 resolver = "2"
 
 [workspace.dependencies]
 quip-protocol-runtime = { path = "./runtime", default-features = false }
 pallet-template = { path = "./pallets/template", default-features = false }
 clap = { version = "4.5.13" }
-frame-benchmarking-cli = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-frame-metadata-hash-extension = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-frame-system = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
+frame-benchmarking-cli = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+frame-metadata-hash-extension = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+frame-system = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
 futures = { version = "0.3.31" }
 jsonrpsee = { version = "0.24.3" }
-pallet-transaction-payment = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-pallet-transaction-payment-rpc = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sc-basic-authorship = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sc-cli = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sc-client-api = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sc-consensus = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sc-consensus-aura = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sc-consensus-grandpa = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sc-executor = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sc-network = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sc-offchain = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sc-service = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sc-telemetry = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sc-transaction-pool = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sc-transaction-pool-api = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sp-api = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sp-block-builder = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sp-blockchain = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sp-consensus-aura = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sp-core = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sp-genesis-builder = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sp-inherents = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sp-io = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sp-keyring = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sp-runtime = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sp-timestamp = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-substrate-frame-rpc-system = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-substrate-build-script-utils = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
+pallet-transaction-payment = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+pallet-transaction-payment-rpc = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sc-basic-authorship = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sc-cli = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sc-client-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sc-consensus = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sc-consensus-babe = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sc-consensus-babe-rpc = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sc-consensus-grandpa = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sc-executor = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sc-network = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sc-offchain = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sc-service = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sc-telemetry = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sc-transaction-pool = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sc-transaction-pool-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-application-crypto = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-block-builder = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-blockchain = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-consensus = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-consensus-babe = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-core = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-genesis-builder = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-inherents = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-io = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-keystore = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-keyring = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-runtime = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-timestamp = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+substrate-frame-rpc-system = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+substrate-build-script-utils = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
 codec = { version = "3.7.5", default-features = false, package = "parity-scale-codec" }
-frame-benchmarking = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-frame-executive = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-frame-support = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-frame-system-benchmarking = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-frame-system-rpc-runtime-api = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-frame-try-runtime = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-pallet-aura = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-pallet-balances = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-pallet-grandpa = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-pallet-sudo = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-pallet-timestamp = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-pallet-transaction-payment-rpc-runtime-api = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
+frame-benchmarking = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+frame-executive = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+frame-support = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+frame-system-benchmarking = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+frame-system-rpc-runtime-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+frame-try-runtime = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+pallet-babe = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+pallet-balances = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+pallet-grandpa = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+pallet-sudo = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+pallet-timestamp = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+pallet-transaction-payment-rpc-runtime-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
 scale-info = { version = "2.11.6", default-features = false }
 serde_json = { version = "1.0.132", default-features = false }
-sp-consensus-grandpa = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sp-offchain = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sp-session = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sp-storage = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sp-transaction-pool = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-sp-version = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
-substrate-wasm-builder = { git = "https://github.com/paritytech/polkadot-sdk.git", tag = "polkadot-stable2512-2", default-features = false }
+sp-consensus-grandpa = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-offchain = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-session = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-storage = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-transaction-pool = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+sp-version = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+substrate-wasm-builder = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+quip-crypto-primitives = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
+schnorrkel = { version = "0.11.5", default-features = false }
+
 
 [workspace.lints.rust]
 suspicious_double_ref_op = { level = "allow", priority = 2 }
 # `substrate_runtime` is a common `cfg` condition name used in the repo.
 unexpected_cfgs = { level = "warn", check-cfg = [
-    'cfg(build_opt_level, values("3"))',
-    'cfg(build_profile, values("debug", "release"))',
-    'cfg(enable_alloc_error_handler)',
-    'cfg(fuzzing)',
-    'cfg(ignore_flaky_test)',
-    'cfg(substrate_runtime)',
+  'cfg(build_opt_level, values("3"))',
+  'cfg(build_profile, values("debug", "release"))',
+  'cfg(enable_alloc_error_handler)',
+  'cfg(fuzzing)',
+  'cfg(ignore_flaky_test)',
+  'cfg(substrate_runtime)',
 ] }
 
 [workspace.lints.clippy]
