@@ -37,6 +37,8 @@ use pallet_transaction_payment::{ConstFeeMultiplier, FungibleAdapter, Multiplier
 use sp_runtime::{traits::One, Perbill};
 use sp_version::RuntimeVersion;
 
+use pallet_xqvm::WeightInfo as _;
+
 // Local module imports
 use super::{
     AccountId, Babe, Balance, Balances, Block, BlockNumber, Hash, Nonce, PalletInfo, Runtime,
@@ -177,4 +179,39 @@ impl pallet_sudo::Config for Runtime {
 impl pallet_template::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type WeightInfo = pallet_template::weights::SubstrateWeight<Runtime>;
+}
+
+parameter_types! {
+	pub const MaxProgramSize: u32 = 65_536;
+	pub const MaxCallDataLen: u32 = 256;
+	pub const MaxOutputSlots: u32 = 256;
+	pub const XqvmWeightPerStep: Weight = Weight::from_parts(1_000, 0);
+
+	/// Derived from block weight budget so a single execute call always
+	/// fits in one block.  Uses 50 % of the normal dispatch budget to
+	/// leave room for other extrinsics in the same block.
+	pub MaxStepLimit: u64 = {
+		let normal = RuntimeBlockWeights::get()
+			.get(frame_support::dispatch::DispatchClass::Normal)
+			.max_total
+			.unwrap_or(RuntimeBlockWeights::get().max_block);
+		// Reserve half for other extrinsics.
+		let budget = normal.ref_time() / 2;
+		// Subtract execute_base overhead, then divide by per-step cost.
+		let base = pallet_xqvm::SubstrateWeight::<Runtime>::execute_base()
+			.ref_time();
+		let per_step = XqvmWeightPerStep::get().ref_time();
+		budget.saturating_sub(base) / per_step
+	};
+}
+
+/// Configure the XQVM pallet for on-chain bytecode execution.
+impl pallet_xqvm::Config for Runtime {
+	type RuntimeEvent = RuntimeEvent;
+	type MaxProgramSize = MaxProgramSize;
+	type MaxCallDataLen = MaxCallDataLen;
+	type MaxOutputSlots = MaxOutputSlots;
+	type MaxStepLimit = MaxStepLimit;
+	type WeightPerStep = XqvmWeightPerStep;
+	type WeightInfo = pallet_xqvm::SubstrateWeight<Runtime>;
 }

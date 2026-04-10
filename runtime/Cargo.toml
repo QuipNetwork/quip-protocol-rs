@@ -30,6 +30,7 @@ pallet-balances.workspace = true
 pallet-grandpa.workspace = true
 pallet-sudo.workspace = true
 pallet-template.workspace = true
+pallet-xqvm.workspace = true
 pallet-timestamp.workspace = true
 pallet-transaction-payment.workspace = true
 pallet-transaction-payment-rpc-runtime-api.workspace = true
@@ -76,6 +77,7 @@ std = [
   "pallet-timestamp/std",
   "pallet-transaction-payment-rpc-runtime-api/std",
   "pallet-transaction-payment/std",
+  "pallet-xqvm/std",
   "quip-crypto-primitives/std",
   "scale-info/std",
   "serde_json/std",
@@ -106,6 +108,7 @@ runtime-benchmarks = [
   "pallet-template/runtime-benchmarks",
   "pallet-timestamp/runtime-benchmarks",
   "pallet-transaction-payment/runtime-benchmarks",
+  "pallet-xqvm/runtime-benchmarks",
   "sp-runtime/runtime-benchmarks",
 ]
 try-runtime = [
@@ -120,6 +123,7 @@ try-runtime = [
   "pallet-template/try-runtime",
   "pallet-timestamp/try-runtime",
   "pallet-transaction-payment/try-runtime",
+  "pallet-xqvm/try-runtime",
   "sp-runtime/try-runtime",
 ]
 

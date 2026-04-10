@@ -1,0 +1,57 @@
+[package]
+name = "pallet-xqvm"
+description = "FRAME pallet for on-chain XQVM bytecode execution."
+version = "0.1.0"
+license = "Unlicense"
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+edition.workspace = true
+publish = false
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[lints]
+workspace = true
+
+[dependencies]
+codec = { features = ["derive"], workspace = true }
+frame-benchmarking = { optional = true, workspace = true }
+frame-support.workspace = true
+frame-system.workspace = true
+scale-info = { features = ["derive"], workspace = true }
+sp-runtime.workspace = true
+
+# XQVM crates (no_std compatible)
+aglais-xqvm-vm = { git = "ssh://git@gitlab.com/quip.network/xq-rs.git", rev = "3cf0b07", default-features = false }
+aglais-xqvm-bytecode = { git = "ssh://git@gitlab.com/quip.network/xq-rs.git", rev = "3cf0b07", default-features = false }
+
+[dev-dependencies]
+sp-core = { default-features = true, workspace = true }
+sp-io = { default-features = true, workspace = true }
+sp-runtime = { default-features = true, workspace = true }
+
+[features]
+default = ["std"]
+std = [
+	"codec/std",
+	"frame-benchmarking?/std",
+	"frame-support/std",
+	"frame-system/std",
+	"scale-info/std",
+	"sp-runtime/std",
+	"aglais-xqvm-vm/std",
+	"aglais-xqvm-bytecode/std",
+]
+runtime-benchmarks = [
+	"frame-benchmarking/runtime-benchmarks",
+	"frame-support/runtime-benchmarks",
+	"frame-system/runtime-benchmarks",
+	"sp-runtime/runtime-benchmarks",
+]
+try-runtime = [
+	"frame-support/try-runtime",
+	"frame-system/try-runtime",
+	"sp-runtime/try-runtime",
+]
