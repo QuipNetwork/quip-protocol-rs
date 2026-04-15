@@ -30,6 +30,8 @@ use sp_genesis_builder::{self, PresetId};
 use sp_keyring::Ed25519Keyring;
 use sp_keyring::Sr25519Keyring;
 
+pub const LOCAL_THREE_VALIDATOR_RUNTIME_PRESET: &str = "local_three_validator";
+
 fn babe_authority_from_seed(seed: &str) -> BabeId {
     HybridBabePair::from_string(seed, None)
         .expect("well-known dev seeds are valid for hybrid BABE authorities")
@@ -114,11 +116,37 @@ pub fn local_config_genesis() -> Value {
     )
 }
 
+/// Return the three-validator local genesis config preset.
+pub fn local_three_validator_config_genesis() -> Value {
+    testnet_genesis(
+        vec![
+            (
+                babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Alice.to_seed()),
+                grandpa_authority_from_seed(&Ed25519Keyring::Alice.to_seed()),
+            ),
+            (
+                babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Bob.to_seed()),
+                grandpa_authority_from_seed(&Ed25519Keyring::Bob.to_seed()),
+            ),
+            (
+                babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Charlie.to_seed()),
+                grandpa_authority_from_seed(&Ed25519Keyring::Charlie.to_seed()),
+            ),
+        ],
+        Sr25519Keyring::iter()
+            .filter(|v| v != &Sr25519Keyring::One && v != &Sr25519Keyring::Two)
+            .map(|v| v.to_account_id())
+            .collect::<Vec<_>>(),
+        Sr25519Keyring::Alice.to_account_id(),
+    )
+}
+
 /// Provides the JSON representation of predefined genesis config for given `id`.
 pub fn get_preset(id: &PresetId) -> Option<Vec<u8>> {
     let patch = match id.as_ref() {
         sp_genesis_builder::DEV_RUNTIME_PRESET => development_config_genesis(),
         sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET => local_config_genesis(),
+        LOCAL_THREE_VALIDATOR_RUNTIME_PRESET => local_three_validator_config_genesis(),
         _ => return None,
     };
     Some(
@@ -133,5 +161,6 @@ pub fn preset_names() -> Vec<PresetId> {
     vec![
         PresetId::from(sp_genesis_builder::DEV_RUNTIME_PRESET),
         PresetId::from(sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET),
+        PresetId::from(LOCAL_THREE_VALIDATOR_RUNTIME_PRESET),
     ]
 }
