@@ -27,3 +27,17 @@ pub fn local_chain_spec() -> Result<ChainSpec, String> {
     .with_genesis_config_preset_name(sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET)
     .build())
 }
+
+pub fn local_three_validator_chain_spec() -> Result<ChainSpec, String> {
+    Ok(ChainSpec::builder(
+        WASM_BINARY.ok_or_else(|| "Development wasm not available".to_string())?,
+        None,
+    )
+    .with_name("Local Testnet (3 Validators)")
+    .with_id("local_three_validator")
+    .with_chain_type(ChainType::Local)
+    .with_genesis_config_preset_name(
+        quip_protocol_runtime::genesis_config_presets::LOCAL_THREE_VALIDATOR_RUNTIME_PRESET,
+    )
+    .build())
+}

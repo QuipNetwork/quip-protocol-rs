@@ -115,6 +115,10 @@ available on [IPFS](https://dotapps.io/). You can
 also find the source code and instructions for hosting your own instance in the
 [`polkadot-js/apps`](https://github.com/polkadot-js/apps) repository.
 
+Quip uses hybrid BABE and GRANDPA consensus keys. Polkadot.js Apps does not
+require custom types for Quip anymore; for usage notes, see
+[docs/polkadotjs/README.md](/Users/romanuseinov/projects/quip/quip-protocol-rs/docs/polkadotjs/README.md).
+
 ### Multi-Node Local Testnet
 
 If you want to see the multi-node consensus algorithm in action, see [Simulate a
