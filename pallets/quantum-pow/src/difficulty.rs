@@ -12,12 +12,12 @@ use crate::types::DifficultyConfig;
 // - proof adjustment and decay reason over the same time unit
 // - validation does not depend on timestamp availability or conversion
 //
-// These constants preserve the previous policy shape by translating the old
-// second thresholds to their 6-second-block equivalents.
-const TARGET_BLOCK_TIME_SECS: u64 = 6;
-const FAST_PROOF_BLOCKS: u64 = 360 / TARGET_BLOCK_TIME_SECS;
-const TARGET_PROOF_BLOCKS: u64 = 600 / TARGET_BLOCK_TIME_SECS;
-const SLOW_PROOF_BLOCKS: u64 = 1200 / TARGET_BLOCK_TIME_SECS;
+// These constants are the block-native thresholds the current policy uses.
+// They correspond to the earlier 6-second-block translation:
+// 360s -> 60 blocks, 600s -> 100 blocks, 1200s -> 200 blocks.
+const FAST_PROOF_BLOCKS: u64 = 60;
+const TARGET_PROOF_BLOCKS: u64 = 100;
+const SLOW_PROOF_BLOCKS: u64 = 200;
 
 fn sample_adjustment_milli(mining_time_blocks: u64, harder: bool, seed: &[u8]) -> u32 {
     let (base, variance) = if harder {
