@@ -1,6 +1,6 @@
-use crate::{mock::*, Error, Event, Programs, ProgramOwner};
-use frame_support::{assert_noop, assert_ok, BoundedVec};
+use crate::{mock::*, Error, Event, ProgramOwner, Programs};
 use aglais_xqvm_bytecode::{InstructionBuilder, Register};
+use frame_support::{assert_noop, assert_ok, BoundedVec};
 use sp_runtime::traits::Hash;
 
 /// Encode a program built with `InstructionBuilder` into raw bytes.
@@ -24,7 +24,9 @@ fn program_hash(bytes: &[u8]) -> <Test as frame_system::Config>::Hash {
 fn store_program_works() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        let bytecode = build_program(|b| { b.halt(); });
+        let bytecode = build_program(|b| {
+            b.halt();
+        });
         let hash = program_hash(&bytecode);
         let len = bytecode.len() as u32;
 
@@ -49,7 +51,9 @@ fn store_program_works() {
 #[test]
 fn store_duplicate_fails() {
     new_test_ext().execute_with(|| {
-        let bytecode = build_program(|b| { b.halt(); });
+        let bytecode = build_program(|b| {
+            b.halt();
+        });
 
         assert_ok!(Xqvm::store_program(
             RuntimeOrigin::signed(1),
@@ -143,8 +147,7 @@ fn execute_with_calldata() {
             bounded(bytecode),
         ));
 
-        let calldata: BoundedVec<i64, MaxCallDataLen> =
-            vec![5i64].try_into().unwrap();
+        let calldata: BoundedVec<i64, MaxCallDataLen> = vec![5i64].try_into().unwrap();
 
         assert_ok!(Xqvm::execute(
             RuntimeOrigin::signed(1),
@@ -246,7 +249,9 @@ fn execute_program_not_found() {
 #[test]
 fn execute_step_limit_too_high() {
     new_test_ext().execute_with(|| {
-        let bytecode = build_program(|b| { b.halt(); });
+        let bytecode = build_program(|b| {
+            b.halt();
+        });
         let hash = program_hash(&bytecode);
 
         assert_ok!(Xqvm::store_program(
@@ -271,7 +276,9 @@ fn execute_step_limit_too_high() {
 #[test]
 fn execute_too_many_output_slots() {
     new_test_ext().execute_with(|| {
-        let bytecode = build_program(|b| { b.halt(); });
+        let bytecode = build_program(|b| {
+            b.halt();
+        });
         let hash = program_hash(&bytecode);
 
         assert_ok!(Xqvm::store_program(
@@ -292,4 +299,3 @@ fn execute_too_many_output_slots() {
         );
     });
 }
-
