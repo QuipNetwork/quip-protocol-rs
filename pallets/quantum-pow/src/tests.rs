@@ -1,6 +1,6 @@
 use super::mock::*;
 use crate::{
-    topology,
+    difficulty, topology,
     types::{DifficultyConfig, QuantumProof},
     BlockBestProof, BlockProofCount, DefaultTopology, Difficulty, LastProofBlock, Miners,
     RegisteredTopologies,
@@ -299,5 +299,127 @@ fn on_finalize_pays_block_reward_for_best_proof() {
         assert_eq!(LastProofBlock::<Test>::get(), System::block_number());
         assert_eq!(Miners::<Test>::get(1).unwrap().proofs_won, 1);
         assert_eq!(Miners::<Test>::get(1).unwrap().rewards_earned, 50);
+    });
+}
+
+#[test]
+fn submit_proof_uses_decayed_difficulty_after_block_gap() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let difficulty = DifficultyConfig {
+            min_solutions: 5,
+            max_energy_milli: i64::MAX,
+            min_diversity_milli: 0,
+            min_quality_milli: 0,
+        };
+        assert_ok!(QuantumPow::set_difficulty(
+            RuntimeOrigin::root(),
+            difficulty
+        ));
+        let (nodes, edges, topology_hash) = registered_topology();
+
+        let early_proof = proof_for(1, &nodes, &edges, topology_hash, vec![-1000, 0, 1000], &[0]);
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(1), early_proof),
+            crate::Error::<Test>::InsufficientSolutions
+        );
+
+        LastProofBlock::<Test>::put(1);
+        System::set_block_number(81);
+        let decayed_proof = proof_for(1, &nodes, &edges, topology_hash, vec![-1000, 0, 1000], &[0]);
+
+        assert_ok!(QuantumPow::submit_proof(
+            RuntimeOrigin::signed(1),
+            decayed_proof
+        ));
+        assert!(BlockBestProof::<Test>::get().is_some());
+    });
+}
+
+#[test]
+fn on_finalize_fast_proof_hardens_difficulty() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let initial = easy_difficulty();
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        let (nodes, edges, topology_hash) = registered_topology();
+
+        LastProofBlock::<Test>::put(1);
+        System::set_block_number(10);
+        let proof = proof_for(1, &nodes, &edges, topology_hash, vec![-1000, 0, 1000], &[0]);
+
+        assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
+        QuantumPow::on_finalize(System::block_number());
+
+        let next = Difficulty::<Test>::get();
+        assert!(next.min_solutions > initial.min_solutions);
+        assert!(next.max_energy_milli < initial.max_energy_milli);
+        assert!(next.min_quality_milli > initial.min_quality_milli);
+    });
+}
+
+#[test]
+fn on_finalize_slow_proof_eases_difficulty_from_decayed_base() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let initial = DifficultyConfig {
+            min_solutions: 3,
+            max_energy_milli: 0,
+            min_diversity_milli: 100,
+            min_quality_milli: 100,
+        };
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        let (nodes, edges, topology_hash) = registered_topology();
+
+        LastProofBlock::<Test>::put(1);
+        System::set_block_number(250);
+        let proof = proof_for(1, &nodes, &edges, topology_hash, vec![-1000, 0, 1000], &[0]);
+
+        assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
+
+        let decayed = difficulty::apply_decay(initial, (250_u32 - 1) / EpochLength::get() as u32);
+        QuantumPow::on_finalize(System::block_number());
+
+        let next = Difficulty::<Test>::get();
+        assert!(next.max_energy_milli > decayed.max_energy_milli);
+    });
+}
+
+#[test]
+fn mining_snapshot_returns_default_and_selected_topology_views() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::set_difficulty(
+            RuntimeOrigin::root(),
+            easy_difficulty()
+        ));
+
+        let (default_nodes, default_edges, default_hash) = registered_topology();
+
+        let other_nodes = bounded::<_, MaxNodes>(vec![10, 11, 12]);
+        let other_edges = bounded::<_, MaxEdges>(vec![(10, 11), (11, 12)]);
+        let other_hash = topology::hash_topology(&other_nodes, &other_edges);
+        assert_ok!(QuantumPow::register_topology(
+            RuntimeOrigin::root(),
+            other_nodes.clone(),
+            other_edges.clone(),
+        ));
+
+        let default_snapshot =
+            QuantumPow::mining_snapshot(System::block_number(), System::parent_hash(), None)
+                .expect("default topology snapshot exists");
+        assert_eq!(default_snapshot.topology_hash, default_hash);
+        assert_eq!(default_snapshot.nodes, default_nodes);
+        assert_eq!(default_snapshot.edges, default_edges);
+        assert_eq!(default_snapshot.difficulty, easy_difficulty());
+
+        let selected_snapshot = QuantumPow::mining_snapshot(
+            System::block_number(),
+            System::parent_hash(),
+            Some(other_hash),
+        )
+        .expect("selected topology snapshot exists");
+        assert_eq!(selected_snapshot.topology_hash, other_hash);
+        assert_eq!(selected_snapshot.nodes, other_nodes);
+        assert_eq!(selected_snapshot.edges, other_edges);
     });
 }

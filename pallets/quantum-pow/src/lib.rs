@@ -37,6 +37,26 @@ type QuantumProofOf<T> = types::QuantumProof<NodesOf<T>, EdgesOf<T>, SolutionsOf
 type TopologyMetaOf<T> = types::TopologyMeta<NodesOf<T>, EdgesOf<T>, BlockNumberOf<T>>;
 type MinerInfoOf<T> = types::MinerInfo<BalanceOf<T>, BlockNumberOf<T>>;
 type ProofRecordOf<T> = types::ProofRecord<AccountIdOf<T>, BlockNumberOf<T>>;
+type MiningSnapshotOf<T> = types::MiningSnapshot<
+    BlockNumberOf<T>,
+    <T as frame_system::Config>::Hash,
+    NodesOf<T>,
+    EdgesOf<T>,
+>;
+
+sp_api::decl_runtime_apis! {
+    pub trait QuantumPowApi<BlockNumber, Hash, Nodes, Edges>
+    where
+        BlockNumber: codec::Codec,
+        Hash: codec::Codec,
+        Nodes: codec::Codec,
+        Edges: codec::Codec,
+    {
+        fn mining_snapshot(topology_hash: Option<sp_core::H256>) -> Option<
+            crate::types::MiningSnapshot<BlockNumber, Hash, Nodes, Edges>
+        >;
+    }
+}
 
 #[frame_support::pallet]
 pub mod pallet {
@@ -57,9 +77,7 @@ pub mod pallet {
     pub struct Pallet<T>(_);
 
     #[pallet::config]
-    pub trait Config:
-        frame_system::Config + pallet_balances::Config + pallet_timestamp::Config
-    {
+    pub trait Config: frame_system::Config + pallet_balances::Config {
         #[allow(deprecated)]
         type RuntimeEvent: From<Event<Self>> + IsType<<Self as frame_system::Config>::RuntimeEvent>;
 
@@ -427,16 +445,46 @@ pub mod pallet {
     }
 
     impl<T: Config> Pallet<T> {
-        pub fn topology_for(hash: H256) -> Option<TopologyMetaOf<T>> {
-            RegisteredTopologies::<T>::get(hash)
-        }
-
         pub fn default_topology() -> Option<H256> {
             DefaultTopology::<T>::get()
         }
 
+        pub fn topology_meta(hash: H256) -> Option<TopologyMetaOf<T>> {
+            RegisteredTopologies::<T>::get(hash)
+        }
+
+        pub fn default_topology_meta() -> Option<(H256, TopologyMetaOf<T>)> {
+            let topology_hash = DefaultTopology::<T>::get()?;
+            let topology = RegisteredTopologies::<T>::get(topology_hash)?;
+            Some((topology_hash, topology))
+        }
+
         pub fn miner_info(account: &T::AccountId) -> Option<MinerInfoOf<T>> {
             Miners::<T>::get(account)
+        }
+
+        pub fn current_difficulty_for(block_number: BlockNumberFor<T>) -> types::DifficultyConfig {
+            Self::current_difficulty(block_number)
+        }
+
+        pub fn mining_snapshot(
+            block_number: BlockNumberFor<T>,
+            parent_hash: <T as frame_system::Config>::Hash,
+            topology_hash: Option<H256>,
+        ) -> Option<MiningSnapshotOf<T>> {
+            let (topology_hash, topology) = match topology_hash {
+                Some(hash) => (hash, Self::topology_meta(hash)?),
+                None => Self::default_topology_meta()?,
+            };
+
+            Some(types::MiningSnapshot {
+                block_number,
+                parent_hash,
+                difficulty: Self::current_difficulty_for(block_number),
+                topology_hash,
+                nodes: topology.nodes,
+                edges: topology.edges,
+            })
         }
 
         fn current_difficulty(block_number: BlockNumberFor<T>) -> types::DifficultyConfig {

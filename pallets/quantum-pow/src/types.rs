@@ -99,3 +99,15 @@ pub struct ProofValidation {
     pub valid_solution_count: u32,
     pub quality_milli: u32,
 }
+
+#[derive(
+    Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
+)]
+pub struct MiningSnapshot<BlockNumber, Hash, Nodes, Edges> {
+    pub block_number: BlockNumber,
+    pub parent_hash: Hash,
+    pub difficulty: DifficultyConfig,
+    pub topology_hash: H256,
+    pub nodes: Nodes,
+    pub edges: Edges,
+}

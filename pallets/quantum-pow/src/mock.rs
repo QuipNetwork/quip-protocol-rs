@@ -1,7 +1,7 @@
 use crate as pallet_quantum_pow;
 use frame_support::{
     derive_impl, parameter_types,
-    traits::{ConstU128, ConstU32, ConstU64},
+    traits::{ConstU128, ConstU32},
 };
 use sp_runtime::BuildStorage;
 
@@ -29,12 +29,9 @@ mod runtime {
     pub type System = frame_system::Pallet<Test>;
 
     #[runtime::pallet_index(1)]
-    pub type Timestamp = pallet_timestamp::Pallet<Test>;
-
-    #[runtime::pallet_index(2)]
     pub type Balances = pallet_balances::Pallet<Test>;
 
-    #[runtime::pallet_index(3)]
+    #[runtime::pallet_index(2)]
     pub type QuantumPow = pallet_quantum_pow::Pallet<Test>;
 }
 
@@ -42,13 +39,6 @@ mod runtime {
 impl frame_system::Config for Test {
     type Block = Block;
     type AccountData = pallet_balances::AccountData<Balance>;
-}
-
-impl pallet_timestamp::Config for Test {
-    type Moment = u64;
-    type OnTimestampSet = ();
-    type MinimumPeriod = ConstU64<1>;
-    type WeightInfo = ();
 }
 
 impl pallet_balances::Config for Test {
@@ -108,7 +98,6 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
     let mut ext: sp_io::TestExternalities = storage.into();
     ext.execute_with(|| {
         System::set_block_number(1);
-        Timestamp::set_timestamp(1);
     });
     ext
 }

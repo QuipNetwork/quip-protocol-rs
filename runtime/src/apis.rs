@@ -42,10 +42,13 @@ use sp_version::RuntimeVersion;
 
 // Local module imports
 use super::{
-    AccountId, Babe, Balance, Block, Executive, Grandpa, InherentDataExt, Nonce, Runtime,
-    RuntimeCall, RuntimeGenesisConfig, SessionKeys, System, TransactionPayment,
-    BABE_GENESIS_EPOCH_CONFIG, VERSION,
+    AccountId, Babe, Balance, Block, BlockNumber, Executive, Grandpa, Hash, InherentDataExt, Nonce,
+    QuantumPow, Runtime, RuntimeCall, RuntimeGenesisConfig, SessionKeys, System,
+    TransactionPayment, BABE_GENESIS_EPOCH_CONFIG, VERSION,
 };
+
+type QuantumPowNodes = frame_support::BoundedVec<u32, super::configs::QuantumPowMaxNodes>;
+type QuantumPowEdges = frame_support::BoundedVec<(u32, u32), super::configs::QuantumPowMaxEdges>;
 
 impl_runtime_apis! {
     impl sp_api::Core<Block> for Runtime {
@@ -199,6 +202,18 @@ impl_runtime_apis! {
             // defined our key owner proof type as a bottom type (i.e. a type
             // with no values).
             None
+        }
+    }
+
+    impl pallet_quantum_pow::QuantumPowApi<Block, BlockNumber, Hash, QuantumPowNodes, QuantumPowEdges> for Runtime {
+        fn mining_snapshot(
+            topology_hash: Option<sp_core::H256>,
+        ) -> Option<pallet_quantum_pow::types::MiningSnapshot<BlockNumber, Hash, QuantumPowNodes, QuantumPowEdges>> {
+            QuantumPow::mining_snapshot(
+                System::block_number(),
+                System::parent_hash(),
+                topology_hash,
+            )
         }
     }
 
