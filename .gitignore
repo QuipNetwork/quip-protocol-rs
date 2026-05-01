@@ -25,6 +25,3 @@ Thumbs.db
 
 # External repositories
 polkadot-sdk
-
-# Python
-__pycache__

@@ -43,7 +43,7 @@ use pallet_xqvm::WeightInfo as _;
 use super::{
     AccountId, Babe, Balance, Balances, Block, BlockNumber, Hash, Nonce, PalletInfo, Runtime,
     RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask,
-    System, EXISTENTIAL_DEPOSIT, SLOT_DURATION, UNIT, VERSION,
+    System, EXISTENTIAL_DEPOSIT, SLOT_DURATION, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -182,64 +182,36 @@ impl pallet_template::Config for Runtime {
 }
 
 parameter_types! {
-    pub const MaxProgramSize: u32 = 65_536;
-    pub const MaxCallDataLen: u32 = 256;
-    pub const MaxOutputSlots: u32 = 256;
-    pub const XqvmWeightPerStep: Weight = Weight::from_parts(1_000, 0);
+	pub const MaxProgramSize: u32 = 65_536;
+	pub const MaxCallDataLen: u32 = 256;
+	pub const MaxOutputSlots: u32 = 256;
+	pub const XqvmWeightPerStep: Weight = Weight::from_parts(1_000, 0);
 
-    /// Derived from block weight budget so a single execute call always
-    /// fits in one block.  Uses 50 % of the normal dispatch budget to
-    /// leave room for other extrinsics in the same block.
-    pub MaxStepLimit: u64 = {
-        let normal = RuntimeBlockWeights::get()
-            .get(frame_support::dispatch::DispatchClass::Normal)
-            .max_total
-            .unwrap_or(RuntimeBlockWeights::get().max_block);
-        // Reserve half for other extrinsics.
-        let budget = normal.ref_time() / 2;
-        // Subtract execute_base overhead, then divide by per-step cost.
-        let base = pallet_xqvm::SubstrateWeight::<Runtime>::execute_base()
-            .ref_time();
-        let per_step = XqvmWeightPerStep::get().ref_time();
-        budget.saturating_sub(base) / per_step
-    };
+	/// Derived from block weight budget so a single execute call always
+	/// fits in one block.  Uses 50 % of the normal dispatch budget to
+	/// leave room for other extrinsics in the same block.
+	pub MaxStepLimit: u64 = {
+		let normal = RuntimeBlockWeights::get()
+			.get(frame_support::dispatch::DispatchClass::Normal)
+			.max_total
+			.unwrap_or(RuntimeBlockWeights::get().max_block);
+		// Reserve half for other extrinsics.
+		let budget = normal.ref_time() / 2;
+		// Subtract execute_base overhead, then divide by per-step cost.
+		let base = pallet_xqvm::SubstrateWeight::<Runtime>::execute_base()
+			.ref_time();
+		let per_step = XqvmWeightPerStep::get().ref_time();
+		budget.saturating_sub(base) / per_step
+	};
 }
 
 /// Configure the XQVM pallet for on-chain bytecode execution.
 impl pallet_xqvm::Config for Runtime {
-    type RuntimeEvent = RuntimeEvent;
-    type MaxProgramSize = MaxProgramSize;
-    type MaxCallDataLen = MaxCallDataLen;
-    type MaxOutputSlots = MaxOutputSlots;
-    type MaxStepLimit = MaxStepLimit;
-    type WeightPerStep = XqvmWeightPerStep;
-    type WeightInfo = pallet_xqvm::SubstrateWeight<Runtime>;
-}
-
-parameter_types! {
-    pub const QuantumMaxNodes: u32 = 5_000;
-    pub const QuantumMaxEdges: u32 = 50_000;
-    pub const QuantumMaxSolutions: u32 = 20;
-    pub const QuantumMaxBidMiners: u32 = 16;
-    pub const QuantumMaxOrdersPerProposer: u32 = 32;
-    pub const QuantumMaxDeadlineBlocks: BlockNumber = 1_000;
-    pub const QuantumMaxBlockWait: BlockNumber = 100;
-    pub const QuantumMinReward: Balance = UNIT;
-    pub const QuantumResultTtlBlocks: BlockNumber = 10_000;
-}
-
-impl pallet_quantum_compute_mempool::Config for Runtime {
-    type RuntimeEvent = RuntimeEvent;
-    type Currency = Balances;
-    type MaxNodes = QuantumMaxNodes;
-    type MaxEdges = QuantumMaxEdges;
-    type MaxSolutions = QuantumMaxSolutions;
-    type MaxBidMiners = QuantumMaxBidMiners;
-    type MaxOrdersPerProposer = QuantumMaxOrdersPerProposer;
-    type MaxDeadlineBlocks = QuantumMaxDeadlineBlocks;
-    type MaxBlockWait = QuantumMaxBlockWait;
-    type MinReward = QuantumMinReward;
-    type ResultTtlBlocks = QuantumResultTtlBlocks;
-    type VM = pallet_quantum_compute_mempool::xqvm::NoOpVm;
-    type WeightInfo = pallet_quantum_compute_mempool::weights::SubstrateWeight<Runtime>;
+	type RuntimeEvent = RuntimeEvent;
+	type MaxProgramSize = MaxProgramSize;
+	type MaxCallDataLen = MaxCallDataLen;
+	type MaxOutputSlots = MaxOutputSlots;
+	type MaxStepLimit = MaxStepLimit;
+	type WeightPerStep = XqvmWeightPerStep;
+	type WeightInfo = pallet_xqvm::SubstrateWeight<Runtime>;
 }

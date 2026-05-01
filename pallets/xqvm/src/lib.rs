@@ -89,6 +89,7 @@ pub mod pallet {
             steps_used: u64,
             outputs: BoundedVec<i64, T::MaxOutputSlots>,
         },
+
     }
 
     // ── Errors ───────────────────────────────────────────────────────────
@@ -200,8 +201,10 @@ pub mod pallet {
                 Error::<T>::TooManyOutputSlots
             );
 
-            let bytecode = Programs::<T>::get(&program_hash).ok_or(Error::<T>::ProgramNotFound)?;
-            let program = Program::decode(&bytecode).map_err(|_| Error::<T>::VmBadBytecode)?;
+            let bytecode = Programs::<T>::get(&program_hash)
+                .ok_or(Error::<T>::ProgramNotFound)?;
+            let program =
+                Program::decode(&bytecode).map_err(|_| Error::<T>::VmBadBytecode)?;
 
             let mut vm = Vm::new();
             vm.set_step_limit(step_limit)
@@ -230,7 +233,9 @@ pub mod pallet {
                     });
 
                     let actual_weight = T::WeightInfo::execute_base()
-                        .saturating_add(T::WeightPerStep::get().saturating_mul(steps_used));
+                        .saturating_add(
+                            T::WeightPerStep::get().saturating_mul(steps_used),
+                        );
                     Ok(PostDispatchInfo {
                         actual_weight: Some(actual_weight),
                         pays_fee: Pays::Yes,

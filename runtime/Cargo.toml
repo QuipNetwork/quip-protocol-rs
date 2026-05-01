@@ -28,7 +28,6 @@ frame-try-runtime = { optional = true, workspace = true }
 pallet-babe.workspace = true
 pallet-balances.workspace = true
 pallet-grandpa.workspace = true
-pallet-quantum-compute-mempool.workspace = true
 pallet-sudo.workspace = true
 pallet-template.workspace = true
 pallet-xqvm.workspace = true
@@ -73,7 +72,6 @@ std = [
   "pallet-babe/std",
   "pallet-balances/std",
   "pallet-grandpa/std",
-  "pallet-quantum-compute-mempool/std",
   "pallet-sudo/std",
   "pallet-template/std",
   "pallet-timestamp/std",
@@ -106,7 +104,6 @@ runtime-benchmarks = [
   "frame-system/runtime-benchmarks",
   "pallet-balances/runtime-benchmarks",
   "pallet-grandpa/runtime-benchmarks",
-  "pallet-quantum-compute-mempool/runtime-benchmarks",
   "pallet-sudo/runtime-benchmarks",
   "pallet-template/runtime-benchmarks",
   "pallet-timestamp/runtime-benchmarks",
@@ -122,7 +119,6 @@ try-runtime = [
   "pallet-babe/try-runtime",
   "pallet-balances/try-runtime",
   "pallet-grandpa/try-runtime",
-  "pallet-quantum-compute-mempool/try-runtime",
   "pallet-sudo/try-runtime",
   "pallet-template/try-runtime",
   "pallet-timestamp/try-runtime",

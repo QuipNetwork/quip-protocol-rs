@@ -35,11 +35,14 @@ mod benchmarks {
     use super::*;
 
     #[benchmark]
-    fn store_program(s: Linear<3, { 65_536 }>) {
+    fn store_program(
+        s: Linear<3, { 65_536 }>,
+    ) {
         let caller: T::AccountId = whitelisted_caller();
         let bytecode = build_padded_program(s);
-        let bounded: BoundedVec<u8, T::MaxProgramSize> =
-            bytecode.try_into().expect("s <= MaxProgramSize");
+        let bounded: BoundedVec<u8, T::MaxProgramSize> = bytecode
+            .try_into()
+            .expect("s <= MaxProgramSize");
 
         #[extrinsic_call]
         store_program(RawOrigin::Signed(caller), bounded);
@@ -52,15 +55,27 @@ mod benchmarks {
         // Store a minimal HALT program.
         let bytecode = build_padded_program(3);
         let hash = T::Hashing::hash(&bytecode);
-        let bounded: BoundedVec<u8, T::MaxProgramSize> =
-            bytecode.try_into().expect("3 <= MaxProgramSize");
+        let bounded: BoundedVec<u8, T::MaxProgramSize> = bytecode
+            .try_into()
+            .expect("3 <= MaxProgramSize");
         crate::Programs::<T>::insert(&hash, bounded);
 
-        let calldata: BoundedVec<i64, T::MaxCallDataLen> = BoundedVec::default();
+        let calldata: BoundedVec<i64, T::MaxCallDataLen> =
+            BoundedVec::default();
 
         #[extrinsic_call]
-        execute(RawOrigin::Signed(caller), hash, calldata, 0u32, 1u64);
+        execute(
+            RawOrigin::Signed(caller),
+            hash,
+            calldata,
+            0u32,
+            1u64,
+        );
     }
 
-    impl_benchmark_test_suite!(Xqvm, crate::mock::new_test_ext(), crate::mock::Test);
+    impl_benchmark_test_suite!(
+        Xqvm,
+        crate::mock::new_test_ext(),
+        crate::mock::Test
+    );
 }

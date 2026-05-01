@@ -229,7 +229,4 @@ mod runtime {
 
     #[runtime::pallet_index(8)]
     pub type Xqvm = pallet_xqvm;
-
-    #[runtime::pallet_index(9)]
-    pub type QuantumComputeMempool = pallet_quantum_compute_mempool;
 }
