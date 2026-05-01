@@ -759,9 +759,7 @@ fn claim_reward_does_not_persist_result_for_callback_only() {
             RewardResolution::SingleBest,
             2,
             1,
-            ResultDelivery::Callback {
-                endpoint,
-            },
+            ResultDelivery::Callback { endpoint },
         ));
         assert_ok!(QuantumComputeMempool::submit_solution(
             RuntimeOrigin::signed(2),

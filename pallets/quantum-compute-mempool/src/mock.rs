@@ -3,8 +3,8 @@ use frame_support::{
     derive_impl, parameter_types,
     traits::{ConstU128, ConstU32},
 };
-use std::cell::RefCell;
 use sp_runtime::BuildStorage;
+use std::cell::RefCell;
 
 type Block = frame_system::mocking::MockBlock<Test>;
 type Balance = u128;
@@ -27,7 +27,9 @@ std::thread_local! {
 
 pub struct TestVm;
 
-impl<AccountId, Hash> pallet_quantum_compute_mempool::xqvm::QuantumVm<AccountId, Balance, Hash> for TestVm {
+impl<AccountId, Hash> pallet_quantum_compute_mempool::xqvm::QuantumVm<AccountId, Balance, Hash>
+    for TestVm
+{
     fn validate_programs(
         _validation_program: Option<&Hash>,
         _transform_program: Option<&Hash>,
@@ -55,10 +57,7 @@ impl<AccountId, Hash> pallet_quantum_compute_mempool::xqvm::QuantumVm<AccountId,
             if state.fail_transform_solutions {
                 return Err(sp_runtime::DispatchError::Other("vm-transform-solutions"));
             }
-            Ok(state
-                .transformed_solutions
-                .clone()
-                .unwrap_or(solutions))
+            Ok(state.transformed_solutions.clone().unwrap_or(solutions))
         })
     }
 

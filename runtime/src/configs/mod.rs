@@ -226,6 +226,14 @@ parameter_types! {
     pub const QuantumMaxBlockWait: BlockNumber = 100;
     pub const QuantumMinReward: Balance = UNIT;
     pub const QuantumResultTtlBlocks: BlockNumber = 10_000;
+    pub const QuantumPowMaxNodes: u32 = 5_000;
+    pub const QuantumPowMaxEdges: u32 = 50_000;
+    pub const QuantumPowMaxSolutions: u32 = 32;
+    pub const QuantumPowMinNodes: u32 = 16;
+    pub const QuantumPowEpochLength: BlockNumber = 100;
+    pub const QuantumPowMinerDeposit: Balance = UNIT;
+    pub const QuantumPowBlockReward: Balance = UNIT;
+    pub const QuantumPowMaxProofsPerBlock: u32 = 8;
 }
 
 impl pallet_quantum_compute_mempool::Config for Runtime {
@@ -242,4 +250,18 @@ impl pallet_quantum_compute_mempool::Config for Runtime {
     type ResultTtlBlocks = QuantumResultTtlBlocks;
     type VM = pallet_quantum_compute_mempool::xqvm::NoOpVm;
     type WeightInfo = pallet_quantum_compute_mempool::weights::SubstrateWeight<Runtime>;
+}
+
+impl pallet_quantum_pow::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type MaxNodes = QuantumPowMaxNodes;
+    type MaxEdges = QuantumPowMaxEdges;
+    type MaxSolutions = QuantumPowMaxSolutions;
+    type MinNodes = QuantumPowMinNodes;
+    type EpochLength = QuantumPowEpochLength;
+    type MinerDeposit = QuantumPowMinerDeposit;
+    type BlockReward = QuantumPowBlockReward;
+    type MaxProofsPerBlock = QuantumPowMaxProofsPerBlock;
+    type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
 }

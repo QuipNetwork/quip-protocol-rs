@@ -29,6 +29,7 @@ frame_benchmarking::define_benchmarks!(
     [frame_system_extensions, SystemExtensionsBench::<Runtime>]
     [pallet_balances, Balances]
     [pallet_quantum_compute_mempool, QuantumComputeMempool]
+    [pallet_quantum_pow, QuantumPow]
     [pallet_timestamp, Timestamp]
     [pallet_sudo, Sudo]
     [pallet_template, Template]

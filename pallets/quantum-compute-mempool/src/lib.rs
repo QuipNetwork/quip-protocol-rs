@@ -64,8 +64,7 @@ type WinnerSummariesOf<T> = frame_support::pallet_prelude::BoundedVec<
     types::WinnerSummary<AccountIdOf<T>, BalanceOf<T>>,
     frame_support::traits::ConstU32<32>,
 >;
-type StoredResultOf<T> =
-    types::StoredResult<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
+type StoredResultOf<T> = types::StoredResult<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 
 #[frame_support::pallet]
 pub mod pallet {
@@ -162,8 +161,7 @@ pub mod pallet {
     // TODO: Investigate whether stored results should also be cleaned up
     // automatically once the job has been finalized, instead of relying only on
     // TTL-based explicit purging.
-    pub type OrderResults<T: Config> =
-        StorageMap<_, Blake2_128Concat, u64, StoredResultOf<T>>;
+    pub type OrderResults<T: Config> = StorageMap<_, Blake2_128Concat, u64, StoredResultOf<T>>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -494,7 +492,10 @@ pub mod pallet {
                 spec.validation_program.as_ref(),
                 spec.transform_program.as_ref(),
                 &solver,
-                solutions.iter().map(|solution| solution.as_slice().to_vec()).collect(),
+                solutions
+                    .iter()
+                    .map(|solution| solution.as_slice().to_vec())
+                    .collect(),
             )?;
             ensure!(
                 !transformed_solutions.is_empty(),
