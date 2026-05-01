@@ -39,8 +39,9 @@ impl SubstrateCli for Cli {
         Ok(match id {
             "dev" => Box::new(chain_spec::development_chain_spec()?),
             "" | "local" => Box::new(chain_spec::local_chain_spec()?),
-            "local3" | "local-3" | "local_three_validator" =>
-                Box::new(chain_spec::local_three_validator_chain_spec()?),
+            "local3" | "local-3" | "local_three_validator" => {
+                Box::new(chain_spec::local_three_validator_chain_spec()?)
+            }
             path => Box::new(chain_spec::ChainSpec::from_json_file(
                 std::path::PathBuf::from(path),
             )?),

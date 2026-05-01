@@ -1,0 +1,871 @@
+use super::mock::*;
+use crate::types::{Formulation, JobMode, MinerType, ResultDelivery, RewardResolution};
+use crate::{Event as QuantumComputeMempoolEvent, JobOrders, OrderFrontRunner, Solvers};
+use frame_support::{assert_noop, assert_ok, BoundedVec};
+use sp_runtime::traits::Hash;
+
+fn bounded<T, S>(items: Vec<T>) -> BoundedVec<T, S>
+where
+    S: frame_support::traits::Get<u32>,
+{
+    items.try_into().ok().unwrap()
+}
+
+fn sample_spec() -> (
+    BoundedVec<u8, frame_support::traits::ConstU32<128>>,
+    Formulation,
+    Option<<Test as frame_system::Config>::Hash>,
+    Option<<Test as frame_system::Config>::Hash>,
+) {
+    (bounded(b"max-cut".to_vec()), Formulation::Ising, None, None)
+}
+
+fn sample_params() -> crate::IsingParamsOf<Test> {
+    crate::types::IsingParams {
+        nodes: bounded(vec![0, 1]),
+        edges: bounded(vec![(0, 1)]),
+        h_values: bounded(vec![0, 0]),
+        j_values: bounded(vec![-1_000]),
+        min_energy_milli: None,
+        min_diversity_milli: None,
+        min_solutions: None,
+    }
+}
+
+fn sample_solution() -> crate::SolutionsOf<Test> {
+    bounded(vec![bounded(vec![1, 1])])
+}
+
+fn alternate_solution() -> crate::SolutionsOf<Test> {
+    bounded(vec![bounded(vec![1, -1])])
+}
+
+fn weighted_params() -> crate::IsingParamsOf<Test> {
+    crate::types::IsingParams {
+        nodes: bounded(vec![0, 1]),
+        edges: bounded(vec![(0, 1)]),
+        h_values: bounded(vec![-500, 0]),
+        j_values: bounded(vec![-1_000]),
+        min_energy_milli: None,
+        min_diversity_milli: None,
+        min_solutions: None,
+    }
+}
+
+fn register_spec() -> <Test as frame_system::Config>::Hash {
+    let (name, formulation, validation_program, transform_program) = sample_spec();
+    assert_ok!(QuantumComputeMempool::register_job_spec(
+        RuntimeOrigin::signed(1),
+        name.clone(),
+        formulation,
+        validation_program,
+        transform_program
+    ));
+    <Test as frame_system::Config>::Hashing::hash_of(&(
+        name,
+        formulation,
+        validation_program,
+        transform_program,
+    ))
+}
+
+#[test]
+fn register_solver_works() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+
+        let solver = Solvers::<Test>::get(2).unwrap();
+        assert_eq!(solver.solver_type, MinerType::Cpu);
+    });
+}
+
+#[test]
+fn register_job_spec_invokes_vm_validate_programs() {
+    new_test_ext().execute_with(|| {
+        let (name, formulation, validation_program, transform_program) = sample_spec();
+
+        assert_ok!(QuantumComputeMempool::register_job_spec(
+            RuntimeOrigin::signed(1),
+            name,
+            formulation,
+            validation_program,
+            transform_program,
+        ));
+
+        assert_eq!(mock_vm_state().validate_programs_calls, 1);
+    });
+}
+
+#[test]
+fn register_job_spec_propagates_vm_validation_error() {
+    new_test_ext().execute_with(|| {
+        set_vm_fail_validate_programs(true);
+        let (name, formulation, validation_program, transform_program) = sample_spec();
+
+        assert_noop!(
+            QuantumComputeMempool::register_job_spec(
+                RuntimeOrigin::signed(1),
+                name,
+                formulation,
+                validation_program,
+                transform_program,
+            ),
+            sp_runtime::DispatchError::Other("vm-validate-programs")
+        );
+    });
+}
+
+#[test]
+fn propose_job_stores_order_and_reserves_reward() {
+    new_test_ext().execute_with(|| {
+        let spec_id = register_spec();
+
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            10,
+            5,
+            ResultDelivery::OnChainOnly,
+        ));
+
+        let order = JobOrders::<Test>::get(0).unwrap();
+        assert_eq!(order.reward, 100);
+        assert_eq!(pallet_balances::Pallet::<Test>::reserved_balance(1), 100);
+    });
+}
+
+#[test]
+fn submit_solution_tracks_front_runner_and_first_solution() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            10,
+            5,
+            ResultDelivery::OnChainOnly,
+        ));
+
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution(),
+        ));
+
+        let order = JobOrders::<Test>::get(0).unwrap();
+        assert_eq!(order.first_solution_at, Some(1));
+        let leader = OrderFrontRunner::<Test>::get(0).unwrap();
+        assert_eq!(leader.solver, 2);
+        assert_eq!(leader.energy_milli, -1_000);
+    });
+}
+
+#[test]
+fn submit_solution_uses_vm_transformed_solutions_for_scoring() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            10,
+            5,
+            ResultDelivery::OnChainOnly,
+        ));
+        set_vm_transformed_solutions(vec![vec![1, 1]]);
+
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            alternate_solution(),
+        ));
+
+        let leader = OrderFrontRunner::<Test>::get(0).unwrap();
+        assert_eq!(leader.energy_milli, -1_000);
+        assert_eq!(mock_vm_state().transform_solutions_calls, 1);
+    });
+}
+
+#[test]
+fn submit_solution_propagates_vm_transform_error() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            10,
+            5,
+            ResultDelivery::OnChainOnly,
+        ));
+        set_vm_fail_transform_solutions(true);
+
+        assert_noop!(
+            QuantumComputeMempool::submit_solution(RuntimeOrigin::signed(2), 0, sample_solution()),
+            sp_runtime::DispatchError::Other("vm-transform-solutions")
+        );
+    });
+}
+
+#[test]
+fn submit_solution_rejects_ineligible_bid_solver() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Bid {
+                miners: Some(bounded(vec![3])),
+                miner_types: None,
+            },
+            RewardResolution::SingleBest,
+            10,
+            5,
+            ResultDelivery::OnChainOnly,
+        ));
+
+        assert_noop!(
+            QuantumComputeMempool::submit_solution(RuntimeOrigin::signed(2), 0, sample_solution()),
+            crate::Error::<Test>::NotEligibleSolver
+        );
+    });
+}
+
+#[test]
+fn submit_solution_rejects_invalid_spin_values() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            10,
+            5,
+            ResultDelivery::OnChainOnly,
+        ));
+
+        let bad_solution = bounded(vec![bounded(vec![1, 0])]);
+        assert_noop!(
+            QuantumComputeMempool::submit_solution(RuntimeOrigin::signed(2), 0, bad_solution),
+            crate::Error::<Test>::InvalidSpinValues
+        );
+    });
+}
+
+#[test]
+fn claim_reward_rejects_before_expiry() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            10,
+            5,
+            ResultDelivery::OnChainOnly,
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution(),
+        ));
+
+        assert_noop!(
+            QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(2), 0),
+            crate::Error::<Test>::OrderNotExpired
+        );
+    });
+}
+
+#[test]
+fn claim_reward_single_best_transfers_and_closes_order() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            2,
+            1,
+            ResultDelivery::OnChainOnly,
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution(),
+        ));
+
+        System::set_block_number(2);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(2),
+            0
+        ));
+
+        let order = JobOrders::<Test>::get(0).unwrap();
+        assert_eq!(order.status, crate::types::OrderStatus::Closed);
+        assert_eq!(Balances::reserved_balance(1), 0);
+        assert_eq!(Balances::free_balance(1), 999_900);
+        assert_eq!(Balances::free_balance(2), 1_000_100);
+    });
+}
+
+#[test]
+fn claim_reward_invokes_vm_validate_result() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            2,
+            1,
+            ResultDelivery::OnChainOnly,
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution(),
+        ));
+
+        System::set_block_number(2);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(2),
+            0
+        ));
+
+        let state = mock_vm_state();
+        assert_eq!(state.validate_result_calls, 1);
+        assert_eq!(state.last_result_winner_count, Some(1));
+    });
+}
+
+#[test]
+fn claim_reward_propagates_vm_result_validation_error() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            2,
+            1,
+            ResultDelivery::OnChainOnly,
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution(),
+        ));
+        set_vm_fail_validate_result(true);
+
+        System::set_block_number(2);
+        assert_noop!(
+            QuantumComputeMempool::claim_reward(RuntimeOrigin::signed(2), 0),
+            sp_runtime::DispatchError::Other("vm-validate-result")
+        );
+
+        let order = JobOrders::<Test>::get(0).unwrap();
+        assert_eq!(order.status, crate::types::OrderStatus::Opened);
+        assert_eq!(Balances::reserved_balance(1), 100);
+    });
+}
+
+#[test]
+fn reclaim_order_returns_reserved_reward_when_no_solutions() {
+    new_test_ext().execute_with(|| {
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            1,
+            1,
+            ResultDelivery::OnChainOnly,
+        ));
+
+        System::set_block_number(2);
+        assert_ok!(QuantumComputeMempool::reclaim_order(
+            RuntimeOrigin::signed(1),
+            0
+        ));
+
+        let order = JobOrders::<Test>::get(0).unwrap();
+        assert_eq!(order.status, crate::types::OrderStatus::Closed);
+        assert_eq!(Balances::reserved_balance(1), 0);
+        assert_eq!(Balances::free_balance(1), 1_000_000);
+    });
+}
+
+#[test]
+fn claim_reward_top_n_equal_splits_remainder_to_best() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(3),
+            MinerType::Gpu
+        ));
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            101,
+            JobMode::Open,
+            RewardResolution::TopNEqual { n: 2 },
+            2,
+            1,
+            ResultDelivery::OnChainOnly,
+        ));
+
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution(),
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(3),
+            0,
+            alternate_solution(),
+        ));
+
+        System::set_block_number(2);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(2),
+            0
+        ));
+
+        assert_eq!(Balances::reserved_balance(1), 0);
+        assert_eq!(Balances::free_balance(2), 1_000_051);
+        assert_eq!(Balances::free_balance(3), 1_000_050);
+    });
+}
+
+#[test]
+fn claim_reward_top_n_weighted_splits_by_absolute_energy() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(3),
+            MinerType::Gpu
+        ));
+        let spec_id = register_spec();
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            weighted_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::TopNWeighted { n: 2 },
+            2,
+            1,
+            ResultDelivery::OnChainOnly,
+        ));
+
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution(),
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(3),
+            0,
+            alternate_solution(),
+        ));
+
+        System::set_block_number(2);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(2),
+            0
+        ));
+
+        assert_eq!(Balances::reserved_balance(1), 0);
+        assert_eq!(Balances::free_balance(2), 1_000_075);
+        assert_eq!(Balances::free_balance(3), 1_000_025);
+    });
+}
+
+#[test]
+fn claim_reward_emits_result_ready_for_callback_delivery() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        let endpoint = bounded::<u8, frame_support::traits::ConstU32<256>>(
+            b"https://solver.example/callback".to_vec(),
+        );
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            2,
+            1,
+            ResultDelivery::Callback {
+                endpoint: endpoint.clone(),
+            },
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution(),
+        ));
+
+        System::set_block_number(2);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(2),
+            0
+        ));
+
+        let found = System::events().into_iter().any(|record| {
+            matches!(
+                record.event,
+                RuntimeEvent::QuantumComputeMempool(
+                    QuantumComputeMempoolEvent::ResultReady {
+                        order_id: 0,
+                        winners: ref summaries,
+                        endpoint: ref emitted,
+                    }
+                ) if emitted == &endpoint
+                    && summaries.len() == 1
+                    && summaries[0].solver == 2
+                    && summaries[0].energy_milli == -1_000
+                    && summaries[0].amount == 100
+            )
+        });
+
+        assert!(found);
+    });
+}
+
+#[test]
+fn claim_reward_emits_all_winners_for_callback_delivery() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(3),
+            MinerType::Gpu
+        ));
+        let spec_id = register_spec();
+        let endpoint = bounded::<u8, frame_support::traits::ConstU32<256>>(
+            b"https://solver.example/callback".to_vec(),
+        );
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            101,
+            JobMode::Open,
+            RewardResolution::TopNEqual { n: 2 },
+            2,
+            1,
+            ResultDelivery::Callback {
+                endpoint: endpoint.clone(),
+            },
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution(),
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(3),
+            0,
+            alternate_solution(),
+        ));
+
+        System::set_block_number(2);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(2),
+            0
+        ));
+
+        let found = System::events().into_iter().any(|record| {
+            matches!(
+                record.event,
+                RuntimeEvent::QuantumComputeMempool(
+                    QuantumComputeMempoolEvent::ResultReady {
+                        order_id: 0,
+                        winners: ref summaries,
+                        endpoint: ref emitted,
+                    }
+                ) if emitted == &endpoint
+                    && summaries.len() == 2
+                    && summaries[0].solver == 2
+                    && summaries[0].energy_milli == -1_000
+                    && summaries[0].amount == 51
+                    && summaries[1].solver == 3
+                    && summaries[1].energy_milli == 1_000
+                    && summaries[1].amount == 50
+            )
+        });
+
+        assert!(found);
+    });
+}
+
+#[test]
+fn claim_reward_persists_result_for_callback_with_poll() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        let endpoint = bounded::<u8, frame_support::traits::ConstU32<256>>(
+            b"https://solver.example/poll".to_vec(),
+        );
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Bid {
+                miners: Some(bounded(vec![2])),
+                miner_types: None,
+            },
+            RewardResolution::SingleBest,
+            2,
+            1,
+            ResultDelivery::CallbackWithPoll {
+                endpoint: endpoint.clone(),
+            },
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution(),
+        ));
+
+        System::set_block_number(2);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(2),
+            0
+        ));
+
+        let result = QuantumComputeMempool::result_for_order(0).unwrap();
+        assert_eq!(result.endpoint, endpoint);
+        assert_eq!(result.resolution, RewardResolution::SingleBest);
+        assert_eq!(result.settled_at, 2);
+        assert_eq!(result.winners.len(), 1);
+        assert_eq!(result.winners[0].solver, 2);
+        assert_eq!(result.winners[0].energy_milli, -1_000);
+        assert_eq!(result.winners[0].amount, 100);
+    });
+}
+
+#[test]
+fn claim_reward_does_not_persist_result_for_callback_only() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        let endpoint = bounded::<u8, frame_support::traits::ConstU32<256>>(
+            b"https://solver.example/callback".to_vec(),
+        );
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            2,
+            1,
+            ResultDelivery::Callback {
+                endpoint,
+            },
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution(),
+        ));
+
+        System::set_block_number(2);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(2),
+            0
+        ));
+
+        assert!(QuantumComputeMempool::result_for_order(0).is_none());
+    });
+}
+
+#[test]
+fn purge_result_rejects_before_ttl() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        let endpoint = bounded::<u8, frame_support::traits::ConstU32<256>>(
+            b"https://solver.example/poll".to_vec(),
+        );
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Bid {
+                miners: Some(bounded(vec![2])),
+                miner_types: None,
+            },
+            RewardResolution::SingleBest,
+            2,
+            1,
+            ResultDelivery::CallbackWithPoll { endpoint },
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution(),
+        ));
+
+        System::set_block_number(2);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(2),
+            0
+        ));
+
+        assert_noop!(
+            QuantumComputeMempool::purge_result(RuntimeOrigin::signed(3), 0),
+            crate::Error::<Test>::ResultTtlNotElapsed
+        );
+    });
+}
+
+#[test]
+fn purge_result_is_permissionless_after_ttl() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_solver(
+            RuntimeOrigin::signed(2),
+            MinerType::Cpu
+        ));
+        let spec_id = register_spec();
+        let endpoint = bounded::<u8, frame_support::traits::ConstU32<256>>(
+            b"https://solver.example/poll".to_vec(),
+        );
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Bid {
+                miners: Some(bounded(vec![2])),
+                miner_types: None,
+            },
+            RewardResolution::SingleBest,
+            2,
+            1,
+            ResultDelivery::CallbackWithPoll { endpoint },
+        ));
+        assert_ok!(QuantumComputeMempool::submit_solution(
+            RuntimeOrigin::signed(2),
+            0,
+            sample_solution(),
+        ));
+
+        System::set_block_number(2);
+        assert_ok!(QuantumComputeMempool::claim_reward(
+            RuntimeOrigin::signed(2),
+            0
+        ));
+
+        System::set_block_number(12);
+        assert_ok!(QuantumComputeMempool::purge_result(
+            RuntimeOrigin::signed(4),
+            0
+        ));
+
+        assert!(QuantumComputeMempool::result_for_order(0).is_none());
+    });
+}
