@@ -232,4 +232,7 @@ mod runtime {
 
     #[runtime::pallet_index(9)]
     pub type QuantumComputeMempool = pallet_quantum_compute_mempool;
+
+    #[runtime::pallet_index(10)]
+    pub type QuantumPow = pallet_quantum_pow;
 }

@@ -6487,6 +6487,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "pallet-quantum-pow"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "frame-benchmarking",
+ "frame-support",
+ "frame-system",
+ "pallet-balances",
+ "pallet-timestamp",
+ "parity-scale-codec",
+ "quantum-validation",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
+]
+
+[[package]]
 name = "pallet-session"
 version = "46.0.0"
 source = "git+https://github.com/QuipNetwork/polkadot-sdk.git?branch=ru%2Ffeature%2Fhybrid-with-primitives#f1f8d40c8a30f00276948a793c9b608582b20ec6"
@@ -7967,6 +7985,7 @@ dependencies = [
  "pallet-balances",
  "pallet-grandpa",
  "pallet-quantum-compute-mempool",
+ "pallet-quantum-pow",
  "pallet-sudo",
  "pallet-template",
  "pallet-timestamp",

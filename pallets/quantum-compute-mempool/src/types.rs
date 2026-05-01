@@ -249,8 +249,5 @@ pub struct StoredResult<AccountId, Balance, BlockNumber> {
     pub endpoint: BoundedVec<u8, frame_support::traits::ConstU32<256>>,
     pub resolution: RewardResolution,
     pub settled_at: BlockNumber,
-    pub winners: BoundedVec<
-        WinnerSummary<AccountId, Balance>,
-        frame_support::traits::ConstU32<32>,
-    >,
+    pub winners: BoundedVec<WinnerSummary<AccountId, Balance>, frame_support::traits::ConstU32<32>>,
 }

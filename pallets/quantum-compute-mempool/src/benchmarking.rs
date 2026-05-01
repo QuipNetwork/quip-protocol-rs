@@ -6,7 +6,11 @@ use super::*;
 use crate::Pallet as QuantumComputeMempool;
 use alloc::{vec, vec::Vec};
 use frame_benchmarking::v2::*;
-use frame_support::{pallet_prelude::ConstU32, traits::{Currency, Get}, BoundedVec};
+use frame_support::{
+    pallet_prelude::ConstU32,
+    traits::{Currency, Get},
+    BoundedVec,
+};
 use frame_system::RawOrigin;
 use sp_runtime::traits::{Hash as _, SaturatedConversion, Saturating};
 
@@ -14,7 +18,10 @@ fn bounded<T, S>(items: Vec<T>) -> BoundedVec<T, S>
 where
     S: frame_support::traits::Get<u32>,
 {
-    items.try_into().ok().expect("benchmark input fits within bounds")
+    items
+        .try_into()
+        .ok()
+        .expect("benchmark input fits within bounds")
 }
 
 fn reward_of<T: Config>(amount: u128) -> BalanceOf<T> {
@@ -45,7 +52,12 @@ fn sample_spec_id<T: Config>(
     validation_program: Option<T::Hash>,
     transform_program: Option<T::Hash>,
 ) -> T::Hash {
-    T::Hashing::hash_of(&(name.clone(), formulation, validation_program, transform_program))
+    T::Hashing::hash_of(&(
+        name.clone(),
+        formulation,
+        validation_program,
+        transform_program,
+    ))
 }
 
 fn sample_params<T: Config>() -> IsingParamsOf<T> {
@@ -66,33 +78,24 @@ fn sample_solution<T: Config>() -> SolutionsOf<T> {
 
 fn register_spec_for<T: Config>(builder: &T::AccountId) -> T::Hash {
     let (name, formulation, validation_program, transform_program) = sample_spec::<T>();
-    let spec_id = sample_spec_id::<T>(
-        &name,
+    let spec_id = sample_spec_id::<T>(&name, formulation, validation_program, transform_program);
+    assert!(QuantumComputeMempool::<T>::register_job_spec(
+        RawOrigin::Signed(builder.clone()).into(),
+        name,
         formulation,
         validation_program,
         transform_program,
-    );
-    assert!(
-        QuantumComputeMempool::<T>::register_job_spec(
-            RawOrigin::Signed(builder.clone()).into(),
-            name,
-            formulation,
-            validation_program,
-            transform_program,
-        )
-        .is_ok()
-    );
+    )
+    .is_ok());
     spec_id
 }
 
 fn register_solver_for<T: Config>(solver: &T::AccountId) {
-    assert!(
-        QuantumComputeMempool::<T>::register_solver(
-            RawOrigin::Signed(solver.clone()).into(),
-            types::MinerType::Cpu,
-        )
-        .is_ok()
-    );
+    assert!(QuantumComputeMempool::<T>::register_solver(
+        RawOrigin::Signed(solver.clone()).into(),
+        types::MinerType::Cpu,
+    )
+    .is_ok());
 }
 
 fn propose_open_order_for<T: Config>(
@@ -106,20 +109,18 @@ fn propose_open_order_for<T: Config>(
     fund_account::<T>(proposer, reward.saturating_mul(10));
     let spec_id = register_spec_for::<T>(proposer);
     let order_id = NextOrderId::<T>::get();
-    assert!(
-        QuantumComputeMempool::<T>::propose_job(
-            RawOrigin::Signed(proposer.clone()).into(),
-            spec_id,
-            sample_params::<T>(),
-            reward_of::<T>(reward),
-            types::JobMode::Open,
-            resolution,
-            deadline_blocks,
-            block_wait,
-            delivery,
-        )
-        .is_ok()
-    );
+    assert!(QuantumComputeMempool::<T>::propose_job(
+        RawOrigin::Signed(proposer.clone()).into(),
+        spec_id,
+        sample_params::<T>(),
+        reward_of::<T>(reward),
+        types::JobMode::Open,
+        resolution,
+        deadline_blocks,
+        block_wait,
+        delivery,
+    )
+    .is_ok());
     order_id
 }
 
@@ -132,7 +133,10 @@ mod benchmarks {
         let caller: T::AccountId = whitelisted_caller();
 
         #[extrinsic_call]
-        QuantumComputeMempool::register_solver(RawOrigin::Signed(caller.clone()), types::MinerType::Cpu);
+        QuantumComputeMempool::register_solver(
+            RawOrigin::Signed(caller.clone()),
+            types::MinerType::Cpu,
+        );
 
         assert!(Solvers::<T>::contains_key(caller));
     }
@@ -152,12 +156,8 @@ mod benchmarks {
     fn register_job_spec() {
         let caller: T::AccountId = whitelisted_caller();
         let (name, formulation, validation_program, transform_program) = sample_spec::<T>();
-        let spec_id = sample_spec_id::<T>(
-            &name,
-            formulation,
-            validation_program,
-            transform_program,
-        );
+        let spec_id =
+            sample_spec_id::<T>(&name, formulation, validation_program, transform_program);
 
         #[extrinsic_call]
         QuantumComputeMempool::register_job_spec(
@@ -231,14 +231,12 @@ mod benchmarks {
             1u32.into(),
             types::ResultDelivery::OnChainOnly,
         );
-        assert!(
-            QuantumComputeMempool::<T>::submit_solution(
-                RawOrigin::Signed(solver.clone()).into(),
-                order_id,
-                sample_solution::<T>(),
-            )
-            .is_ok()
-        );
+        assert!(QuantumComputeMempool::<T>::submit_solution(
+            RawOrigin::Signed(solver.clone()).into(),
+            order_id,
+            sample_solution::<T>(),
+        )
+        .is_ok());
         frame_system::Pallet::<T>::set_block_number(2u32.into());
 
         #[extrinsic_call]
@@ -278,41 +276,35 @@ mod benchmarks {
         let spec_id = register_spec_for::<T>(&proposer);
         fund_account::<T>(&proposer, 1_000_000);
         let order_id = NextOrderId::<T>::get();
-        assert!(
-            QuantumComputeMempool::<T>::propose_job(
-                RawOrigin::Signed(proposer.clone()).into(),
-                spec_id,
-                sample_params::<T>(),
-                reward_of::<T>(100),
-                types::JobMode::Bid {
-                    miners: Some(bounded(vec![solver.clone()])),
-                    miner_types: None,
-                },
-                types::RewardResolution::SingleBest,
-                2u32.into(),
-                1u32.into(),
-                types::ResultDelivery::CallbackWithPoll {
-                    endpoint: bounded(b"https://solver.example/poll".to_vec()),
-                },
-            )
-            .is_ok()
-        );
-        assert!(
-            QuantumComputeMempool::<T>::submit_solution(
-                RawOrigin::Signed(solver.clone()).into(),
-                order_id,
-                sample_solution::<T>(),
-            )
-            .is_ok()
-        );
+        assert!(QuantumComputeMempool::<T>::propose_job(
+            RawOrigin::Signed(proposer.clone()).into(),
+            spec_id,
+            sample_params::<T>(),
+            reward_of::<T>(100),
+            types::JobMode::Bid {
+                miners: Some(bounded(vec![solver.clone()])),
+                miner_types: None,
+            },
+            types::RewardResolution::SingleBest,
+            2u32.into(),
+            1u32.into(),
+            types::ResultDelivery::CallbackWithPoll {
+                endpoint: bounded(b"https://solver.example/poll".to_vec()),
+            },
+        )
+        .is_ok());
+        assert!(QuantumComputeMempool::<T>::submit_solution(
+            RawOrigin::Signed(solver.clone()).into(),
+            order_id,
+            sample_solution::<T>(),
+        )
+        .is_ok());
         frame_system::Pallet::<T>::set_block_number(2u32.into());
-        assert!(
-            QuantumComputeMempool::<T>::claim_reward(
-                RawOrigin::Signed(solver.clone()).into(),
-                order_id,
-            )
-            .is_ok()
-        );
+        assert!(QuantumComputeMempool::<T>::claim_reward(
+            RawOrigin::Signed(solver.clone()).into(),
+            order_id,
+        )
+        .is_ok());
         frame_system::Pallet::<T>::set_block_number(
             T::ResultTtlBlocks::get().saturating_add(2u32.into()),
         );
@@ -323,5 +315,9 @@ mod benchmarks {
         assert!(OrderResults::<T>::get(order_id).is_none());
     }
 
-    impl_benchmark_test_suite!(QuantumComputeMempool, crate::mock::new_test_ext(), crate::mock::Test);
+    impl_benchmark_test_suite!(
+        QuantumComputeMempool,
+        crate::mock::new_test_ext(),
+        crate::mock::Test
+    );
 }
