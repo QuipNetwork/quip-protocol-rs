@@ -6,7 +6,7 @@ FROM rust:${RUST_VERSION}-${DEBIAN_VERSION} AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
         clang libclang-dev protobuf-compiler pkg-config libssl-dev cmake \
     && rm -rf /var/lib/apt/lists/*
-RUN rustup target add wasm32-unknown-unknown \
+RUN rustup target add wasm32v1-none \
  && rustup component add rust-src
 # Rewrite ssh://git@gitlab.com/ → https://gitlab.com/ so cargo can fetch
 # public deps (e.g. quip.network/xq-rs) without needing an SSH key in the
@@ -24,11 +24,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM debian:${DEBIAN_VERSION}-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates libssl3 \
+        ca-certificates libssl3 gosu \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --home-dir /data --uid 1000 --shell /bin/false quip
 COPY --from=builder /usr/local/bin/quip-network-node /usr/local/bin/quip-network-node
-USER quip
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 WORKDIR /data
 EXPOSE 30333 9944 9615
-ENTRYPOINT ["quip-network-node"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
