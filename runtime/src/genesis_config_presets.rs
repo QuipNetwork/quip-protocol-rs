@@ -22,6 +22,7 @@ use alloc::{vec, vec::Vec};
 use frame_support::build_struct_json_patch;
 use quip_crypto_primitives::substrate::ed25519_mldsa44::Pair as HybridGrandpaPair;
 use quip_crypto_primitives::substrate::sr25519_mldsa44::Pair as HybridBabePair;
+use quip_transaction_crypto::{account_id_from_public, HybridPair as HybridTxPair};
 use serde_json::Value;
 use sp_consensus_babe::AuthorityId as BabeId;
 use sp_consensus_grandpa::AuthorityId as GrandpaId;
@@ -44,6 +45,12 @@ fn grandpa_authority_from_seed(seed: &str) -> GrandpaId {
         .expect("well-known dev seeds are valid for hybrid GRANDPA authorities")
         .public()
         .into()
+}
+
+fn tx_account_from_seed(seed: &str) -> AccountId {
+    let pair = HybridTxPair::from_string(seed, None)
+        .expect("well-known dev seeds are valid for hybrid transaction accounts");
+    account_id_from_public(&pair.public())
 }
 
 // Returns the genesis config presets populated with given parameters.
@@ -86,12 +93,12 @@ pub fn development_config_genesis() -> Value {
             grandpa_authority_from_seed(&Ed25519Keyring::Alice.to_seed()),
         )],
         vec![
-            Sr25519Keyring::Alice.to_account_id(),
-            Sr25519Keyring::Bob.to_account_id(),
-            Sr25519Keyring::AliceStash.to_account_id(),
-            Sr25519Keyring::BobStash.to_account_id(),
+            tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
+            tx_account_from_seed(&Sr25519Keyring::Bob.to_seed()),
+            tx_account_from_seed(&Sr25519Keyring::AliceStash.to_seed()),
+            tx_account_from_seed(&Sr25519Keyring::BobStash.to_seed()),
         ],
-        sp_keyring::Sr25519Keyring::Alice.to_account_id(),
+        tx_account_from_seed(&sp_keyring::Sr25519Keyring::Alice.to_seed()),
     )
 }
 
@@ -110,9 +117,9 @@ pub fn local_config_genesis() -> Value {
         ],
         Sr25519Keyring::iter()
             .filter(|v| v != &Sr25519Keyring::One && v != &Sr25519Keyring::Two)
-            .map(|v| v.to_account_id())
+            .map(|v| tx_account_from_seed(&v.to_seed()))
             .collect::<Vec<_>>(),
-        Sr25519Keyring::Alice.to_account_id(),
+        tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
     )
 }
 
@@ -135,9 +142,9 @@ pub fn local_three_validator_config_genesis() -> Value {
         ],
         Sr25519Keyring::iter()
             .filter(|v| v != &Sr25519Keyring::One && v != &Sr25519Keyring::Two)
-            .map(|v| v.to_account_id())
+            .map(|v| tx_account_from_seed(&v.to_seed()))
             .collect::<Vec<_>>(),
-        Sr25519Keyring::Alice.to_account_id(),
+        tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
     )
 }
 

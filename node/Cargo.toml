@@ -60,6 +60,7 @@ sc-transaction-pool.workspace = true
 sc-transaction-pool-api.default-features = true
 sc-transaction-pool-api.workspace = true
 quip-protocol-runtime.workspace = true
+quip-transaction-crypto.workspace = true
 sp-api.default-features = true
 sp-api.workspace = true
 sp-block-builder.default-features = true

@@ -10,10 +10,11 @@ pub mod configs;
 
 extern crate alloc;
 use alloc::vec::Vec;
+use quip_transaction_crypto::HybridTxSignature;
 use sp_runtime::{
     generic, impl_opaque_keys,
     traits::{BlakeTwo256, IdentifyAccount, Verify},
-    MultiAddress, MultiSignature,
+    MultiAddress,
 };
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
@@ -119,8 +120,8 @@ pub fn native_version() -> NativeVersion {
     }
 }
 
-/// Alias to 512-bit hash when used in the context of a transaction signature on the chain.
-pub type Signature = MultiSignature;
+/// Hybrid transaction signature used for runtime extrinsics.
+pub type Signature = HybridTxSignature;
 
 /// Some way of identifying an account on the chain. We intentionally make it equivalent
 /// to the public key of our transaction signing scheme.
@@ -183,6 +184,96 @@ pub type Executive = frame_executive::Executive<
     Runtime,
     AllPalletsWithSystem,
 >;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codec::Encode;
+    use quip_transaction_crypto::{account_id_from_public, HybridPair, HybridTxSignature};
+    use sp_core::Pair as _;
+    use sp_runtime::{traits::Checkable, transaction_validity::InvalidTransaction, BuildStorage};
+
+    fn signed_test_extrinsic(
+        sender: &HybridPair,
+        address: Address,
+        call: RuntimeCall,
+        nonce: u32,
+    ) -> UncheckedExtrinsic {
+        let tx_ext: TxExtension = (
+            frame_system::AuthorizeCall::<Runtime>::new(),
+            frame_system::CheckNonZeroSender::<Runtime>::new(),
+            frame_system::CheckSpecVersion::<Runtime>::new(),
+            frame_system::CheckTxVersion::<Runtime>::new(),
+            frame_system::CheckGenesis::<Runtime>::new(),
+            frame_system::CheckEra::<Runtime>::from(generic::Era::Immortal),
+            frame_system::CheckNonce::<Runtime>::from(nonce),
+            frame_system::CheckWeight::<Runtime>::new(),
+            pallet_transaction_payment::ChargeTransactionPayment::<Runtime>::from(0),
+            frame_metadata_hash_extension::CheckMetadataHash::<Runtime>::new(false),
+            frame_system::WeightReclaim::<Runtime>::new(),
+        );
+
+        let payload = SignedPayload::new(call.clone(), tx_ext.clone()).unwrap();
+        let signature = payload.using_encoded(|encoded| HybridTxSignature::sign(sender, encoded));
+
+        UncheckedExtrinsic::new_signed(call, address, signature, tx_ext)
+    }
+
+    #[test]
+    fn hybrid_signed_extrinsic_checks_successfully() {
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+
+        ext.execute_with(|| {
+            System::set_block_number(1);
+
+            let sender = HybridPair::from_string("//Alice", None).unwrap();
+            let account_id = account_id_from_public(&sender.public());
+            let xt = signed_test_extrinsic(
+                &sender,
+                account_id.clone().into(),
+                SystemCall::remark { remark: vec![] }.into(),
+                0,
+            );
+
+            let checked =
+                <UncheckedExtrinsic as Checkable<frame_system::ChainContext<Runtime>>>::check(
+                    xt,
+                    &Default::default(),
+                );
+
+            assert!(checked.is_ok());
+        });
+    }
+
+    #[test]
+    fn hybrid_signed_extrinsic_rejects_wrong_account() {
+        let mut ext =
+            sp_io::TestExternalities::new(RuntimeGenesisConfig::default().build_storage().unwrap());
+
+        ext.execute_with(|| {
+            System::set_block_number(1);
+
+            let sender = HybridPair::from_string("//Alice", None).unwrap();
+            let wrong = HybridPair::from_string("//Bob", None).unwrap();
+            let wrong_account = account_id_from_public(&wrong.public());
+            let xt = signed_test_extrinsic(
+                &sender,
+                wrong_account.into(),
+                SystemCall::remark { remark: vec![] }.into(),
+                0,
+            );
+
+            let checked =
+                <UncheckedExtrinsic as Checkable<frame_system::ChainContext<Runtime>>>::check(
+                    xt,
+                    &Default::default(),
+                );
+
+            assert_eq!(checked.unwrap_err(), InvalidTransaction::BadProof.into());
+        });
+    }
+}
 
 // Create the runtime by composing the FRAME pallets that were previously configured.
 #[frame_support::runtime]
