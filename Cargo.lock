@@ -8014,6 +8014,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "quip-transaction-crypto"
+version = "0.1.0"
+dependencies = [
+ "parity-scale-codec",
+ "quip-crypto-primitives",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
