@@ -13,6 +13,9 @@
 /.idea/
 /.vscode/
 
+# AI coding-assistant configs (AGENTS.md is the shared, checked-in version)
+CLAUDE.md
+
 # OS-generated files
 .DS_Store
 Thumbs.db
