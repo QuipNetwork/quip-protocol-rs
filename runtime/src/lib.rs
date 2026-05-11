@@ -236,10 +236,10 @@ mod tests {
                 0,
             );
 
+            let lookup = frame_system::ChainContext::<Runtime>::default();
             let checked =
                 <UncheckedExtrinsic as Checkable<frame_system::ChainContext<Runtime>>>::check(
-                    xt,
-                    &Default::default(),
+                    xt, &lookup,
                 );
 
             assert!(checked.is_ok());
@@ -264,10 +264,10 @@ mod tests {
                 0,
             );
 
+            let lookup = frame_system::ChainContext::<Runtime>::default();
             let checked =
                 <UncheckedExtrinsic as Checkable<frame_system::ChainContext<Runtime>>>::check(
-                    xt,
-                    &Default::default(),
+                    xt, &lookup,
                 );
 
             assert_eq!(checked.unwrap_err(), InvalidTransaction::BadProof.into());
