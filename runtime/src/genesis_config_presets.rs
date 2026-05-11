@@ -89,7 +89,7 @@ fn testnet_genesis(
 pub fn development_config_genesis() -> Value {
     testnet_genesis(
         vec![(
-            babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Alice.to_seed()),
+            babe_authority_from_seed(&Sr25519Keyring::Alice.to_seed()),
             grandpa_authority_from_seed(&Ed25519Keyring::Alice.to_seed()),
         )],
         vec![
@@ -98,7 +98,7 @@ pub fn development_config_genesis() -> Value {
             tx_account_from_seed(&Sr25519Keyring::AliceStash.to_seed()),
             tx_account_from_seed(&Sr25519Keyring::BobStash.to_seed()),
         ],
-        tx_account_from_seed(&sp_keyring::Sr25519Keyring::Alice.to_seed()),
+        tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
     )
 }
 
@@ -107,11 +107,11 @@ pub fn local_config_genesis() -> Value {
     testnet_genesis(
         vec![
             (
-                babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Alice.to_seed()),
+                babe_authority_from_seed(&Sr25519Keyring::Alice.to_seed()),
                 grandpa_authority_from_seed(&Ed25519Keyring::Alice.to_seed()),
             ),
             (
-                babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Bob.to_seed()),
+                babe_authority_from_seed(&Sr25519Keyring::Bob.to_seed()),
                 grandpa_authority_from_seed(&Ed25519Keyring::Bob.to_seed()),
             ),
         ],
@@ -128,15 +128,15 @@ pub fn local_three_validator_config_genesis() -> Value {
     testnet_genesis(
         vec![
             (
-                babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Alice.to_seed()),
+                babe_authority_from_seed(&Sr25519Keyring::Alice.to_seed()),
                 grandpa_authority_from_seed(&Ed25519Keyring::Alice.to_seed()),
             ),
             (
-                babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Bob.to_seed()),
+                babe_authority_from_seed(&Sr25519Keyring::Bob.to_seed()),
                 grandpa_authority_from_seed(&Ed25519Keyring::Bob.to_seed()),
             ),
             (
-                babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Charlie.to_seed()),
+                babe_authority_from_seed(&Sr25519Keyring::Charlie.to_seed()),
                 grandpa_authority_from_seed(&Ed25519Keyring::Charlie.to_seed()),
             ),
         ],
