@@ -68,10 +68,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // The version of the runtime specification. A full node will not attempt to use its native
     //   runtime in substitute for the on-chain Wasm runtime unless all of `spec_name`,
     //   `spec_version`, and `authoring_version` are the same between Wasm and native.
-    spec_version: 100,
+    // Bumped to 101 (and `transaction_version` to 2) when the signed-extrinsic
+    // wire format switched from `MultiSignature` to the hybrid envelope. Without
+    // these bumps, peers/clients could treat the new format as the old one.
+    spec_version: 101,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
-    transaction_version: 1,
+    transaction_version: 2,
     system_version: 1,
 };
 
