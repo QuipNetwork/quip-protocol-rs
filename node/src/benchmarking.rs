@@ -39,7 +39,10 @@ impl frame_benchmarking_cli::ExtrinsicBuilder for RemarkBuilder {
     }
 
     fn build(&self, nonce: u32) -> std::result::Result<OpaqueExtrinsic, &'static str> {
-        let acc = HybridPair::from_string("//Bob", None).map_err(|_| "invalid benchmark seed")?;
+        let acc = HybridPair::from_string("//Bob", None).map_err(|e| {
+            eprintln!("benchmark: failed to derive hybrid pair for //Bob: {e:?}");
+            "invalid benchmark seed"
+        })?;
         let extrinsic: OpaqueExtrinsic = create_benchmark_extrinsic(
             self.client.as_ref(),
             acc,
@@ -82,7 +85,10 @@ impl frame_benchmarking_cli::ExtrinsicBuilder for TransferKeepAliveBuilder {
     }
 
     fn build(&self, nonce: u32) -> std::result::Result<OpaqueExtrinsic, &'static str> {
-        let acc = HybridPair::from_string("//Bob", None).map_err(|_| "invalid benchmark seed")?;
+        let acc = HybridPair::from_string("//Bob", None).map_err(|e| {
+            eprintln!("benchmark: failed to derive hybrid pair for //Bob: {e:?}");
+            "invalid benchmark seed"
+        })?;
         let extrinsic: OpaqueExtrinsic = create_benchmark_extrinsic(
             self.client.as_ref(),
             acc,

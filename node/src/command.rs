@@ -188,7 +188,7 @@ pub fn run() -> sc_cli::Result<()> {
                         let PartialComponents { client, .. } = service::new_partial(&config)?;
                         // Register the *Remark* and *TKA* builders.
                         let alice = HybridPair::from_string("//Alice", None)
-                            .map_err(|_| "invalid benchmark seed")?;
+                            .map_err(|e| format!("invalid benchmark seed //Alice: {e:?}"))?;
                         let ext_factory = ExtrinsicFactory(vec![
                             Box::new(RemarkBuilder::new(client.clone())),
                             Box::new(TransferKeepAliveBuilder::new(
