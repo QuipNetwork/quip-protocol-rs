@@ -330,4 +330,46 @@ mod tests {
         encoded.truncate(encoded.len() / 2);
         assert!(HybridTxSignature::decode(&mut &encoded[..]).is_err());
     }
+
+    #[test]
+    fn account_id_helper_matches_identify_account() {
+        let pair = HybridPair::from_string("//Alice", None).unwrap();
+        let public = pair.public();
+
+        let direct = account_id_from_public(&public);
+        let via_identify = HybridTxPublic(public).into_account();
+
+        assert_eq!(direct, via_identify);
+    }
+
+    #[test]
+    fn hybrid_tx_signature_rejects_same_length_different_content() {
+        // The pre-existing "wrong-message" test compares "quip-message"
+        // (12 bytes) vs "wrong-message" (13 bytes). Add a same-length but
+        // bit-different replay to catch a hypothetical length-only check.
+        let pair = HybridPair::from_string("//Alice", None).unwrap();
+        let account_id = account_id_from_public(&pair.public());
+        let signature = HybridTxSignature::sign(&pair, b"AAAA-message");
+
+        assert!(!signature.verify(&b"BBBB-message"[..], &account_id));
+    }
+
+    #[test]
+    fn hybrid_tx_signature_verify_is_idempotent() {
+        let pair = HybridPair::from_string("//Alice", None).unwrap();
+        let account_id = account_id_from_public(&pair.public());
+        let signature = HybridTxSignature::sign(&pair, b"quip-message");
+
+        assert!(signature.verify(&b"quip-message"[..], &account_id));
+        assert!(signature.verify(&b"quip-message"[..], &account_id));
+    }
+
+    #[test]
+    fn hybrid_tx_signature_handles_empty_message() {
+        let pair = HybridPair::from_string("//Alice", None).unwrap();
+        let account_id = account_id_from_public(&pair.public());
+        let signature = HybridTxSignature::sign(&pair, b"");
+
+        assert!(signature.verify(&b""[..], &account_id));
+    }
 }
