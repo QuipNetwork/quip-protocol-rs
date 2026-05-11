@@ -211,6 +211,7 @@ impl Verify for HybridTxSignature {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use codec::Decode;
 
     #[test]
     fn same_public_key_derives_same_account_id() {
@@ -266,5 +267,67 @@ mod tests {
         // really the intent, bump the version segment ("v1" -> "v2") in
         // lockstep with the migration plan.
         assert_eq!(ACCOUNT_ID_DOMAIN, b"quip-account-v1");
+    }
+
+    #[test]
+    fn hybrid_tx_signature_rejects_tampered_signature_bytes() {
+        let pair = HybridPair::from_string("//Alice", None).unwrap();
+        let account_id = account_id_from_public(&pair.public());
+        let mut signature = HybridTxSignature::sign(&pair, b"quip-message");
+
+        // SCALE-out, flip a byte, SCALE back in. The signature field is
+        // opaque from this crate's perspective, so we mutate via the wire form.
+        let mut encoded = signature.signature.encode();
+        let mid = encoded.len() / 2;
+        encoded[mid] ^= 0xFF;
+        signature.signature =
+            HybridSignatureBytes::decode(&mut &encoded[..]).expect("re-decode after byte flip");
+
+        assert!(!signature.verify(&b"quip-message"[..], &account_id));
+    }
+
+    #[test]
+    fn hybrid_tx_signature_rejects_tampered_public_bytes() {
+        let pair = HybridPair::from_string("//Alice", None).unwrap();
+        let original_account = account_id_from_public(&pair.public());
+        let mut signature = HybridTxSignature::sign(&pair, b"quip-message");
+
+        // Flip a byte in the embedded pubkey. The derived account id no
+        // longer matches the original signer, so verify rejects on the
+        // account-derivation branch (before crypto verify even runs).
+        let mut encoded = signature.public.encode();
+        encoded[0] ^= 0xFF;
+        signature.public =
+            HybridPublic::decode(&mut &encoded[..]).expect("re-decode after byte flip");
+
+        assert!(!signature.verify(&b"quip-message"[..], &original_account));
+    }
+
+    #[test]
+    fn hybrid_tx_signature_round_trips_through_scale() {
+        let pair = HybridPair::from_string("//Alice", None).unwrap();
+        let account_id = account_id_from_public(&pair.public());
+        let signature = HybridTxSignature::sign(&pair, b"quip-message");
+
+        let encoded = signature.encode();
+        let decoded = HybridTxSignature::decode(&mut &encoded[..]).expect("round-trip");
+
+        assert_eq!(decoded, signature);
+        assert!(decoded.verify(&b"quip-message"[..], &account_id));
+    }
+
+    #[test]
+    fn hybrid_tx_signature_decode_rejects_empty_bytes() {
+        let bytes: &[u8] = &[];
+        assert!(HybridTxSignature::decode(&mut &bytes[..]).is_err());
+    }
+
+    #[test]
+    fn hybrid_tx_signature_decode_rejects_truncated_bytes() {
+        let pair = HybridPair::from_string("//Alice", None).unwrap();
+        let signature = HybridTxSignature::sign(&pair, b"quip-message");
+        let mut encoded = signature.encode();
+        encoded.truncate(encoded.len() / 2);
+        assert!(HybridTxSignature::decode(&mut &encoded[..]).is_err());
     }
 }
