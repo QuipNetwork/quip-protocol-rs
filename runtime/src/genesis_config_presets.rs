@@ -171,3 +171,53 @@ pub fn preset_names() -> Vec<PresetId> {
         PresetId::from(LOCAL_THREE_VALIDATOR_RUNTIME_PRESET),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codec::Encode;
+
+    /// Pinned hex of `tx_account_from_seed("//Alice")`. Acts as a canary for
+    /// silent changes to `quip_transaction_crypto::ACCOUNT_ID_DOMAIN` or the
+    /// H3 keyring derivation: any such change re-keys every account at
+    /// genesis, and this constant is the cheapest grep target for catching
+    /// that regression.
+    const ALICE_PINNED_ACCOUNT_HEX: &str =
+        "504c921d4b618d2cbb53ebebfbc98db585b325c355259545739daafb3146cdb4";
+
+    fn hex_encode(bytes: &[u8]) -> alloc::string::String {
+        const TABLE: &[u8; 16] = b"0123456789abcdef";
+        let mut out = alloc::string::String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            out.push(TABLE[(b >> 4) as usize] as char);
+            out.push(TABLE[(b & 0xF) as usize] as char);
+        }
+        out
+    }
+
+    #[test]
+    fn development_preset_builds() {
+        let _ = development_config_genesis();
+    }
+
+    #[test]
+    fn local_preset_builds() {
+        let _ = local_config_genesis();
+    }
+
+    #[test]
+    fn local_three_validator_preset_builds() {
+        let _ = local_three_validator_config_genesis();
+    }
+
+    #[test]
+    fn alice_account_id_is_pinned() {
+        let alice = tx_account_from_seed(&Sr25519Keyring::Alice.to_seed());
+        let hex = hex_encode(&alice.encode());
+        assert_eq!(
+            hex, ALICE_PINNED_ACCOUNT_HEX,
+            "Alice's derived account id changed. If this is intentional, update \
+             ALICE_PINNED_ACCOUNT_HEX above with the new value: {hex}",
+        );
+    }
+}
