@@ -8020,6 +8020,7 @@ dependencies = [
 name = "quip-transaction-crypto"
 version = "0.1.0"
 dependencies = [
+ "log",
  "parity-scale-codec",
  "quip-crypto-primitives",
  "scale-info",

@@ -9,6 +9,7 @@ edition.workspace = true
 
 [dependencies]
 codec = { features = ["derive"], workspace = true }
+log = { version = "0.4", default-features = false }
 quip-crypto-primitives = { workspace = true, default-features = false }
 scale-info = { features = ["derive"], workspace = true }
 sp-core.workspace = true
@@ -19,6 +20,7 @@ sp-runtime.workspace = true
 default = ["std"]
 std = [
     "codec/std",
+    "log/std",
     "quip-crypto-primitives/std",
     "scale-info/std",
     "sp-core/std",

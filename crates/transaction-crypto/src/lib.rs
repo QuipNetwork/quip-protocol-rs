@@ -188,11 +188,23 @@ impl Verify for HybridTxSignature {
         mut msg: L,
         signer: &<Self::Signer as IdentifyAccount>::AccountId,
     ) -> bool {
-        if self.derived_account_id() != *signer {
+        let derived = self.derived_account_id();
+        if derived != *signer {
+            log::trace!(
+                target: "quip::tx-verify",
+                "account-id mismatch: claimed={signer:?} derived={derived:?}",
+            );
             return false;
         }
 
-        HybridPair::verify(&self.signature, msg.get(), &self.public)
+        let ok = HybridPair::verify(&self.signature, msg.get(), &self.public);
+        if !ok {
+            log::trace!(
+                target: "quip::tx-verify",
+                "crypto verify failed for signer={signer:?}",
+            );
+        }
+        ok
     }
 }
 
