@@ -1,0 +1,122 @@
+# Local dev only. Three Aura validators (Alice/Bob/Charlie) peer over a
+# dedicated bridge network with static container IPs.
+#
+# Why static IPs and not --listen-addr=/ip4/0.0.0.0/tcp/30333:
+#
+# litep2p (substrate's network backend) enumerates EVERY local IPv4
+# interface when binding to a wildcard address, including 127.0.0.1.
+# See litep2p/src/transport/common/listener.rs:272-309 — only IPv6
+# link-local fe80:: is filtered; loopback is not. Identify then
+# advertises that entire set to peers; peers dial /ip4/127.0.0.1/tcp/30333
+# in *their own* netns and reach themselves, failing the Noise
+# handshake with `error=Decrypt`.
+#
+# --public-addr does NOT fix this: per substrate#7518, it is *additive*
+# to discovered addresses, not exclusive. Binding to a single, specific
+# IP is the only way to avoid the wildcard enumeration.
+#
+# --no-mdns is kept as defense-in-depth (mDNS broadcasts would also
+# leak interface lists across bridged networks under some conditions).
+# No host port mappings for 30333 — peering happens entirely inside the
+# docker network; only RPC (9944/5/6) and Prometheus (9615/6/7) are
+# exposed to the host for debugging.
+services:
+  node1:
+    build: .
+    image: quip-network-node:local
+    container_name: quip-node1
+    restart: unless-stopped
+    networks:
+      quip-net:
+        ipv4_address: 172.30.0.10
+    volumes:
+      - node1-data:/data
+    ports:
+      - "9944:9944"
+      - "9615:9615"
+      - "30333:30333"
+    command:
+      - --chain=local3
+      - --base-path=/data
+      - --node-key=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+      - --listen-addr=/ip4/172.30.0.10/tcp/30333
+      - --no-mdns
+      - --rpc-port=9944
+      - --unsafe-rpc-external
+      - --rpc-cors=all
+      - --prometheus-port=9615
+      - --prometheus-external
+      - --alice
+      - --validator
+
+  node2:
+    image: quip-network-node:local
+    container_name: quip-node2
+    restart: unless-stopped
+    depends_on:
+      - node1
+    networks:
+      quip-net:
+        ipv4_address: 172.30.0.11
+    volumes:
+      - node2-data:/data
+    ports:
+      - "9945:9944"
+      - "9616:9615"
+      - "30334:30333"
+    command:
+      - --chain=local3
+      - --base-path=/data
+      - --node-key=1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100
+      - --listen-addr=/ip4/172.30.0.11/tcp/30333
+      - --no-mdns
+      - --rpc-port=9944
+      - --unsafe-rpc-external
+      - --rpc-cors=all
+      - --prometheus-port=9615
+      - --prometheus-external
+      - --bootnodes=/ip4/172.30.0.10/tcp/30333/p2p/12D3KooWA4Xop1JaT3MHxwYMkCepYsv4iPVopMXwCz5iHYdBfeSB
+      - --bob
+      - --validator
+
+  node3:
+    image: quip-network-node:local
+    container_name: quip-node3
+    restart: unless-stopped
+    depends_on:
+      - node1
+    networks:
+      quip-net:
+        ipv4_address: 172.30.0.12
+    volumes:
+      - node3-data:/data
+    ports:
+      - "9946:9944"
+      - "9617:9615"
+      - "30335:30333"
+    command:
+      - --chain=local3
+      - --base-path=/data
+      - --node-key=f0e1d2c3b4a5968778695a4b3c2d1e0ff1e2d3c4b5a69788796a5b4c3d2e1f00
+      - --listen-addr=/ip4/172.30.0.12/tcp/30333
+      - --no-mdns
+      - --rpc-port=9944
+      - --unsafe-rpc-external
+      - --rpc-cors=all
+      - --prometheus-port=9615
+      - --prometheus-external
+      - --bootnodes=/ip4/172.30.0.10/tcp/30333/p2p/12D3KooWA4Xop1JaT3MHxwYMkCepYsv4iPVopMXwCz5iHYdBfeSB
+      - --charlie
+      - --validator
+
+networks:
+  quip-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
