@@ -1,0 +1,10 @@
+.git
+.gitignore
+target
+docs
+env-setup
+linear-issues
+*.md
+!README.md
+Dockerfile
+docker-compose.yml

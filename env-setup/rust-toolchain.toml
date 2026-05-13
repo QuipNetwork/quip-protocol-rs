@@ -10,5 +10,5 @@ components = [
   "rustc-dev",
   "rustfmt",
 ]
-targets = ["wasm32-unknown-unknown"]
+targets = ["wasm32v1-none"]
 profile = "minimal"

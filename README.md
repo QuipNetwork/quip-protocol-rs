@@ -121,7 +121,17 @@ require custom types for Quip anymore; for usage notes, see
 
 ### Multi-Node Local Testnet
 
-If you want to see the multi-node consensus algorithm in action, see [Simulate a
+A scripted three-validator local network is available two ways:
+
+- **Native build:** `scripts/start-local3.sh` builds the debug binary and starts
+  three validators (Alice/Bob/Charlie) against the embedded `local3` chain spec.
+- **Docker:** `docker compose up --build` starts the same three-validator
+  topology in containers. See the [Docker](#docker) section below.
+
+Both paths use the same hardcoded libp2p node-keys and bootnode peer ID, so
+they're interchangeable for development.
+
+For background on multi-node consensus, see [Simulate a
 network](https://docs.substrate.io/tutorials/build-a-blockchain/simulate-network/).
 
 ## Template Structure
@@ -231,6 +241,57 @@ the correct dependencies, activate direnv `direnv allow`.
 
 ### Docker
 
-Please follow the [Substrate Docker instructions
-here](https://github.com/paritytech/polkadot-sdk/blob/master/substrate/docker/README.md) to
-build the Docker container with the Substrate Node Template binary.
+A multi-stage `Dockerfile` builds the `quip-network-node` binary on top of
+`debian:bookworm-slim` (~80 MB runtime image). The image exposes the binary
+directly as ENTRYPOINT, so any Substrate CLI flag works at `docker run` time.
+
+#### Build
+
+```sh
+docker build -t quip-network-node:local .
+```
+
+The first build compiles the full workspace and takes a while. BuildKit cache
+mounts (declared in the Dockerfile) keep the cargo registry and target
+directory between local rebuilds.
+
+#### Run as a validator
+
+```sh
+docker run --rm -v quip-data:/data -p 9944:9944 -p 30333:30333 \
+  quip-network-node:local \
+  --chain=local3 --base-path=/data \
+  --validator --alice \
+  --unsafe-rpc-external --rpc-cors=all
+```
+
+`--unsafe-rpc-external` is required because Substrate refuses to combine
+`--rpc-external` with `--validator` by default (a safety guard against
+exposing a validator's RPC to the public internet). For local development
+the unsafe flag is fine; for production validators you almost certainly do
+not want any external RPC at all.
+
+#### Run as a full node
+
+Same command, omit `--validator` (and the `--alice/--bob/--charlie` shortcut):
+
+```sh
+docker run --rm -v quip-data:/data -p 9944:9944 -p 30333:30333 \
+  quip-network-node:local \
+  --chain=local3 --base-path=/data \
+  --bootnodes=/dns/<bootnode-host>/tcp/30333/p2p/<peer-id> \
+  --rpc-external --rpc-cors=all
+```
+
+#### Local 3-node network via docker-compose
+
+`docker-compose.yml` reproduces `scripts/start-local3.sh` in containers:
+
+```sh
+docker compose up --build           # start
+docker compose down                 # stop, keep chain state
+docker compose down -v              # stop and wipe state
+```
+
+Then connect Polkadot.js Apps to `ws://localhost:9944` (node1),
+`ws://localhost:9945` (node2), or `ws://localhost:9946` (node3).
