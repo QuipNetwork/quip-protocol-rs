@@ -22,6 +22,7 @@ use alloc::{vec, vec::Vec};
 use frame_support::build_struct_json_patch;
 use quip_crypto_primitives::substrate::ed25519_mldsa44::Pair as HybridGrandpaPair;
 use quip_crypto_primitives::substrate::sr25519_mldsa44::Pair as HybridBabePair;
+use quip_transaction_crypto::{account_id_from_public, HybridPair as HybridTxPair};
 use serde_json::Value;
 use sp_consensus_babe::AuthorityId as BabeId;
 use sp_consensus_grandpa::AuthorityId as GrandpaId;
@@ -44,6 +45,12 @@ fn grandpa_authority_from_seed(seed: &str) -> GrandpaId {
         .expect("well-known dev seeds are valid for hybrid GRANDPA authorities")
         .public()
         .into()
+}
+
+fn tx_account_from_seed(seed: &str) -> AccountId {
+    let pair = HybridTxPair::from_string(seed, None)
+        .expect("well-known dev seeds are valid for hybrid transaction accounts");
+    account_id_from_public(&pair.public())
 }
 
 // Returns the genesis config presets populated with given parameters.
@@ -82,16 +89,16 @@ fn testnet_genesis(
 pub fn development_config_genesis() -> Value {
     testnet_genesis(
         vec![(
-            babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Alice.to_seed()),
+            babe_authority_from_seed(&Sr25519Keyring::Alice.to_seed()),
             grandpa_authority_from_seed(&Ed25519Keyring::Alice.to_seed()),
         )],
         vec![
-            Sr25519Keyring::Alice.to_account_id(),
-            Sr25519Keyring::Bob.to_account_id(),
-            Sr25519Keyring::AliceStash.to_account_id(),
-            Sr25519Keyring::BobStash.to_account_id(),
+            tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
+            tx_account_from_seed(&Sr25519Keyring::Bob.to_seed()),
+            tx_account_from_seed(&Sr25519Keyring::AliceStash.to_seed()),
+            tx_account_from_seed(&Sr25519Keyring::BobStash.to_seed()),
         ],
-        sp_keyring::Sr25519Keyring::Alice.to_account_id(),
+        tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
     )
 }
 
@@ -100,19 +107,19 @@ pub fn local_config_genesis() -> Value {
     testnet_genesis(
         vec![
             (
-                babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Alice.to_seed()),
+                babe_authority_from_seed(&Sr25519Keyring::Alice.to_seed()),
                 grandpa_authority_from_seed(&Ed25519Keyring::Alice.to_seed()),
             ),
             (
-                babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Bob.to_seed()),
+                babe_authority_from_seed(&Sr25519Keyring::Bob.to_seed()),
                 grandpa_authority_from_seed(&Ed25519Keyring::Bob.to_seed()),
             ),
         ],
         Sr25519Keyring::iter()
             .filter(|v| v != &Sr25519Keyring::One && v != &Sr25519Keyring::Two)
-            .map(|v| v.to_account_id())
+            .map(|v| tx_account_from_seed(&v.to_seed()))
             .collect::<Vec<_>>(),
-        Sr25519Keyring::Alice.to_account_id(),
+        tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
     )
 }
 
@@ -121,23 +128,23 @@ pub fn local_three_validator_config_genesis() -> Value {
     testnet_genesis(
         vec![
             (
-                babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Alice.to_seed()),
+                babe_authority_from_seed(&Sr25519Keyring::Alice.to_seed()),
                 grandpa_authority_from_seed(&Ed25519Keyring::Alice.to_seed()),
             ),
             (
-                babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Bob.to_seed()),
+                babe_authority_from_seed(&Sr25519Keyring::Bob.to_seed()),
                 grandpa_authority_from_seed(&Ed25519Keyring::Bob.to_seed()),
             ),
             (
-                babe_authority_from_seed(&sp_keyring::Sr25519Keyring::Charlie.to_seed()),
+                babe_authority_from_seed(&Sr25519Keyring::Charlie.to_seed()),
                 grandpa_authority_from_seed(&Ed25519Keyring::Charlie.to_seed()),
             ),
         ],
         Sr25519Keyring::iter()
             .filter(|v| v != &Sr25519Keyring::One && v != &Sr25519Keyring::Two)
-            .map(|v| v.to_account_id())
+            .map(|v| tx_account_from_seed(&v.to_seed()))
             .collect::<Vec<_>>(),
-        Sr25519Keyring::Alice.to_account_id(),
+        tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
     )
 }
 
@@ -163,4 +170,54 @@ pub fn preset_names() -> Vec<PresetId> {
         PresetId::from(sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET),
         PresetId::from(LOCAL_THREE_VALIDATOR_RUNTIME_PRESET),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codec::Encode;
+
+    /// Pinned hex of `tx_account_from_seed("//Alice")`. Acts as a canary for
+    /// silent changes to `quip_transaction_crypto::ACCOUNT_ID_DOMAIN` or the
+    /// H3 keyring derivation: any such change re-keys every account at
+    /// genesis, and this constant is the cheapest grep target for catching
+    /// that regression.
+    const ALICE_PINNED_ACCOUNT_HEX: &str =
+        "504c921d4b618d2cbb53ebebfbc98db585b325c355259545739daafb3146cdb4";
+
+    fn hex_encode(bytes: &[u8]) -> alloc::string::String {
+        const TABLE: &[u8; 16] = b"0123456789abcdef";
+        let mut out = alloc::string::String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            out.push(TABLE[(b >> 4) as usize] as char);
+            out.push(TABLE[(b & 0xF) as usize] as char);
+        }
+        out
+    }
+
+    #[test]
+    fn development_preset_builds() {
+        let _ = development_config_genesis();
+    }
+
+    #[test]
+    fn local_preset_builds() {
+        let _ = local_config_genesis();
+    }
+
+    #[test]
+    fn local_three_validator_preset_builds() {
+        let _ = local_three_validator_config_genesis();
+    }
+
+    #[test]
+    fn alice_account_id_is_pinned() {
+        let alice = tx_account_from_seed(&Sr25519Keyring::Alice.to_seed());
+        let hex = hex_encode(&alice.encode());
+        assert_eq!(
+            hex, ALICE_PINNED_ACCOUNT_HEX,
+            "Alice's derived account id changed. If this is intentional, update \
+             ALICE_PINNED_ACCOUNT_HEX above with the new value: {hex}",
+        );
+    }
 }

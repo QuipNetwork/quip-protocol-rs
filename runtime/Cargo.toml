@@ -37,6 +37,7 @@ pallet-timestamp.workspace = true
 pallet-transaction-payment.workspace = true
 pallet-transaction-payment-rpc-runtime-api.workspace = true
 quip-crypto-primitives = { workspace = true, default-features = false }
+quip-transaction-crypto = { workspace = true, default-features = false }
 scale-info = { features = ["derive", "serde"], workspace = true }
 serde_json = { workspace = true, default-features = false, features = [
   "alloc",
@@ -55,6 +56,9 @@ sp-session.workspace = true
 sp-storage.workspace = true
 sp-transaction-pool.workspace = true
 sp-version = { features = ["serde"], workspace = true }
+
+[dev-dependencies]
+sp-io.workspace = true
 
 [build-dependencies]
 substrate-wasm-builder = { optional = true, workspace = true, default-features = true }
@@ -83,6 +87,7 @@ std = [
   "pallet-transaction-payment/std",
   "pallet-xqvm/std",
   "quip-crypto-primitives/std",
+  "quip-transaction-crypto/std",
   "scale-info/std",
   "serde_json/std",
   "sp-api/std",
@@ -92,6 +97,7 @@ std = [
   "sp-core/std",
   "sp-genesis-builder/std",
   "sp-inherents/std",
+  "sp-io/std",
   "sp-keyring/std",
   "sp-offchain/std",
   "sp-runtime/std",
