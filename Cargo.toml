@@ -8,6 +8,7 @@ edition = "2021"
 [workspace]
 members = [
   "crates/quantum-validation",
+  "crates/transaction-crypto",
   "node",
   "pallets/quantum-compute-mempool",
   "pallets/quantum-pow",
@@ -24,6 +25,7 @@ pallet-quantum-pow = { path = "./pallets/quantum-pow", default-features = false 
 pallet-template = { path = "./pallets/template", default-features = false }
 pallet-xqvm = { path = "./pallets/xqvm", default-features = false }
 quantum-validation = { path = "./crates/quantum-validation", default-features = false }
+quip-transaction-crypto = { path = "./crates/transaction-crypto", default-features = false }
 clap = { version = "4.5.13" }
 frame-benchmarking-cli = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }
 frame-metadata-hash-extension = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "ru/feature/hybrid-with-primitives", default-features = false }

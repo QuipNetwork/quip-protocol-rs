@@ -7938,6 +7938,7 @@ dependencies = [
  "pallet-transaction-payment",
  "pallet-transaction-payment-rpc",
  "quip-protocol-runtime",
+ "quip-transaction-crypto",
  "sc-basic-authorship",
  "sc-cli",
  "sc-client-api",
@@ -7994,6 +7995,7 @@ dependencies = [
  "pallet-xqvm",
  "parity-scale-codec",
  "quip-crypto-primitives",
+ "quip-transaction-crypto",
  "scale-info",
  "serde_json",
  "sp-api",
@@ -8003,6 +8005,7 @@ dependencies = [
  "sp-core",
  "sp-genesis-builder",
  "sp-inherents",
+ "sp-io",
  "sp-keyring",
  "sp-offchain",
  "sp-runtime",
@@ -8011,6 +8014,19 @@ dependencies = [
  "sp-transaction-pool",
  "sp-version",
  "substrate-wasm-builder",
+]
+
+[[package]]
+name = "quip-transaction-crypto"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "parity-scale-codec",
+ "quip-crypto-primitives",
+ "scale-info",
+ "sp-core",
+ "sp-io",
+ "sp-runtime",
 ]
 
 [[package]]
