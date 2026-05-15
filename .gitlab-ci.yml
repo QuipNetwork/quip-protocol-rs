@@ -8,13 +8,8 @@
 #
 # Image: registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:<tag>
 #
-# Caching: docker-container buildx driver + registry-side cache image
-# (:buildcache, mode=max) so all stages including the slow Rust/Substrate
-# builder are reused on subsequent runs. First build on a fresh registry is
-# expected to miss; subsequent dep-stable builds drop from ~25 min to a few
-# minutes. Mount caches inside the Dockerfile (cargo registry, target/) are
-# build-local and do NOT persist across CI runs — that's a separate item
-# (see QUI-512 #12 for the two-phase Cargo.toml/lock + cargo fetch refactor).
+# Caching: Kaniko registry-side cache image (:buildcache). This reuses built
+# layers across CI runs without Docker-in-Docker.
 #
 # Context: QUI-528.
 
@@ -25,11 +20,12 @@ variables:
   IMAGE: $CI_REGISTRY_IMAGE/quip-network-node
   CACHE_IMAGE: $CI_REGISTRY_IMAGE/quip-network-node:buildcache
 
-docker-build-push:
+kaniko-build-push:
   stage: build
-  image: docker:latest
-  services:
-    - docker:dind
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  tags: [linux, amd64]
   timeout: 90m
   interruptible: true
   rules:
@@ -40,14 +36,18 @@ docker-build-push:
       variables:
         PRIMARY_TAG: $CI_COMMIT_TAG
   before_script:
-    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
-    - docker buildx create --use --name ci-builder --driver docker-container
+    - mkdir -p /kaniko/.docker
+    - |
+      printf '{"auths":{"%s":{"auth":"%s"}}}\n' \
+        "$CI_REGISTRY" \
+        "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')" \
+        > /kaniko/.docker/config.json
   script:
     - |
-      docker buildx build --push \
-        --tag "$IMAGE:$PRIMARY_TAG" \
-        --tag "$IMAGE:sha-$CI_COMMIT_SHORT_SHA" \
-        --cache-from "type=registry,ref=$CACHE_IMAGE" \
-        --cache-to   "type=registry,ref=$CACHE_IMAGE,mode=max" \
-        --provenance=false \
-        .
+      /kaniko/executor \
+        --context "$CI_PROJECT_DIR" \
+        --dockerfile "$CI_PROJECT_DIR/Dockerfile" \
+        --destination "$IMAGE:$PRIMARY_TAG" \
+        --destination "$IMAGE:sha-$CI_COMMIT_SHORT_SHA" \
+        --cache=true \
+        --cache-repo "$CACHE_IMAGE"
