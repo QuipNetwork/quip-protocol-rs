@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# Build the quip-network-node Docker image and push to GitLab Container Registry.
+#
+# Triggers:
+#   - push to main  →  :latest + :sha-<short>
+#   - git tag       →  :<tag>  + :sha-<short>   (no :latest — main is the floating ref)
+#
+# Image: registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:<tag>
+#
+# Caching: docker-container buildx driver + registry-side cache image
+# (:buildcache, mode=max) so all stages including the slow Rust/Substrate
+# builder are reused on subsequent runs. First build on a fresh registry is
+# expected to miss; subsequent dep-stable builds drop from ~25 min to a few
+# minutes. Mount caches inside the Dockerfile (cargo registry, target/) are
+# build-local and do NOT persist across CI runs — that's a separate item
+# (see QUI-512 #12 for the two-phase Cargo.toml/lock + cargo fetch refactor).
+#
+# Context: QUI-528.
+
+stages:
+  - build
+
+variables:
+  IMAGE: $CI_REGISTRY_IMAGE/quip-network-node
+  CACHE_IMAGE: $CI_REGISTRY_IMAGE/quip-network-node:buildcache
+
+docker-build-push:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  timeout: 90m
+  interruptible: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      variables:
+        PRIMARY_TAG: latest
+    - if: $CI_COMMIT_TAG
+      variables:
+        PRIMARY_TAG: $CI_COMMIT_TAG
+  before_script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - docker buildx create --use --name ci-builder --driver docker-container
+  script:
+    - |
+      docker buildx build --push \
+        --tag "$IMAGE:$PRIMARY_TAG" \
+        --tag "$IMAGE:sha-$CI_COMMIT_SHORT_SHA" \
+        --cache-from "type=registry,ref=$CACHE_IMAGE" \
+        --cache-to   "type=registry,ref=$CACHE_IMAGE,mode=max" \
+        --provenance=false \
+        .

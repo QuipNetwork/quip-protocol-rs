@@ -255,6 +255,21 @@ The first build compiles the full workspace and takes a while. BuildKit cache
 mounts (declared in the Dockerfile) keep the cargo registry and target
 directory between local rebuilds.
 
+#### Pre-built images
+
+Every push to `main` and every git tag publishes an image to the project's
+GitLab Container Registry, so you don't have to build locally:
+
+```sh
+docker pull registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:latest
+```
+
+Tag scheme:
+
+- `:latest` — tip of `main`. Floating, advances on every merge.
+- `:sha-<short>` — pinned to a specific commit on `main` or to a tagged release.
+- `:<git-tag>` — pinned to a release tag (e.g. `:v0.1.0`).
+
 #### Run as a validator
 
 ```sh
