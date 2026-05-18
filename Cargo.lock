@@ -6472,7 +6472,7 @@ dependencies = [
 
 [[package]]
 name = "pallet-quantum-compute-mempool"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "frame-benchmarking",
  "frame-support",
@@ -6488,7 +6488,7 @@ dependencies = [
 
 [[package]]
 name = "pallet-quantum-pow"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "frame-benchmarking",
@@ -6581,7 +6581,7 @@ dependencies = [
 
 [[package]]
 name = "pallet-template"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "frame-benchmarking",
  "frame-support",
@@ -6657,7 +6657,7 @@ dependencies = [
 
 [[package]]
 name = "pallet-xqvm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aglais-xqvm-bytecode",
  "aglais-xqvm-vm",
@@ -7813,7 +7813,7 @@ dependencies = [
 
 [[package]]
 name = "quantum-validation"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "hex",
@@ -7927,7 +7927,7 @@ dependencies = [
 
 [[package]]
 name = "quip-network-node"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "frame-benchmarking-cli",
@@ -7972,7 +7972,7 @@ dependencies = [
 
 [[package]]
 name = "quip-protocol-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "frame-benchmarking",
  "frame-executive",
@@ -8018,7 +8018,7 @@ dependencies = [
 
 [[package]]
 name = "quip-transaction-crypto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "log",
  "parity-scale-codec",

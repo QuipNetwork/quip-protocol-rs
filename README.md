@@ -310,3 +310,47 @@ docker compose down -v              # stop and wipe state
 
 Then connect Polkadot.js Apps to `ws://localhost:9944` (node1),
 `ws://localhost:9945` (node2), or `ws://localhost:9946` (node3).
+
+## Public testnet
+
+`quip-testnet` is the public testnet ("tQUIP" tokens, 12 decimals). The
+canonical genesis is baked into the `v0.2.0+` binary as the `quip-testnet`
+chain spec preset and also published as a raw JSON file at
+`nodes.quip.network/chain-specs/quip-testnet.json`.
+
+### Quickstart (Docker)
+
+```sh
+# Pull the matching release image
+docker pull registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v0.2.0
+
+# Join the testnet as a full node (no validator key required)
+docker run --rm -v quip-data:/data -p 9944:9944 -p 30333:30333 \
+  registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v0.2.0 \
+  --chain=quip-testnet --base-path=/data \
+  --name="my-quip-node"
+```
+
+The three canonical bootnodes (`bootnode-{1,2,3}.testnet.quip.network`) are
+embedded in the chain spec, so peer discovery happens automatically.
+
+### Using the hosted raw chain spec
+
+Alternatively, fetch the published JSON spec from `nodes.quip.network` and
+pass its path to `--chain`:
+
+```sh
+curl -fsSL https://gitlab.com/quip.network/nodes.quip.network/-/raw/main/chain-specs/quip-testnet.json \
+    -o quip-testnet.json
+
+docker run --rm -v "$PWD:/spec" -v quip-data:/data -p 9944:9944 -p 30333:30333 \
+  registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v0.2.0 \
+  --chain=/spec/quip-testnet.json --base-path=/data
+```
+
+### Running a validator
+
+Operator validator slots are committed at genesis (see
+[`docs/genesis-quip-testnet.md`](docs/genesis-quip-testnet.md)). To rotate or
+add a slot, follow [`docs/testnet-keys.md`](docs/testnet-keys.md) and the
+`scripts/derive-operator-keys.sh` helper.

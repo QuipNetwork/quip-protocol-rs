@@ -20,18 +20,30 @@ use crate::{
 };
 use alloc::{vec, vec::Vec};
 use frame_support::build_struct_json_patch;
-use quip_crypto_primitives::substrate::ed25519_mldsa44::Pair as HybridGrandpaPair;
-use quip_crypto_primitives::substrate::sr25519_mldsa44::Pair as HybridBabePair;
+use quip_crypto_primitives::substrate::ed25519_mldsa44::{
+    Pair as HybridGrandpaPair, Public as HybridGrandpaPublic,
+};
+use quip_crypto_primitives::substrate::sr25519_mldsa44::{
+    Pair as HybridBabePair, Public as HybridBabePublic,
+};
 use quip_transaction_crypto::{account_id_from_public, HybridPair as HybridTxPair};
 use serde_json::Value;
 use sp_consensus_babe::AuthorityId as BabeId;
 use sp_consensus_grandpa::AuthorityId as GrandpaId;
+use sp_core::crypto::ByteArray;
 use sp_core::Pair as _;
 use sp_genesis_builder::{self, PresetId};
 use sp_keyring::Ed25519Keyring;
 use sp_keyring::Sr25519Keyring;
 
 pub const LOCAL_THREE_VALIDATOR_RUNTIME_PRESET: &str = "local_three_validator";
+
+/// Identifier for the public quip-testnet genesis preset.
+///
+/// The raw chain spec exported from this preset is the canonical
+/// `quip-testnet.json` published by `nodes.quip.network`. The preset itself
+/// is kept in the binary so the genesis can be re-derived and audited.
+pub const QUIP_TESTNET_RUNTIME_PRESET: &str = "quip_testnet";
 
 fn babe_authority_from_seed(seed: &str) -> BabeId {
     HybridBabePair::from_string(seed, None)
@@ -51,6 +63,41 @@ fn tx_account_from_seed(seed: &str) -> AccountId {
     let pair = HybridTxPair::from_string(seed, None)
         .expect("well-known dev seeds are valid for hybrid transaction accounts");
     account_id_from_public(&pair.public())
+}
+
+/// Parse a hex string (with or without `0x` prefix, leading/trailing whitespace
+/// from `include_str!`-loaded files is tolerated) into the raw byte vector.
+fn decode_hex(hex: &str) -> Vec<u8> {
+    sp_core::bytes::from_hex(hex.trim()).expect("static hex constant is well-formed")
+}
+
+/// Build a BABE authority id from raw hybrid public key bytes.
+///
+/// The bytes must be the SCALE-encoded `sr25519_mldsa44::Public` (sr25519 32-byte
+/// prefix followed by the ML-DSA-44 public key). Used by [`quip_testnet_config_genesis`]
+/// to commit operator-submitted public material directly into genesis.
+fn babe_authority_from_public_hex(hex: &str) -> BabeId {
+    HybridBabePublic::from_slice(&decode_hex(hex))
+        .expect("static testnet operator BABE public bytes have the expected length")
+        .into()
+}
+
+/// Build a GRANDPA authority id from raw hybrid public key bytes.
+fn grandpa_authority_from_public_hex(hex: &str) -> GrandpaId {
+    HybridGrandpaPublic::from_slice(&decode_hex(hex))
+        .expect("static testnet operator GRANDPA public bytes have the expected length")
+        .into()
+}
+
+/// Build a transaction account id from its 32-byte raw hex (the `tx_account_hex`
+/// emitted by `derive_genesis_keys`).
+fn tx_account_from_hex(hex: &str) -> AccountId {
+    let bytes = decode_hex(hex);
+    let array: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .expect("static testnet operator tx account is exactly 32 bytes");
+    AccountId::new(array)
 }
 
 // Returns the genesis config presets populated with given parameters.
@@ -148,12 +195,62 @@ pub fn local_three_validator_config_genesis() -> Value {
     )
 }
 
+/// Return the public quip-testnet genesis config preset.
+///
+/// Each authority slot is held by an independent operator who generated their
+/// own libp2p node-key and hybrid BABE/GRANDPA keys offline (see
+/// [`scripts/derive-operator-keys.sh`] and [`docs/testnet-keys.md`]). Only the
+/// public bytes are committed in this repository; private material lives on
+/// each operator's host.
+///
+/// The endowed set is intentionally identical to the authority set for v0.2.0
+/// — there is no separate faucet account yet. Sudo is held by operator 1; a
+/// migration to a multisig is tracked for a later release.
+pub fn quip_testnet_config_genesis() -> Value {
+    let op1_babe = babe_authority_from_public_hex(include_str!(
+        "genesis_quip_testnet/operator_1_babe.hex"
+    ));
+    let op1_grandpa = grandpa_authority_from_public_hex(include_str!(
+        "genesis_quip_testnet/operator_1_grandpa.hex"
+    ));
+    let op2_babe = babe_authority_from_public_hex(include_str!(
+        "genesis_quip_testnet/operator_2_babe.hex"
+    ));
+    let op2_grandpa = grandpa_authority_from_public_hex(include_str!(
+        "genesis_quip_testnet/operator_2_grandpa.hex"
+    ));
+    let op3_babe = babe_authority_from_public_hex(include_str!(
+        "genesis_quip_testnet/operator_3_babe.hex"
+    ));
+    let op3_grandpa = grandpa_authority_from_public_hex(include_str!(
+        "genesis_quip_testnet/operator_3_grandpa.hex"
+    ));
+
+    let op1_account =
+        tx_account_from_hex("c6cb8a79a71b11347a7ce0d983104278c0682dc70b7f90be9afd92ab54f1404b");
+    let op2_account =
+        tx_account_from_hex("96ab60c5a90f6b18566155d2187fae8f52e3cd43627fb4a40d5c89f3a512bb5b");
+    let op3_account =
+        tx_account_from_hex("f8a5d50a6b32c3784b1e9fd9811e57b63524e5ec0defaafc289304bf99061db7");
+
+    testnet_genesis(
+        vec![
+            (op1_babe, op1_grandpa),
+            (op2_babe, op2_grandpa),
+            (op3_babe, op3_grandpa),
+        ],
+        vec![op1_account.clone(), op2_account, op3_account],
+        op1_account,
+    )
+}
+
 /// Provides the JSON representation of predefined genesis config for given `id`.
 pub fn get_preset(id: &PresetId) -> Option<Vec<u8>> {
     let patch = match id.as_ref() {
         sp_genesis_builder::DEV_RUNTIME_PRESET => development_config_genesis(),
         sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET => local_config_genesis(),
         LOCAL_THREE_VALIDATOR_RUNTIME_PRESET => local_three_validator_config_genesis(),
+        QUIP_TESTNET_RUNTIME_PRESET => quip_testnet_config_genesis(),
         _ => return None,
     };
     Some(
@@ -169,6 +266,7 @@ pub fn preset_names() -> Vec<PresetId> {
         PresetId::from(sp_genesis_builder::DEV_RUNTIME_PRESET),
         PresetId::from(sp_genesis_builder::LOCAL_TESTNET_RUNTIME_PRESET),
         PresetId::from(LOCAL_THREE_VALIDATOR_RUNTIME_PRESET),
+        PresetId::from(QUIP_TESTNET_RUNTIME_PRESET),
     ]
 }
 
@@ -208,6 +306,32 @@ mod tests {
     #[test]
     fn local_three_validator_preset_builds() {
         let _ = local_three_validator_config_genesis();
+    }
+
+    #[test]
+    fn quip_testnet_preset_builds() {
+        let _ = quip_testnet_config_genesis();
+    }
+
+    #[test]
+    fn quip_testnet_preset_is_registered() {
+        let json = get_preset(&PresetId::from(QUIP_TESTNET_RUNTIME_PRESET));
+        assert!(json.is_some(), "quip_testnet preset must be registered");
+        let bytes = json.unwrap();
+        assert!(!bytes.is_empty(), "preset must produce non-empty JSON");
+    }
+
+    /// Pinned operator-1 account hex. Catches silent breaks in either the
+    /// hybrid public-key wire format or the `account_id_from_public` derivation
+    /// (which would re-key every genesis account and brick the testnet).
+    const OPERATOR_1_PINNED_ACCOUNT_HEX: &str =
+        "c6cb8a79a71b11347a7ce0d983104278c0682dc70b7f90be9afd92ab54f1404b";
+
+    #[test]
+    fn quip_testnet_operator_1_account_is_pinned() {
+        let op1 = tx_account_from_hex(OPERATOR_1_PINNED_ACCOUNT_HEX);
+        let hex = hex_encode(&op1.encode());
+        assert_eq!(hex, OPERATOR_1_PINNED_ACCOUNT_HEX);
     }
 
     #[test]
