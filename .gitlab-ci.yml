@@ -53,5 +53,6 @@ kaniko-build-push:
         --dockerfile "$CI_PROJECT_DIR/Dockerfile" \
         --destination "$IMAGE:$PRIMARY_TAG" \
         --destination "$IMAGE:sha-$CI_COMMIT_SHORT_SHA" \
+        --build-arg "SUBSTRATE_CLI_GIT_COMMIT_HASH=$CI_COMMIT_SHORT_SHA" \
         --cache=true \
         --cache-repo "$CACHE_IMAGE"

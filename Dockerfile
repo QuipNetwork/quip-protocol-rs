@@ -17,6 +17,18 @@ RUN git config --global url."https://gitlab.com/".insteadOf "ssh://git@gitlab.co
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
 WORKDIR /build
 COPY . .
+
+# `substrate-build-script-utils` embeds the commit hash into
+# `SUBSTRATE_CLI_IMPL_VERSION` (what `--version` prints). It first checks the
+# `SUBSTRATE_CLI_GIT_COMMIT_HASH` env var and only falls back to `git
+# rev-parse` if it's empty. The build context here intentionally excludes
+# `.git/` (see `.dockerignore`), so without the build-arg the binary ends
+# up tagged `0.2.0-unknown`. CI passes `$CI_COMMIT_SHORT_SHA`; local
+# `docker build` users can pass `--build-arg SUBSTRATE_CLI_GIT_COMMIT_HASH=$(git rev-parse --short=11 HEAD)`
+# or accept the `unknown` fallback.
+ARG SUBSTRATE_CLI_GIT_COMMIT_HASH=""
+ENV SUBSTRATE_CLI_GIT_COMMIT_HASH=${SUBSTRATE_CLI_GIT_COMMIT_HASH}
+
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
     cargo build --release -p quip-network-node \
