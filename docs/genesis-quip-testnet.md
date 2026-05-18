@@ -21,11 +21,6 @@ public bytes live as `include_str!`-loaded hex blobs under
 - **peer-id**: `12D3KooWPJAHo45AA94u3fYS3tXvyKouZnWihQnXWPHAzikXLfPW`
 - **tx_account_ss58**: `5FUFx3HLMXCAes5RrGDV2KEPxHwPyDu8LpmarD2iwcqQm48c`
 - **tx_account_hex**: `0x96ab60c5a90f6b18566155d2187fae8f52e3cd43627fb4a40d5c89f3a512bb5b`
-- **⚠ known compromise (testnet-only)**: the BIP39 mnemonic backing this slot
-  was exposed in a developer session during v0.2.0 preparation. The slot is
-  retained for testnet only because (a) byzantine tolerance is preserved with
-  the remaining two honest operators and (b) the value at risk is testnet
-  tokens. **Must be rotated before any mainnet derivation.**
 
 ### Operator 3
 
