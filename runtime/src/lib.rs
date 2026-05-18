@@ -329,4 +329,7 @@ mod runtime {
 
     #[runtime::pallet_index(10)]
     pub type QuantumPow = pallet_quantum_pow;
+
+    #[runtime::pallet_index(11)]
+    pub type FaucetOps = pallet_faucet_ops;
 }
