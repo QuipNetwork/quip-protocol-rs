@@ -13,7 +13,12 @@ public bytes live as `include_str!`-loaded hex blobs under
 - **peer-id**: `12D3KooWBdhB4xGX6hfFsNufqQsG99kekiH9kJhLSiui3RgatnpE`
 - **tx_account_ss58**: `5GZMoWFMoNGLZKT1tduLMQQQC7dBQo4MHkYqriCdDATXqaYi`
 - **tx_account_hex**: `0xc6cb8a79a71b11347a7ce0d983104278c0682dc70b7f90be9afd92ab54f1404b`
-- **role**: holds initial sudo for v0.2.0 (replace with multisig in a later release)
+- **roles (v0.2.0)**: validator session keys, sudo, and faucet dispense
+  source — the public testnet faucet in `nodes.quip.network` is configured
+  with operator-1's mnemonic. Operator-1's host must therefore safeguard the
+  mnemonic with care: any leak compromises validator authority, sudo, and
+  faucet funds simultaneously. A future release should split sudo into a
+  multisig and the faucet into its own genesis-endowed account.
 
 ### Operator 2
 
