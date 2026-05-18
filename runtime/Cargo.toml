@@ -27,6 +27,7 @@ frame-system-rpc-runtime-api.workspace = true
 frame-try-runtime = { optional = true, workspace = true }
 pallet-babe.workspace = true
 pallet-balances.workspace = true
+pallet-faucet-ops.workspace = true
 pallet-grandpa.workspace = true
 pallet-quantum-compute-mempool.workspace = true
 pallet-quantum-pow.workspace = true
@@ -77,6 +78,7 @@ std = [
   "frame-try-runtime?/std",
   "pallet-babe/std",
   "pallet-balances/std",
+  "pallet-faucet-ops/std",
   "pallet-grandpa/std",
   "pallet-quantum-compute-mempool/std",
   "pallet-quantum-pow/std",
@@ -130,6 +132,7 @@ try-runtime = [
   "frame-try-runtime/try-runtime",
   "pallet-babe/try-runtime",
   "pallet-balances/try-runtime",
+  "pallet-faucet-ops/try-runtime",
   "pallet-grandpa/try-runtime",
   "pallet-quantum-compute-mempool/try-runtime",
   "pallet-quantum-pow/try-runtime",

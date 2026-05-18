@@ -6418,6 +6418,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "pallet-faucet-ops"
+version = "0.1.0"
+dependencies = [
+ "frame-support",
+ "frame-system",
+ "pallet-balances",
+ "parity-scale-codec",
+ "scale-info",
+ "sp-io",
+ "sp-runtime",
+]
+
+[[package]]
 name = "pallet-grandpa"
 version = "46.0.0"
 source = "git+https://github.com/QuipNetwork/polkadot-sdk.git?branch=v0.2#89495ec6dcd284257bf3789a3e7a5d7a2006686e"
@@ -7987,6 +8000,7 @@ dependencies = [
  "frame-try-runtime",
  "pallet-babe",
  "pallet-balances",
+ "pallet-faucet-ops",
  "pallet-grandpa",
  "pallet-quantum-compute-mempool",
  "pallet-quantum-pow",

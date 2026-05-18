@@ -181,6 +181,12 @@ impl pallet_template::Config for Runtime {
     type WeightInfo = pallet_template::weights::SubstrateWeight<Runtime>;
 }
 
+impl pallet_faucet_ops::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type WeightInfo = pallet_faucet_ops::weights::SubstrateWeight<Runtime>;
+}
+
 parameter_types! {
     pub const MaxProgramSize: u32 = 65_536;
     pub const MaxCallDataLen: u32 = 256;
