@@ -128,7 +128,7 @@ pub fn pack_solution(
         let byte_index = bit_offset / 8;
         let intra_byte = bit_offset % 8;
 
-        let shifted = u32::from(raw) << intra_byte;
+        let shifted = raw << intra_byte;
         out[byte_index] |= (shifted & 0xFF) as u8;
         if byte_index + 1 < out.len() {
             out[byte_index + 1] |= ((shifted >> 8) & 0xFF) as u8;

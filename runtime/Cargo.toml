@@ -32,6 +32,7 @@ pallet-grandpa.workspace = true
 pallet-quantum-compute-mempool.workspace = true
 pallet-quantum-pow.workspace = true
 quantum-validation.workspace = true
+pallet-session.workspace = true
 pallet-sudo.workspace = true
 pallet-template.workspace = true
 pallet-xqvm.workspace = true
@@ -84,6 +85,7 @@ std = [
   "pallet-quantum-compute-mempool/std",
   "pallet-quantum-pow/std",
   "quantum-validation/std",
+  "pallet-session/std",
   "pallet-sudo/std",
   "pallet-template/std",
   "pallet-timestamp/std",
@@ -138,6 +140,7 @@ try-runtime = [
   "pallet-grandpa/try-runtime",
   "pallet-quantum-compute-mempool/try-runtime",
   "pallet-quantum-pow/try-runtime",
+  "pallet-session/try-runtime",
   "pallet-sudo/try-runtime",
   "pallet-template/try-runtime",
   "pallet-timestamp/try-runtime",

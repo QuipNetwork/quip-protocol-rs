@@ -34,7 +34,10 @@ use frame_support::{
 };
 use frame_system::limits::{BlockLength, BlockWeights};
 use pallet_transaction_payment::{ConstFeeMultiplier, FungibleAdapter, Multiplier};
-use sp_runtime::{traits::One, Perbill};
+use sp_runtime::{
+    traits::{ConvertInto, OpaqueKeys, One},
+    Perbill,
+};
 use sp_version::RuntimeVersion;
 
 use pallet_xqvm::WeightInfo as _;
@@ -43,7 +46,7 @@ use pallet_xqvm::WeightInfo as _;
 use super::{
     AccountId, Babe, Balance, Balances, Block, BlockNumber, Hash, Nonce, PalletInfo, Runtime,
     RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask,
-    System, EXISTENTIAL_DEPOSIT, SLOT_DURATION, UNIT, VERSION,
+    SessionKeys, System, EXISTENTIAL_DEPOSIT, SLOT_DURATION, UNIT, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -126,6 +129,27 @@ impl pallet_grandpa::Config for Runtime {
 
     type KeyOwnerProof = sp_core::Void;
     type EquivocationReportSystem = ();
+}
+
+/// Session keys (BABE + GRANDPA) are registered at genesis and never rotated by
+/// the runtime — `SessionManager = ()` returns `None` on `new_session`, so the
+/// pallet retains the genesis validator set forever. The session API exists so
+/// that explorers and the polkadot.js client can surface
+/// `api.query.session.validators` and so that hybrid session keys can be
+/// rotated via the standard `author_rotateKeys` RPC flow once that work lands.
+impl pallet_session::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type ValidatorId = <Self as frame_system::Config>::AccountId;
+    type ValidatorIdOf = ConvertInto;
+    type ShouldEndSession = Babe;
+    type NextSessionRotation = Babe;
+    type SessionManager = ();
+    type SessionHandler = <SessionKeys as OpaqueKeys>::KeyTypeIdProviders;
+    type Keys = SessionKeys;
+    type DisablingStrategy = ();
+    type WeightInfo = pallet_session::weights::SubstrateWeight<Runtime>;
+    type Currency = Balances;
+    type KeyDeposit = ();
 }
 
 impl pallet_timestamp::Config for Runtime {

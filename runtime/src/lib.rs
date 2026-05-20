@@ -71,7 +71,10 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // Bumped to 101 (and `transaction_version` to 2) when the signed-extrinsic
     // wire format switched from `MultiSignature` to the hybrid envelope. Without
     // these bumps, peers/clients could treat the new format as the old one.
-    spec_version: 101,
+    //
+    // Bumped to 102 when `pallet-session` was added so client metadata
+    // (e.g. polkadot.js apps) regenerates the new `Session` storage entries.
+    spec_version: 102,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 2,
@@ -332,4 +335,7 @@ mod runtime {
 
     #[runtime::pallet_index(11)]
     pub type FaucetOps = pallet_faucet_ops;
+
+    #[runtime::pallet_index(12)]
+    pub type Session = pallet_session;
 }
