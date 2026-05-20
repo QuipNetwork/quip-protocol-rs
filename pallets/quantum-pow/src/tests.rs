@@ -3,7 +3,7 @@ use crate::{
     difficulty, topology,
     types::{DifficultyConfig, QuantumProof},
     AllowedValueSetOf, BlockBestProof, BlockProofCount, DefaultTopology, Difficulty,
-    LastProofBlock, Miners, PackedSpinBytesOf, RegisteredTopologies,
+    LastProofBlock, Miners, PackedSpinBytesOf, RegisteredTopologies, WinningSolutions,
 };
 use frame_support::{assert_noop, assert_ok, traits::Hooks, BoundedVec};
 use quantum_validation::{
@@ -450,6 +450,49 @@ fn on_finalize_slow_proof_eases_difficulty_from_decayed_base() {
 
         let next = Difficulty::<Test>::get();
         assert!(next.max_energy_milli > decayed.max_energy_milli);
+    });
+}
+
+#[test]
+fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        assert_ok!(QuantumPow::set_difficulty(
+            RuntimeOrigin::root(),
+            easy_difficulty()
+        ));
+        let (nodes, edges, topology_hash) = registered_topology();
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+        let original_nonce = proof.nonce;
+        let original_salt = proof.salt;
+
+        assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
+        let block = System::block_number();
+        QuantumPow::on_finalize(block);
+
+        let stored = WinningSolutions::<Test>::get(block).expect("winning solution persisted");
+        assert_eq!(stored.miner, 1);
+        assert_eq!(stored.salt, original_salt);
+        assert_eq!(stored.reward, 50);
+
+        // Re-derive the nonce via the runtime helper and confirm it matches
+        // the value that was on the submitted proof. This is the round-trip
+        // that lets dashboards recover the nonce from on-chain state alone.
+        let view = crate::Pallet::<Test>::winning_solution_with_nonce(block)
+            .expect("nonce derivation succeeds for a real winner");
+        assert_eq!(view.nonce, original_nonce);
+        assert_eq!(view.solution.salt, original_salt);
+    });
+}
+
+#[test]
+fn winning_solution_returns_none_for_genesis_block() {
+    new_test_ext().execute_with(|| {
+        // Genesis (block 0) never had a `submit_proof` call, so the storage
+        // entry is absent and the helper short-circuits before any block-hash
+        // arithmetic. Pins the contract that saturating subtraction on
+        // `block_number - 1 == 0u32 - 1` never reaches the nonce derivation.
+        assert!(crate::Pallet::<Test>::winning_solution_with_nonce(0).is_none());
     });
 }
 

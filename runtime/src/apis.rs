@@ -46,6 +46,7 @@ use super::{
     QuantumPow, Runtime, RuntimeCall, RuntimeGenesisConfig, SessionKeys, System,
     TransactionPayment, BABE_GENESIS_EPOCH_CONFIG, VERSION,
 };
+use pallet_quantum_pow::RegisteredTopologies;
 
 type QuantumPowNodes = frame_support::BoundedVec<u32, super::configs::QuantumPowMaxNodes>;
 type QuantumPowEdges = frame_support::BoundedVec<(u32, u32), super::configs::QuantumPowMaxEdges>;
@@ -209,7 +210,7 @@ impl_runtime_apis! {
         }
     }
 
-    impl pallet_quantum_pow::QuantumPowApi<Block, BlockNumber, Hash, QuantumPowNodes, QuantumPowEdges, QuantumPowAllowedValues> for Runtime {
+    impl pallet_quantum_pow::QuantumPowApi<Block, BlockNumber, Hash, AccountId, Balance, QuantumPowNodes, QuantumPowEdges, QuantumPowAllowedValues> for Runtime {
         fn mining_snapshot(
             topology_hash: Option<sp_core::H256>,
         ) -> Option<pallet_quantum_pow::types::MiningSnapshot<BlockNumber, Hash, QuantumPowNodes, QuantumPowEdges, QuantumPowAllowedValues>> {
@@ -218,6 +219,18 @@ impl_runtime_apis! {
                 System::parent_hash(),
                 topology_hash,
             )
+        }
+
+        fn topology_meta(
+            hash: sp_core::H256,
+        ) -> Option<pallet_quantum_pow::types::TopologyMeta<QuantumPowNodes, QuantumPowEdges, QuantumPowAllowedValues, BlockNumber>> {
+            RegisteredTopologies::<Runtime>::get(hash)
+        }
+
+        fn winning_solution(
+            block_number: BlockNumber,
+        ) -> Option<pallet_quantum_pow::types::WinningSolutionWithNonce<AccountId, Balance, BlockNumber>> {
+            QuantumPow::winning_solution_with_nonce(block_number)
         }
     }
 

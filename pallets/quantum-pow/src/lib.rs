@@ -50,18 +50,38 @@ type MiningSnapshotOf<T> = types::MiningSnapshot<
     EdgesOf<T>,
     AllowedValueSetOf<T>,
 >;
+type WinningSolutionOf<T> =
+    types::WinningSolution<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
+type WinningSolutionWithNonceOf<T> =
+    types::WinningSolutionWithNonce<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 
 sp_api::decl_runtime_apis! {
-    pub trait QuantumPowApi<BlockNumber, Hash, Nodes, Edges, AllowedValues>
+    pub trait QuantumPowApi<BlockNumber, Hash, AccountId, Balance, Nodes, Edges, AllowedValues>
     where
         BlockNumber: codec::Codec,
         Hash: codec::Codec,
+        AccountId: codec::Codec,
+        Balance: codec::Codec,
         Nodes: codec::Codec,
         Edges: codec::Codec,
         AllowedValues: codec::Codec,
     {
         fn mining_snapshot(topology_hash: Option<sp_core::H256>) -> Option<
             crate::types::MiningSnapshot<BlockNumber, Hash, Nodes, Edges, AllowedValues>
+        >;
+
+        /// Look up a registered topology by hash (nodes, edges, allowed value
+        /// sets). Returns `None` if the hash has never been registered.
+        fn topology_meta(hash: sp_core::H256) -> Option<
+            crate::types::TopologyMeta<Nodes, Edges, AllowedValues, BlockNumber>
+        >;
+
+        /// Winning solution for `block_number`, augmented with the derived
+        /// nonce. Returns `None` if the block had no accepted proof
+        /// (e.g. genesis, or any block where no `submit_proof` cleared
+        /// difficulty).
+        fn winning_solution(block_number: BlockNumber) -> Option<
+            crate::types::WinningSolutionWithNonce<AccountId, Balance, BlockNumber>
         >;
     }
 }
@@ -145,6 +165,20 @@ pub mod pallet {
 
     #[pallet::storage]
     pub type BlockProofCount<T: Config> = StorageValue<_, u32, ValueQuery>;
+
+    /// Persisted record of each block's winning proof, written in
+    /// `on_finalize` alongside the `BlockWinner` event.
+    ///
+    /// Consumers derive the winning nonce by hashing
+    /// `(parent_hash, miner, block_number, salt)` with BLAKE3, or call the
+    /// `QuantumPowApi::winning_solution` runtime API which does it server-side.
+    #[pallet::storage]
+    pub type WinningSolutions<T: Config> = StorageMap<
+        _,
+        Blake2_128Concat,
+        BlockNumberFor<T>,
+        WinningSolutionOf<T>,
+    >;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -247,6 +281,17 @@ pub mod pallet {
             );
             Difficulty::<T>::put(next);
             LastProofBlock::<T>::put(n);
+
+            WinningSolutions::<T>::insert(
+                n,
+                types::WinningSolution {
+                    miner: record.miner.clone(),
+                    salt: record.salt,
+                    energy_milli: record.energy_milli,
+                    reward,
+                    submitted_at: record.submitted_at,
+                },
+            );
 
             Self::deposit_event(Event::DifficultyUpdated { difficulty: next });
             Self::deposit_event(Event::BlockWinner {
@@ -458,6 +503,7 @@ pub mod pallet {
                 miner: who.clone(),
                 submitted_at: frame_system::Pallet::<T>::block_number(),
                 energy_milli: validation.best_energy_milli,
+                salt: proof.salt,
             };
 
             let should_replace = match BlockBestProof::<T>::get() {
@@ -536,6 +582,33 @@ pub mod pallet {
         /// produces a deterministic 32-byte digest.
         pub fn account_to_bytes(account: &T::AccountId) -> [u8; 32] {
             sp_io::hashing::blake2_256(&account.encode())
+        }
+
+        /// Look up a persisted winning solution and re-derive its nonce.
+        ///
+        /// Returns `None` if the block had no accepted proof (e.g. genesis
+        /// where no `submit_proof` ever ran). The `?` short-circuits before
+        /// any block-hash arithmetic, so the saturating
+        /// `block_hash(block_number - 1)` lookup is only ever reached for
+        /// blocks where `submit_proof` succeeded — which guarantees a
+        /// real parent hash, not the zero hash.
+        pub fn winning_solution_with_nonce(
+            block_number: BlockNumberFor<T>,
+        ) -> Option<WinningSolutionWithNonceOf<T>> {
+            let solution = WinningSolutions::<T>::get(block_number)?;
+            let parent_block = block_number.saturating_sub(BlockNumberFor::<T>::from(1u32));
+            let parent_hash = frame_system::Pallet::<T>::block_hash(parent_block);
+            let parent_hash_encoded = parent_hash.encode();
+            let parent_hash_bytes = <[u8; 32]>::try_from(parent_hash_encoded.as_slice())
+                .unwrap_or_else(|_| sp_io::hashing::blake2_256(&parent_hash_encoded));
+            let miner_bytes = Self::account_to_bytes(&solution.miner);
+            let nonce = derive_nonce(
+                &parent_hash_bytes,
+                &miner_bytes,
+                block_number.saturated_into::<u32>(),
+                &solution.salt,
+            );
+            Some(types::WinningSolutionWithNonce { solution, nonce })
         }
 
         /// 32-byte parent-hash representation. Works for any `T::Hash` whose

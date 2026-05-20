@@ -101,6 +101,10 @@ pub struct ProofRecord<AccountId, BlockNumber> {
     /// the "best among submitted solutions" interpretation explicit in the
     /// record documentation rather than in the field name.
     pub energy_milli: i64,
+    /// Salt of the submitted proof. Copied here so `on_finalize` can persist
+    /// it into `WinningSolutions` without re-reading the (PQ-signed)
+    /// extrinsic body.
+    pub salt: [u8; 32],
 }
 
 #[derive(
@@ -138,5 +142,30 @@ pub struct MiningSnapshot<BlockNumber, Hash, Nodes, Edges, AllowedValues> {
     pub allowed_h_values: AllowedValueSpec<AllowedValues>,
     pub allowed_j_values: AllowedValueSpec<AllowedValues>,
     pub allowed_spin_values: AllowedValueSpec<AllowedValues>,
+}
+
+/// Persisted record of each block's winning proof, written in `on_finalize`
+/// alongside the `BlockWinner` event. The nonce is not stored — consumers
+/// derive it from `(parent_hash, miner, block_number, salt)`, or call the
+/// `winning_solution` runtime API which does it server-side.
+#[derive(
+    Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
+)]
+pub struct WinningSolution<AccountId, Balance, BlockNumber> {
+    pub miner: AccountId,
+    pub salt: [u8; 32],
+    pub energy_milli: i64,
+    pub reward: Balance,
+    pub submitted_at: BlockNumber,
+}
+
+/// Runtime-API view augmenting [`WinningSolution`] with the derived nonce.
+/// Saves consumers from running BLAKE3 client-side.
+#[derive(
+    Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
+)]
+pub struct WinningSolutionWithNonce<AccountId, Balance, BlockNumber> {
+    pub solution: WinningSolution<AccountId, Balance, BlockNumber>,
+    pub nonce: U256,
 }
 
