@@ -27,7 +27,11 @@ fn dump(name: &str, uri: &str) {
 
     println!("// {} ({})", name, uri);
     println!("master_seed_hex   = {:?}", hex(&seed));
-    println!("public_bytes_hex  = {:?} (len={})", hex(public.as_ref()), public.as_ref().len());
+    println!(
+        "public_bytes_hex  = {:?} (len={})",
+        hex(public.as_ref()),
+        public.as_ref().len()
+    );
     println!("account_id_hex    = {:?}", hex(&account.encode()));
     println!();
 }

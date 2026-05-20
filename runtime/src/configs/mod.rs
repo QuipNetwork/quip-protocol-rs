@@ -35,7 +35,7 @@ use frame_support::{
 use frame_system::limits::{BlockLength, BlockWeights};
 use pallet_transaction_payment::{ConstFeeMultiplier, FungibleAdapter, Multiplier};
 use sp_runtime::{
-    traits::{ConvertInto, OpaqueKeys, One},
+    traits::{ConvertInto, One, OpaqueKeys},
     Perbill,
 };
 use sp_version::RuntimeVersion;
@@ -60,7 +60,15 @@ parameter_types! {
         Weight::from_parts(2u64 * WEIGHT_REF_TIME_PER_SECOND, u64::MAX),
         NORMAL_DISPATCH_RATIO,
     );
-    pub RuntimeBlockLength: BlockLength = BlockLength::max_with_normal_ratio(5 * 1024 * 1024, NORMAL_DISPATCH_RATIO);
+    // Replacement for the now-deprecated `BlockLength::max_with_normal_ratio` —
+    // reconstruct the same shape via the builder: max = 5 MiB for all dispatch
+    // classes, but the Normal class is scaled down by `NORMAL_DISPATCH_RATIO`.
+    pub RuntimeBlockLength: BlockLength = BlockLength::builder()
+        .max_length(5 * 1024 * 1024)
+        .modify_max_length_for_class(frame_support::dispatch::DispatchClass::Normal, |len| {
+            *len = NORMAL_DISPATCH_RATIO * (5u32 * 1024 * 1024);
+        })
+        .build();
     pub const SS58Prefix: u8 = 42;
 }
 

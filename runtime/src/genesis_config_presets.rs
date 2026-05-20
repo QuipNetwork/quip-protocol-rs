@@ -234,21 +234,18 @@ pub fn local_three_validator_config_genesis() -> Value {
 /// — there is no separate faucet account yet. Sudo is held by operator 1; a
 /// migration to a multisig is tracked for a later release.
 pub fn quip_testnet_config_genesis() -> Value {
-    let op1_babe = babe_authority_from_public_hex(include_str!(
-        "genesis_quip_testnet/operator_1_babe.hex"
-    ));
+    let op1_babe =
+        babe_authority_from_public_hex(include_str!("genesis_quip_testnet/operator_1_babe.hex"));
     let op1_grandpa = grandpa_authority_from_public_hex(include_str!(
         "genesis_quip_testnet/operator_1_grandpa.hex"
     ));
-    let op2_babe = babe_authority_from_public_hex(include_str!(
-        "genesis_quip_testnet/operator_2_babe.hex"
-    ));
+    let op2_babe =
+        babe_authority_from_public_hex(include_str!("genesis_quip_testnet/operator_2_babe.hex"));
     let op2_grandpa = grandpa_authority_from_public_hex(include_str!(
         "genesis_quip_testnet/operator_2_grandpa.hex"
     ));
-    let op3_babe = babe_authority_from_public_hex(include_str!(
-        "genesis_quip_testnet/operator_3_babe.hex"
-    ));
+    let op3_babe =
+        babe_authority_from_public_hex(include_str!("genesis_quip_testnet/operator_3_babe.hex"));
     let op3_grandpa = grandpa_authority_from_public_hex(include_str!(
         "genesis_quip_testnet/operator_3_grandpa.hex"
     ));
