@@ -83,6 +83,15 @@ sp_api::decl_runtime_apis! {
         fn winning_solution(block_number: BlockNumber) -> Option<
             crate::types::WinningSolutionWithNonce<AccountId, Balance, BlockNumber>
         >;
+
+        /// Live difficulty threshold a miner has to clear *right now*.
+        ///
+        /// Differs from `api.query.quantumPow.difficulty()` (the raw storage
+        /// value): that one is the post-last-adjust baseline and does *not*
+        /// reflect decay applied since the last winning proof. This API
+        /// returns the decayed value, matching what `submit_proof` validation
+        /// will actually require.
+        fn current_difficulty() -> crate::types::DifficultyConfig;
     }
 }
 
@@ -274,8 +283,13 @@ pub mod pallet {
                     .saturated_into::<u64>()
             };
 
+            // Snapshot the live (decay-applied) threshold this proof had to
+            // clear before adjust_on_proof rewrites it. WinningSolutions stores
+            // this so explorers and miners can answer "what difficulty did
+            // block N actually clear?" without replaying decay client-side.
+            let active = Self::current_difficulty(n);
             let next = crate::difficulty::adjust_on_proof(
-                Self::current_difficulty(n),
+                active,
                 mining_time_blocks,
                 &(frame_system::Pallet::<T>::parent_hash(), &record.miner, n).encode(),
             );
@@ -290,6 +304,7 @@ pub mod pallet {
                     energy_milli: record.energy_milli,
                     reward,
                     submitted_at: record.submitted_at,
+                    difficulty: active,
                 },
             );
 

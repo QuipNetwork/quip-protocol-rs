@@ -34,7 +34,6 @@ pub struct QuantumProof<PackedSolutions> {
     Clone,
     Copy,
     Debug,
-    Default,
     Encode,
     Decode,
     DecodeWithMemTracking,
@@ -48,6 +47,17 @@ pub struct DifficultyConfig {
     pub max_energy_milli: i64,
     pub min_diversity_milli: u32,
     pub min_quality_milli: u32,
+}
+
+impl Default for DifficultyConfig {
+    fn default() -> Self {
+        Self {
+            min_solutions: 5,
+            max_energy_milli: -1_200_000,
+            min_diversity_milli: 200,
+            min_quality_milli: 0,
+        }
+    }
 }
 
 /// On-chain record of a registered topology.
@@ -148,6 +158,11 @@ pub struct MiningSnapshot<BlockNumber, Hash, Nodes, Edges, AllowedValues> {
 /// alongside the `BlockWinner` event. The nonce is not stored — consumers
 /// derive it from `(parent_hash, miner, block_number, salt)`, or call the
 /// `winning_solution` runtime API which does it server-side.
+///
+/// `difficulty` captures the *active* threshold the proof actually had to
+/// clear (i.e. decay applied, but before the post-win adjustment). The next
+/// block's threshold is whatever `Difficulty<T>` storage now holds, which is
+/// `adjust_on_proof(difficulty, ...)` — that value is *not* duplicated here.
 #[derive(
     Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
 )]
@@ -157,6 +172,7 @@ pub struct WinningSolution<AccountId, Balance, BlockNumber> {
     pub energy_milli: i64,
     pub reward: Balance,
     pub submitted_at: BlockNumber,
+    pub difficulty: DifficultyConfig,
 }
 
 /// Runtime-API view augmenting [`WinningSolution`] with the derived nonce.

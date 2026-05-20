@@ -75,7 +75,7 @@ pub fn adjust_on_proof(
     mining_time_blocks: u64,
     randomness_seed: &[u8],
 ) -> DifficultyConfig {
-    let harder = mining_time_blocks < FAST_PROOF_BLOCKS;
+    let harder = mining_time_blocks < TARGET_PROOF_BLOCKS;
     let adjustment_milli = sample_adjustment_milli(mining_time_blocks, harder, randomness_seed);
     let energy_delta = i64::from((adjustment_milli / 10).max(5));
     let diversity_delta = (adjustment_milli / 5).max(5);

@@ -474,6 +474,9 @@ fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
         assert_eq!(stored.miner, 1);
         assert_eq!(stored.salt, original_salt);
         assert_eq!(stored.reward, 50);
+        // LastProofBlock was zero before this proof, so no decay applied —
+        // the active threshold equals whatever set_difficulty just stored.
+        assert_eq!(stored.difficulty, easy_difficulty());
 
         // Re-derive the nonce via the runtime helper and confirm it matches
         // the value that was on the submitted proof. This is the round-trip
@@ -482,6 +485,7 @@ fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
             .expect("nonce derivation succeeds for a real winner");
         assert_eq!(view.nonce, original_nonce);
         assert_eq!(view.solution.salt, original_salt);
+        assert_eq!(view.solution.difficulty, easy_difficulty());
     });
 }
 
@@ -541,5 +545,80 @@ fn mining_snapshot_returns_default_and_selected_topology_views() {
         assert_eq!(selected_snapshot.topology_hash, other_hash);
         assert_eq!(selected_snapshot.nodes, other_nodes);
         assert_eq!(selected_snapshot.edges, other_edges);
+    });
+}
+
+#[test]
+fn winning_solution_records_active_difficulty_threshold() {
+    new_test_ext().execute_with(|| {
+        // Pin the contract that WinningSolution stores the *active* threshold
+        // a proof had to clear (decay applied, pre-adjust) rather than the
+        // post-adjustment value that lives in Difficulty<T> after on_finalize.
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let initial = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: i64::MAX,
+            min_diversity_milli: 0,
+            min_quality_milli: 200,
+        };
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        let (nodes, edges, topology_hash) = registered_topology();
+
+        LastProofBlock::<Test>::put(1);
+        System::set_block_number(45); // (45 - 1) / 20 = 2 decay steps
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+        assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
+        QuantumPow::on_finalize(System::block_number());
+
+        let expected_active = difficulty::apply_decay(initial, 2);
+        let stored = WinningSolutions::<Test>::get(45).expect("winner persisted");
+        assert_eq!(
+            stored.difficulty, expected_active,
+            "stored difficulty must be the decayed-but-pre-adjust threshold"
+        );
+
+        // Mining time blocks = 45 - 1 = 44 < TARGET_PROOF_BLOCKS (100), so the
+        // adjustment hardens. The post-adjust value now in Difficulty<T> must
+        // be strictly tighter than the recorded one on at least one axis.
+        let next = Difficulty::<Test>::get();
+        assert!(
+            next.min_quality_milli > expected_active.min_quality_milli
+                || next.min_solutions > expected_active.min_solutions,
+            "post-adjust difficulty should be harder than the active threshold the proof cleared"
+        );
+    });
+}
+
+#[test]
+fn mining_snapshot_returns_decayed_difficulty_after_epochs() {
+    new_test_ext().execute_with(|| {
+        // Pin the contract that mining_snapshot.difficulty applies decay so
+        // miners querying the runtime API get the live threshold — not the
+        // stale Difficulty<T> baseline that polkadot.js storage queries return.
+        let initial = DifficultyConfig {
+            min_solutions: 5,
+            max_energy_milli: 0,
+            min_diversity_milli: 100,
+            min_quality_milli: 100,
+        };
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        let _ = registered_topology();
+
+        LastProofBlock::<Test>::put(1);
+        System::set_block_number(121); // (121 - 1) / 20 = 6 decay steps
+        let snapshot =
+            QuantumPow::mining_snapshot(System::block_number(), System::parent_hash(), None)
+                .expect("snapshot exists for default topology");
+        let expected = difficulty::apply_decay(initial, 6);
+        assert_eq!(snapshot.difficulty, expected);
+        assert_ne!(
+            snapshot.difficulty, initial,
+            "snapshot must not echo the raw storage baseline once decay has elapsed"
+        );
+
+        // Direct storage query (the polkadot.js default path) must still
+        // return the undecayed baseline — this is the visibility gap that the
+        // runtime API closes.
+        assert_eq!(Difficulty::<Test>::get(), initial);
     });
 }
