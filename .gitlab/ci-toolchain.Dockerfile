@@ -5,10 +5,17 @@
 # plus the wasm32v1-none target and rust-src component required by
 # substrate-wasm-builder.
 #
-# Pushed by the `ci-toolchain-image` job in `.gitlab-ci.yml` to
-# docker.io/carback1/rust-substrate-builder:latest. The check-stage jobs
-# (fmt/clippy/test/build) pull this image instead of installing the same
-# deps from scratch on every CI run.
+# The check-stage jobs in `.gitlab-ci.yml` pull this image from
+# docker.io/carback1/rust-substrate-builder:latest. Rebuild and push manually
+# from a workstation when this Dockerfile changes — there is no CI job that
+# builds the image:
+#
+#   docker buildx build \
+#     --platform linux/amd64 \
+#     --file .gitlab/ci-toolchain.Dockerfile \
+#     --tag carback1/rust-substrate-builder:latest \
+#     --push \
+#     .gitlab/
 
 ARG RUST_VERSION=1
 ARG DEBIAN_VERSION=bookworm
