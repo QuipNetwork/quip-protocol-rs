@@ -49,6 +49,10 @@ use super::{
 
 type QuantumPowNodes = frame_support::BoundedVec<u32, super::configs::QuantumPowMaxNodes>;
 type QuantumPowEdges = frame_support::BoundedVec<(u32, u32), super::configs::QuantumPowMaxEdges>;
+type QuantumPowAllowedValues = frame_support::BoundedVec<
+    quantum_validation::MilliValue,
+    super::configs::QuantumPowMaxAllowedValues,
+>;
 
 impl_runtime_apis! {
     impl sp_api::Core<Block> for Runtime {
@@ -205,10 +209,10 @@ impl_runtime_apis! {
         }
     }
 
-    impl pallet_quantum_pow::QuantumPowApi<Block, BlockNumber, Hash, QuantumPowNodes, QuantumPowEdges> for Runtime {
+    impl pallet_quantum_pow::QuantumPowApi<Block, BlockNumber, Hash, QuantumPowNodes, QuantumPowEdges, QuantumPowAllowedValues> for Runtime {
         fn mining_snapshot(
             topology_hash: Option<sp_core::H256>,
-        ) -> Option<pallet_quantum_pow::types::MiningSnapshot<BlockNumber, Hash, QuantumPowNodes, QuantumPowEdges>> {
+        ) -> Option<pallet_quantum_pow::types::MiningSnapshot<BlockNumber, Hash, QuantumPowNodes, QuantumPowEdges, QuantumPowAllowedValues>> {
             QuantumPow::mining_snapshot(
                 System::block_number(),
                 System::parent_hash(),

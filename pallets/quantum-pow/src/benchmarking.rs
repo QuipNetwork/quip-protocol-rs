@@ -5,11 +5,12 @@ use super::*;
 #[allow(unused)]
 use crate::Pallet as QuantumPow;
 use alloc::{vec, vec::Vec};
-use codec::Encode;
 use frame_benchmarking::v2::*;
-use frame_support::{pallet_prelude::ConstU32, traits::Currency, BoundedVec};
+use frame_support::{traits::Currency, BoundedVec};
 use frame_system::RawOrigin;
-use quantum_validation::derive_nonce;
+use quantum_validation::{
+    derive_nonce, packed::pack_solution, AllowedValueSpec, MilliValue, MILLI_SCALE,
+};
 use sp_runtime::traits::SaturatedConversion;
 
 fn bounded<T, S>(items: Vec<T>) -> BoundedVec<T, S>
@@ -39,10 +40,30 @@ fn easy_difficulty() -> types::DifficultyConfig {
     }
 }
 
+const SCALE: MilliValue = MILLI_SCALE as MilliValue;
+
+fn allowed_spin_set<T: Config>() -> AllowedValueSpec<AllowedValueSetOf<T>> {
+    AllowedValueSpec::Set(bounded::<_, T::MaxAllowedValues>(vec![-SCALE, SCALE]))
+}
+
+fn allowed_h_set<T: Config>() -> AllowedValueSpec<AllowedValueSetOf<T>> {
+    AllowedValueSpec::Set(bounded::<_, T::MaxAllowedValues>(vec![-SCALE, 0, SCALE]))
+}
+
+fn allowed_j_set<T: Config>() -> AllowedValueSpec<AllowedValueSetOf<T>> {
+    AllowedValueSpec::Set(bounded::<_, T::MaxAllowedValues>(vec![-SCALE, SCALE]))
+}
+
 fn sample_topology<T: Config>() -> (NodesOf<T>, EdgesOf<T>, sp_core::H256) {
     let nodes = bounded::<_, T::MaxNodes>(vec![0, 1]);
     let edges = bounded::<_, T::MaxEdges>(vec![(0, 1)]);
-    let topology_hash = crate::topology::hash_topology(&nodes, &edges);
+    let topology_hash = crate::topology::hash_topology(
+        &nodes,
+        &edges,
+        &allowed_h_set::<T>().as_slice(),
+        &allowed_j_set::<T>().as_slice(),
+        &allowed_spin_set::<T>().as_slice(),
+    );
     (nodes, edges, topology_hash)
 }
 
@@ -56,7 +77,10 @@ fn register_topology_for<T: Config>() -> (NodesOf<T>, EdgesOf<T>, sp_core::H256)
     assert!(QuantumPow::<T>::register_topology(
         RawOrigin::Root.into(),
         nodes.clone(),
-        edges.clone()
+        edges.clone(),
+        allowed_h_set::<T>(),
+        allowed_j_set::<T>(),
+        allowed_spin_set::<T>(),
     )
     .is_ok());
     (nodes, edges, topology_hash)
@@ -64,28 +88,33 @@ fn register_topology_for<T: Config>() -> (NodesOf<T>, EdgesOf<T>, sp_core::H256)
 
 fn valid_proof_for<T: Config>(
     miner: &T::AccountId,
-    nodes: &NodesOf<T>,
-    edges: &EdgesOf<T>,
     topology_hash: sp_core::H256,
 ) -> QuantumProofOf<T> {
     frame_system::Pallet::<T>::set_block_number(1u32.into());
 
-    let salt = bounded::<u8, ConstU32<32>>(b"bench-salt".to_vec());
+    let salt = [7u8; 32];
+    let parent_hash = QuantumPow::<T>::parent_hash_bytes();
+    let miner_bytes = QuantumPow::<T>::account_to_bytes(miner);
     let nonce = derive_nonce(
-        &frame_system::Pallet::<T>::parent_hash().encode(),
-        &miner.encode(),
+        &parent_hash,
+        &miner_bytes,
         frame_system::Pallet::<T>::block_number().saturated_into::<u32>(),
-        salt.as_slice(),
+        &salt,
     );
+
+    // 2-spin solution: both spins at +1.
+    let spin_spec = allowed_spin_set::<T>();
+    let packed = pack_solution(&[SCALE, SCALE], &spin_spec.as_slice())
+        .expect("binary spin pack succeeds");
+    let packed_bv: PackedSpinBytesOf<T> = bounded::<u8, T::MaxNodes>(packed);
+    let solutions: PackedSolutionsOf<T> =
+        bounded::<_, T::MaxSolutions>(vec![packed_bv]);
 
     types::QuantumProof {
         topology_hash,
         nonce,
         salt,
-        nodes: nodes.clone(),
-        edges: edges.clone(),
-        solutions: bounded::<_, T::MaxSolutions>(vec![bounded::<_, T::MaxNodes>(vec![1, 1])]),
-        h_values: bounded::<_, T::MaxNodes>(vec![-1_000, 0, 1_000]),
+        solutions,
     }
 }
 
@@ -120,7 +149,14 @@ mod benchmarks {
         let (nodes, edges, topology_hash) = sample_topology::<T>();
 
         #[extrinsic_call]
-        QuantumPow::register_topology(RawOrigin::Root, nodes, edges);
+        QuantumPow::register_topology(
+            RawOrigin::Root,
+            nodes,
+            edges,
+            allowed_h_set::<T>(),
+            allowed_j_set::<T>(),
+            allowed_spin_set::<T>(),
+        );
 
         assert!(RegisteredTopologies::<T>::contains_key(topology_hash));
     }
@@ -139,9 +175,9 @@ mod benchmarks {
     fn submit_proof() {
         let caller: T::AccountId = whitelisted_caller();
         register_miner_for::<T>(&caller);
-        let (nodes, edges, topology_hash) = register_topology_for::<T>();
+        let (_nodes, _edges, topology_hash) = register_topology_for::<T>();
         Difficulty::<T>::put(easy_difficulty());
-        let proof = valid_proof_for::<T>(&caller, &nodes, &edges, topology_hash);
+        let proof = valid_proof_for::<T>(&caller, topology_hash);
 
         #[extrinsic_call]
         QuantumPow::submit_proof(RawOrigin::Signed(caller.clone()), proof);

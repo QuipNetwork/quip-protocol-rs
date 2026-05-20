@@ -240,6 +240,12 @@ parameter_types! {
     pub const QuantumPowMinerDeposit: Balance = UNIT;
     pub const QuantumPowBlockReward: Balance = UNIT;
     pub const QuantumPowMaxProofsPerBlock: u32 = 8;
+    /// Upper bound on the cardinality of `allowed_h_values`, `allowed_j_values`,
+    /// and `allowed_spin_values` per registered topology. Set well above the
+    /// expected real-world maximum (Advantage2_system1 uses 3 for h, 2 for j,
+    /// 2 for spin) so future hardware-spec changes don't force a runtime
+    /// upgrade.
+    pub const QuantumPowMaxAllowedValues: u32 = 32;
 }
 
 impl pallet_quantum_compute_mempool::Config for Runtime {
@@ -269,5 +275,6 @@ impl pallet_quantum_pow::Config for Runtime {
     type MinerDeposit = QuantumPowMinerDeposit;
     type BlockReward = QuantumPowBlockReward;
     type MaxProofsPerBlock = QuantumPowMaxProofsPerBlock;
+    type MaxAllowedValues = QuantumPowMaxAllowedValues;
     type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
 }

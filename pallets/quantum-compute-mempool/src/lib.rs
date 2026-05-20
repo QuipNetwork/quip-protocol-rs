@@ -969,6 +969,10 @@ pub mod pallet {
                 | ValidationError::DuplicateNode { .. }
                 | ValidationError::UnknownNodeInEdge { .. }
                 | ValidationError::EmptyFieldValues
+                | ValidationError::EmptyAllowedValues
+                | ValidationError::InvalidEncodedValue { .. }
+                | ValidationError::EncodingTooWide { .. }
+                | ValidationError::PackedSolutionLengthMismatch { .. }
                 | ValidationError::ArithmeticOverflow => Error::<T>::InvalidTopology,
             }
         }

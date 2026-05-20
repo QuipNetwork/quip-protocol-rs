@@ -1,6 +1,21 @@
+//! Cross-language parity vectors against the Python reference implementation.
+//!
+//! `derive_nonce` and `generate_ising_model` no longer match the Python
+//! reference: the Rust nonce is now a full 256-bit `U256` (not a truncated
+//! `u64`), inputs to `derive_nonce` are fixed-size 32-byte buffers (not
+//! variable-length `&[u8]`), and `generate_ising_model` takes an
+//! `AllowedValueSpec` per parameter (h and j) rather than a single h-value
+//! slice with hardcoded ±MILLI_SCALE coupling. The Python reference still
+//! has the old shape, so the two parity tests for those functions have been
+//! removed pending a regenerated fixture from a matching Python build.
+//!
+//! The remaining six parity tests (energy, expected_gse, diversity, hamming,
+//! topology consistency, solution validation) still match the Python
+//! reference and continue to run.
+
 use quantum_validation::{
-    calculate_diversity, derive_nonce, energy_of_solution, expected_gse, generate_ising_model,
-    symmetric_hamming, validate_solution, validate_topology_consistency,
+    calculate_diversity, energy_of_solution, expected_gse, symmetric_hamming, validate_solution,
+    validate_topology_consistency,
 };
 use serde::Deserialize;
 
@@ -10,8 +25,14 @@ struct FixtureFile {
     expected_gse_cases: Vec<ExpectedGseCase>,
     diversity_cases: Vec<DiversityCase>,
     hamming_cases: Vec<HammingCase>,
-    derive_nonce_cases: Vec<DeriveNonceCase>,
-    ising_model_cases: Vec<IsingModelCase>,
+    // `derive_nonce_cases` and `ising_model_cases` are still in the fixture
+    // but no longer consumed; see the module-level doc comment for why.
+    #[serde(default)]
+    #[allow(dead_code)]
+    derive_nonce_cases: Vec<serde_json::Value>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    ising_model_cases: Vec<serde_json::Value>,
     topology_cases: Vec<TopologyCase>,
     solution_validation_cases: Vec<SolutionValidationCase>,
 }
@@ -48,27 +69,6 @@ struct ExpectedGseCase {
     num_nodes: u32,
     num_edges: u32,
     expected_milli: i64,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeriveNonceCase {
-    name: String,
-    parent_hash_hex: String,
-    miner: String,
-    block_number: u32,
-    salt_hex: String,
-    expected_nonce: u64,
-}
-
-#[derive(Debug, Deserialize)]
-struct IsingModelCase {
-    name: String,
-    nonce: u64,
-    nodes: Vec<u32>,
-    edges: Vec<[u32; 2]>,
-    allowed_h_values: Vec<i32>,
-    expected_h: Vec<i32>,
-    expected_j: Vec<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,45 +151,6 @@ fn symmetric_hamming_matches_python_reference_vectors() {
             .unwrap_or_else(|error| panic!("hamming case {} failed: {error}", case.name));
 
         assert_eq!(actual, case.expected, "hamming case {}", case.name);
-    }
-}
-
-#[test]
-fn derive_nonce_matches_python_reference_vectors() {
-    let fixture = load_fixture();
-
-    for case in &fixture.derive_nonce_cases {
-        let parent_hash = hex::decode(&case.parent_hash_hex)
-            .unwrap_or_else(|error| panic!("parent_hash decode {} failed: {error}", case.name));
-        let salt = hex::decode(&case.salt_hex)
-            .unwrap_or_else(|error| panic!("salt decode {} failed: {error}", case.name));
-        let actual = derive_nonce(
-            &parent_hash,
-            case.miner.as_bytes(),
-            case.block_number,
-            &salt,
-        );
-
-        assert_eq!(
-            actual, case.expected_nonce,
-            "derive_nonce case {}",
-            case.name
-        );
-    }
-}
-
-#[test]
-fn generate_ising_model_matches_python_reference_vectors() {
-    let fixture = load_fixture();
-
-    for case in &fixture.ising_model_cases {
-        let edges: Vec<(u32, u32)> = case.edges.iter().map(|edge| (edge[0], edge[1])).collect();
-        let (actual_h, actual_j) =
-            generate_ising_model(case.nonce, &case.nodes, &edges, &case.allowed_h_values)
-                .unwrap_or_else(|error| panic!("ising case {} failed: {error}", case.name));
-
-        assert_eq!(actual_h, case.expected_h, "ising h case {}", case.name);
-        assert_eq!(actual_j, case.expected_j, "ising j case {}", case.name);
     }
 }
 
