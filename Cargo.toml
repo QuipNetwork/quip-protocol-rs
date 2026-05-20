@@ -8,6 +8,7 @@ edition = "2021"
 [workspace]
 members = [
   "crates/quantum-validation",
+  "crates/transaction-crypto-core",
   "crates/transaction-crypto",
   "node",
   "pallets/faucet-ops",
@@ -27,6 +28,7 @@ pallet-quantum-pow = { path = "./pallets/quantum-pow", default-features = false 
 pallet-template = { path = "./pallets/template", default-features = false }
 pallet-xqvm = { path = "./pallets/xqvm", default-features = false }
 quantum-validation = { path = "./crates/quantum-validation", default-features = false }
+quip-transaction-crypto-core = { path = "./crates/transaction-crypto-core", default-features = false }
 quip-transaction-crypto = { path = "./crates/transaction-crypto", default-features = false }
 clap = { version = "4.5.13" }
 frame-benchmarking-cli = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
@@ -68,6 +70,7 @@ sp-timestamp = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch
 substrate-frame-rpc-system = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 substrate-build-script-utils = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 codec = { version = "3.7.5", default-features = false, package = "parity-scale-codec" }
+blake2 = { version = "0.10", default-features = false }
 frame-benchmarking = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 frame-executive = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 frame-support = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }

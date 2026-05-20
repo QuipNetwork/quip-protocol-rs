@@ -24,10 +24,15 @@ fn dump(name: &str, uri: &str) {
     let seed = pair.to_raw_vec();
     let public = pair.public();
     let account = account_id_from_public(&public);
+    let public_bytes: &[u8] = public.as_ref();
 
     println!("// {} ({})", name, uri);
     println!("master_seed_hex   = {:?}", hex(&seed));
-    println!("public_bytes_hex  = {:?} (len={})", hex(public.as_ref()), public.as_ref().len());
+    println!(
+        "public_bytes_hex  = {:?} (len={})",
+        hex(public_bytes),
+        public_bytes.len()
+    );
     println!("account_id_hex    = {:?}", hex(&account.encode()));
     println!();
 }

@@ -1,0 +1,21 @@
+[package]
+name = "quip-transaction-crypto-core"
+version = "0.1.0"
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+edition.workspace = true
+
+[dependencies]
+blake2.workspace = true
+codec = { features = ["derive"], workspace = true }
+quip-crypto-primitives = { workspace = true, default-features = false }
+
+[features]
+default = ["std"]
+std = [
+    "blake2/std",
+    "codec/std",
+    "quip-crypto-primitives/std",
+]
