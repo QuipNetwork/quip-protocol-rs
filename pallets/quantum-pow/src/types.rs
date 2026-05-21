@@ -184,4 +184,3 @@ pub struct WinningSolutionWithNonce<AccountId, Balance, BlockNumber> {
     pub solution: WinningSolution<AccountId, Balance, BlockNumber>,
     pub nonce: U256,
 }
-

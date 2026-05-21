@@ -32,12 +32,9 @@ type AllowedValueSetOf<T> = frame_support::pallet_prelude::BoundedVec<
     quantum_validation::MilliValue,
     <T as Config>::MaxAllowedValues,
 >;
-type PackedSpinBytesOf<T> =
-    frame_support::pallet_prelude::BoundedVec<u8, <T as Config>::MaxNodes>;
-type PackedSolutionsOf<T> = frame_support::pallet_prelude::BoundedVec<
-    PackedSpinBytesOf<T>,
-    <T as Config>::MaxSolutions,
->;
+type PackedSpinBytesOf<T> = frame_support::pallet_prelude::BoundedVec<u8, <T as Config>::MaxNodes>;
+type PackedSolutionsOf<T> =
+    frame_support::pallet_prelude::BoundedVec<PackedSpinBytesOf<T>, <T as Config>::MaxSolutions>;
 type QuantumProofOf<T> = types::QuantumProof<PackedSolutionsOf<T>>;
 type TopologyMetaOf<T> =
     types::TopologyMeta<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>, BlockNumberOf<T>>;
@@ -50,8 +47,7 @@ type MiningSnapshotOf<T> = types::MiningSnapshot<
     EdgesOf<T>,
     AllowedValueSetOf<T>,
 >;
-type WinningSolutionOf<T> =
-    types::WinningSolution<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
+type WinningSolutionOf<T> = types::WinningSolution<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 type WinningSolutionWithNonceOf<T> =
     types::WinningSolutionWithNonce<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 
@@ -182,12 +178,8 @@ pub mod pallet {
     /// `(parent_hash, miner, block_number, salt)` with BLAKE3, or call the
     /// `QuantumPowApi::winning_solution` runtime API which does it server-side.
     #[pallet::storage]
-    pub type WinningSolutions<T: Config> = StorageMap<
-        _,
-        Blake2_128Concat,
-        BlockNumberFor<T>,
-        WinningSolutionOf<T>,
-    >;
+    pub type WinningSolutions<T: Config> =
+        StorageMap<_, Blake2_128Concat, BlockNumberFor<T>, WinningSolutionOf<T>>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -684,27 +676,25 @@ pub mod pallet {
             let mut decoded: Vec<Vec<i8>> = Vec::with_capacity(proof.solutions.len());
 
             for packed in proof.solutions.iter() {
-                let milli = unpack_solution(packed.as_slice(), num_spins, &spin_spec).map_err(
-                    |err| match err {
-                        quantum_validation::ValidationError::PackedSolutionLengthMismatch {
-                            ..
-                        } => DispatchError::from(Error::<T>::PackedSolutionLengthMismatch),
-                        quantum_validation::ValidationError::InvalidEncodedValue { .. } => {
-                            DispatchError::from(Error::<T>::InvalidEncodedSpin)
+                let milli =
+                    unpack_solution(packed.as_slice(), num_spins, &spin_spec).map_err(|err| {
+                        match err {
+                            quantum_validation::ValidationError::PackedSolutionLengthMismatch {
+                                ..
+                            } => DispatchError::from(Error::<T>::PackedSolutionLengthMismatch),
+                            quantum_validation::ValidationError::InvalidEncodedValue { .. } => {
+                                DispatchError::from(Error::<T>::InvalidEncodedSpin)
+                            }
+                            _ => DispatchError::from(Error::<T>::InvalidTopology),
                         }
-                        _ => DispatchError::from(Error::<T>::InvalidTopology),
-                    },
-                )?;
+                    })?;
                 let mut spins = Vec::with_capacity(milli.len());
                 for value in milli {
                     let sign = value.signum();
                     ensure!(sign == -1 || sign == 1, Error::<T>::InvalidSpinValues);
                     spins.push(sign as i8);
                 }
-                ensure!(
-                    validate_spins(&spins),
-                    Error::<T>::InvalidSpinValues
-                );
+                ensure!(validate_spins(&spins), Error::<T>::InvalidSpinValues);
                 decoded.push(spins);
             }
 
