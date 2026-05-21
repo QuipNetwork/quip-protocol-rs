@@ -119,19 +119,17 @@ fn testnet_genesis(
                 .map(|k| (k, 1u128 << 60))
                 .collect::<Vec<_>>(),
         },
+        // The authority sets for BABE and GRANDPA are populated by
+        // `pallet_session::GenesisConfig::build` via the registered
+        // `OneSessionHandler::on_genesis_session` impls (see `SessionKeys`
+        // in `lib.rs` and `pallet_session::Config::SessionHandler` in
+        // `configs/mod.rs`). Setting `babe.authorities` / `grandpa.authorities`
+        // here as well would call `initialize_genesis_authorities` twice and
+        // panic with "Authorities are already initialized!" — only the BABE
+        // epoch config needs to be patched in.
         babe: pallet_babe::GenesisConfig {
-            authorities: initial_authorities
-                .iter()
-                .map(|x| (x.1.clone(), 1))
-                .collect::<Vec<_>>(),
             epoch_config: BABE_GENESIS_EPOCH_CONFIG,
             ..Default::default()
-        },
-        grandpa: pallet_grandpa::GenesisConfig {
-            authorities: initial_authorities
-                .iter()
-                .map(|x| (x.2.clone(), 1))
-                .collect::<Vec<_>>(),
         },
         session: SessionConfig {
             keys: initial_authorities
@@ -298,6 +296,7 @@ pub fn preset_names() -> Vec<PresetId> {
 mod tests {
     use super::*;
     use codec::Encode;
+    use frame_support::genesis_builder_helper::build_state;
 
     /// Pinned hex of `tx_account_from_seed("//Alice")`. Acts as a canary for
     /// silent changes to `quip_transaction_crypto::ACCOUNT_ID_DOMAIN` or the
@@ -317,24 +316,63 @@ mod tests {
         out
     }
 
+    // Recursively merges `patch` into `target` the same way `sc-chain-spec`
+    // does before calling the runtime's `GenesisBuilder::build_state`. The
+    // runtime presets return a *patch* (only the fields the preset touches),
+    // but `build_state` needs a *full* config — without this merge, the
+    // deserialise step fails with "missing field `system`" before we ever
+    // reach the panic we are guarding against.
+    fn merge_json(target: &mut Value, patch: Value) {
+        use serde_json::map::Entry;
+        match (target, patch) {
+            (Value::Object(t), Value::Object(p)) => {
+                for (k, v) in p {
+                    match t.entry(k) {
+                        Entry::Occupied(mut e) => merge_json(e.get_mut(), v),
+                        Entry::Vacant(e) => {
+                            e.insert(v);
+                        }
+                    }
+                }
+            }
+            (t, p) => *t = p,
+        }
+    }
+
+    // Exercise the same `build_state` path the runtime API uses for genesis
+    // construction. The constructor-only assertions this replaces never
+    // touched `BuildGenesisConfig::build`, so they happily returned valid
+    // JSON while the storage build panicked on `pallet-babe` /
+    // `pallet-session` double-initialisation of the authority set.
+    fn assert_preset_builds_storage(patch: Value) {
+        let mut full = serde_json::to_value(crate::RuntimeGenesisConfig::default())
+            .expect("default runtime genesis config serialises");
+        merge_json(&mut full, patch);
+        let bytes = serde_json::to_vec(&full).expect("merged runtime config serialises");
+        sp_io::TestExternalities::new_empty().execute_with(|| {
+            build_state::<crate::RuntimeGenesisConfig>(bytes)
+                .expect("genesis preset builds storage without panic");
+        });
+    }
+
     #[test]
     fn development_preset_builds() {
-        let _ = development_config_genesis();
+        assert_preset_builds_storage(development_config_genesis());
     }
 
     #[test]
     fn local_preset_builds() {
-        let _ = local_config_genesis();
+        assert_preset_builds_storage(local_config_genesis());
     }
 
     #[test]
     fn local_three_validator_preset_builds() {
-        let _ = local_three_validator_config_genesis();
+        assert_preset_builds_storage(local_three_validator_config_genesis());
     }
 
     #[test]
     fn quip_testnet_preset_builds() {
-        let _ = quip_testnet_config_genesis();
+        assert_preset_builds_storage(quip_testnet_config_genesis());
     }
 
     #[test]
