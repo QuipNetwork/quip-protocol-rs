@@ -63,11 +63,14 @@ cargo-test:
     - cargo test --workspace --lib --bins --tests
     - cargo build --release -p quip-protocol-runtime
 
-# Publish the production node image. Unchanged from the prior pipeline
-# except for the explicit `stage: build` (was implicit) and the rule on v0.2
-# which now coexists with the test stage that runs on the same push.
+# Publish the production node image. `needs: []` lets the kaniko job start
+# as soon as the pipeline is created instead of waiting for `cargo-test` —
+# the container build is independent of the cargo lint/test suite, so there
+# is no reason to serialise the two. Stage label remains `build` so the
+# pipeline UI still groups it separately from the test stage.
 kaniko-build-push:
   stage: build
+  needs: []
   image:
     name: gcr.io/kaniko-project/executor:v1.23.2-debug
     entrypoint: [""]
