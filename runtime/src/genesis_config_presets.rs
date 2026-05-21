@@ -16,7 +16,8 @@
 // limitations under the License.
 
 use crate::{
-    AccountId, BalancesConfig, RuntimeGenesisConfig, SudoConfig, BABE_GENESIS_EPOCH_CONFIG,
+    AccountId, BalancesConfig, RuntimeGenesisConfig, SessionConfig, SessionKeys, SudoConfig,
+    BABE_GENESIS_EPOCH_CONFIG,
 };
 use alloc::{vec, vec::Vec};
 use frame_support::build_struct_json_patch;
@@ -101,8 +102,12 @@ fn tx_account_from_hex(hex: &str) -> AccountId {
 }
 
 // Returns the genesis config presets populated with given parameters.
+//
+// Each authority is a triple of `(account, babe, grandpa)`. The same account is
+// used as both validator stash and controller in `pallet-session`, which is
+// fine for v0.2 where staking is not wired in.
 fn testnet_genesis(
-    initial_authorities: Vec<(BabeId, GrandpaId)>,
+    initial_authorities: Vec<(AccountId, BabeId, GrandpaId)>,
     endowed_accounts: Vec<AccountId>,
     root: AccountId,
 ) -> Value {
@@ -117,7 +122,7 @@ fn testnet_genesis(
         babe: pallet_babe::GenesisConfig {
             authorities: initial_authorities
                 .iter()
-                .map(|x| (x.0.clone(), 1))
+                .map(|x| (x.1.clone(), 1))
                 .collect::<Vec<_>>(),
             epoch_config: BABE_GENESIS_EPOCH_CONFIG,
             ..Default::default()
@@ -125,8 +130,24 @@ fn testnet_genesis(
         grandpa: pallet_grandpa::GenesisConfig {
             authorities: initial_authorities
                 .iter()
-                .map(|x| (x.1.clone(), 1))
+                .map(|x| (x.2.clone(), 1))
                 .collect::<Vec<_>>(),
+        },
+        session: SessionConfig {
+            keys: initial_authorities
+                .iter()
+                .map(|(account, babe, grandpa)| {
+                    (
+                        account.clone(),
+                        account.clone(),
+                        SessionKeys {
+                            babe: babe.clone(),
+                            grandpa: grandpa.clone(),
+                        },
+                    )
+                })
+                .collect::<Vec<_>>(),
+            ..Default::default()
         },
         sudo: SudoConfig { key: Some(root) },
     })
@@ -136,6 +157,7 @@ fn testnet_genesis(
 pub fn development_config_genesis() -> Value {
     testnet_genesis(
         vec![(
+            tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
             babe_authority_from_seed(&Sr25519Keyring::Alice.to_seed()),
             grandpa_authority_from_seed(&Ed25519Keyring::Alice.to_seed()),
         )],
@@ -154,10 +176,12 @@ pub fn local_config_genesis() -> Value {
     testnet_genesis(
         vec![
             (
+                tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
                 babe_authority_from_seed(&Sr25519Keyring::Alice.to_seed()),
                 grandpa_authority_from_seed(&Ed25519Keyring::Alice.to_seed()),
             ),
             (
+                tx_account_from_seed(&Sr25519Keyring::Bob.to_seed()),
                 babe_authority_from_seed(&Sr25519Keyring::Bob.to_seed()),
                 grandpa_authority_from_seed(&Ed25519Keyring::Bob.to_seed()),
             ),
@@ -175,14 +199,17 @@ pub fn local_three_validator_config_genesis() -> Value {
     testnet_genesis(
         vec![
             (
+                tx_account_from_seed(&Sr25519Keyring::Alice.to_seed()),
                 babe_authority_from_seed(&Sr25519Keyring::Alice.to_seed()),
                 grandpa_authority_from_seed(&Ed25519Keyring::Alice.to_seed()),
             ),
             (
+                tx_account_from_seed(&Sr25519Keyring::Bob.to_seed()),
                 babe_authority_from_seed(&Sr25519Keyring::Bob.to_seed()),
                 grandpa_authority_from_seed(&Ed25519Keyring::Bob.to_seed()),
             ),
             (
+                tx_account_from_seed(&Sr25519Keyring::Charlie.to_seed()),
                 babe_authority_from_seed(&Sr25519Keyring::Charlie.to_seed()),
                 grandpa_authority_from_seed(&Ed25519Keyring::Charlie.to_seed()),
             ),
@@ -207,21 +234,18 @@ pub fn local_three_validator_config_genesis() -> Value {
 /// — there is no separate faucet account yet. Sudo is held by operator 1; a
 /// migration to a multisig is tracked for a later release.
 pub fn quip_testnet_config_genesis() -> Value {
-    let op1_babe = babe_authority_from_public_hex(include_str!(
-        "genesis_quip_testnet/operator_1_babe.hex"
-    ));
+    let op1_babe =
+        babe_authority_from_public_hex(include_str!("genesis_quip_testnet/operator_1_babe.hex"));
     let op1_grandpa = grandpa_authority_from_public_hex(include_str!(
         "genesis_quip_testnet/operator_1_grandpa.hex"
     ));
-    let op2_babe = babe_authority_from_public_hex(include_str!(
-        "genesis_quip_testnet/operator_2_babe.hex"
-    ));
+    let op2_babe =
+        babe_authority_from_public_hex(include_str!("genesis_quip_testnet/operator_2_babe.hex"));
     let op2_grandpa = grandpa_authority_from_public_hex(include_str!(
         "genesis_quip_testnet/operator_2_grandpa.hex"
     ));
-    let op3_babe = babe_authority_from_public_hex(include_str!(
-        "genesis_quip_testnet/operator_3_babe.hex"
-    ));
+    let op3_babe =
+        babe_authority_from_public_hex(include_str!("genesis_quip_testnet/operator_3_babe.hex"));
     let op3_grandpa = grandpa_authority_from_public_hex(include_str!(
         "genesis_quip_testnet/operator_3_grandpa.hex"
     ));
@@ -235,9 +259,9 @@ pub fn quip_testnet_config_genesis() -> Value {
 
     testnet_genesis(
         vec![
-            (op1_babe, op1_grandpa),
-            (op2_babe, op2_grandpa),
-            (op3_babe, op3_grandpa),
+            (op1_account.clone(), op1_babe, op1_grandpa),
+            (op2_account.clone(), op2_babe, op2_grandpa),
+            (op3_account.clone(), op3_babe, op3_grandpa),
         ],
         vec![op1_account.clone(), op2_account, op3_account],
         op1_account,

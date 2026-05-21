@@ -34,7 +34,10 @@ use frame_support::{
 };
 use frame_system::limits::{BlockLength, BlockWeights};
 use pallet_transaction_payment::{ConstFeeMultiplier, FungibleAdapter, Multiplier};
-use sp_runtime::{traits::One, Perbill};
+use sp_runtime::{
+    traits::{ConvertInto, One, OpaqueKeys},
+    Perbill,
+};
 use sp_version::RuntimeVersion;
 
 use pallet_xqvm::WeightInfo as _;
@@ -43,7 +46,7 @@ use pallet_xqvm::WeightInfo as _;
 use super::{
     AccountId, Babe, Balance, Balances, Block, BlockNumber, Hash, Nonce, PalletInfo, Runtime,
     RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask,
-    System, EXISTENTIAL_DEPOSIT, SLOT_DURATION, UNIT, VERSION,
+    SessionKeys, System, EXISTENTIAL_DEPOSIT, SLOT_DURATION, UNIT, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -57,7 +60,15 @@ parameter_types! {
         Weight::from_parts(2u64 * WEIGHT_REF_TIME_PER_SECOND, u64::MAX),
         NORMAL_DISPATCH_RATIO,
     );
-    pub RuntimeBlockLength: BlockLength = BlockLength::max_with_normal_ratio(5 * 1024 * 1024, NORMAL_DISPATCH_RATIO);
+    // Replacement for the now-deprecated `BlockLength::max_with_normal_ratio` —
+    // reconstruct the same shape via the builder: max = 5 MiB for all dispatch
+    // classes, but the Normal class is scaled down by `NORMAL_DISPATCH_RATIO`.
+    pub RuntimeBlockLength: BlockLength = BlockLength::builder()
+        .max_length(5 * 1024 * 1024)
+        .modify_max_length_for_class(frame_support::dispatch::DispatchClass::Normal, |len| {
+            *len = NORMAL_DISPATCH_RATIO * (5u32 * 1024 * 1024);
+        })
+        .build();
     pub const SS58Prefix: u8 = 42;
 }
 
@@ -126,6 +137,27 @@ impl pallet_grandpa::Config for Runtime {
 
     type KeyOwnerProof = sp_core::Void;
     type EquivocationReportSystem = ();
+}
+
+/// Session keys (BABE + GRANDPA) are registered at genesis and never rotated by
+/// the runtime — `SessionManager = ()` returns `None` on `new_session`, so the
+/// pallet retains the genesis validator set forever. The session API exists so
+/// that explorers and the polkadot.js client can surface
+/// `api.query.session.validators` and so that hybrid session keys can be
+/// rotated via the standard `author_rotateKeys` RPC flow once that work lands.
+impl pallet_session::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type ValidatorId = <Self as frame_system::Config>::AccountId;
+    type ValidatorIdOf = ConvertInto;
+    type ShouldEndSession = Babe;
+    type NextSessionRotation = Babe;
+    type SessionManager = ();
+    type SessionHandler = <SessionKeys as OpaqueKeys>::KeyTypeIdProviders;
+    type Keys = SessionKeys;
+    type DisablingStrategy = ();
+    type WeightInfo = pallet_session::weights::SubstrateWeight<Runtime>;
+    type Currency = Balances;
+    type KeyDeposit = ();
 }
 
 impl pallet_timestamp::Config for Runtime {
@@ -240,6 +272,12 @@ parameter_types! {
     pub const QuantumPowMinerDeposit: Balance = UNIT;
     pub const QuantumPowBlockReward: Balance = UNIT;
     pub const QuantumPowMaxProofsPerBlock: u32 = 8;
+    /// Upper bound on the cardinality of `allowed_h_values`, `allowed_j_values`,
+    /// and `allowed_spin_values` per registered topology. Set well above the
+    /// expected real-world maximum (Advantage2_system1 uses 3 for h, 2 for j,
+    /// 2 for spin) so future hardware-spec changes don't force a runtime
+    /// upgrade.
+    pub const QuantumPowMaxAllowedValues: u32 = 32;
 }
 
 impl pallet_quantum_compute_mempool::Config for Runtime {
@@ -269,5 +307,6 @@ impl pallet_quantum_pow::Config for Runtime {
     type MinerDeposit = QuantumPowMinerDeposit;
     type BlockReward = QuantumPowBlockReward;
     type MaxProofsPerBlock = QuantumPowMaxProofsPerBlock;
+    type MaxAllowedValues = QuantumPowMaxAllowedValues;
     type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
 }

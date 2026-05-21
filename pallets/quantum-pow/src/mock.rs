@@ -67,6 +67,7 @@ parameter_types! {
     pub const MinerDeposit: Balance = 100;
     pub const BlockReward: Balance = 50;
     pub const MaxProofsPerBlock: u32 = 8;
+    pub const MaxAllowedValues: u32 = 32;
 }
 
 impl pallet_quantum_pow::Config for Test {
@@ -80,6 +81,7 @@ impl pallet_quantum_pow::Config for Test {
     type MinerDeposit = MinerDeposit;
     type BlockReward = BlockReward;
     type MaxProofsPerBlock = MaxProofsPerBlock;
+    type MaxAllowedValues = MaxAllowedValues;
     type WeightInfo = ();
 }
 

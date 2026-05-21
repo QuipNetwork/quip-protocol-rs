@@ -2,18 +2,34 @@ use super::mock::*;
 use crate::{
     difficulty, topology,
     types::{DifficultyConfig, QuantumProof},
-    BlockBestProof, BlockProofCount, DefaultTopology, Difficulty, LastProofBlock, Miners,
-    RegisteredTopologies,
+    AllowedValueSetOf, BlockBestProof, BlockProofCount, DefaultTopology, Difficulty,
+    LastProofBlock, Miners, PackedSpinBytesOf, RegisteredTopologies, WinningSolutions,
 };
-use codec::Encode;
 use frame_support::{assert_noop, assert_ok, traits::Hooks, BoundedVec};
-use quantum_validation::{derive_nonce, energy_of_solution, generate_ising_model};
+use quantum_validation::{
+    derive_nonce, energy_of_solution, generate_ising_model, packed::pack_solution,
+    AllowedValueSpec, MilliValue, MILLI_SCALE,
+};
 
 fn bounded<T, S>(items: Vec<T>) -> BoundedVec<T, S>
 where
     S: frame_support::traits::Get<u32>,
 {
     items.try_into().ok().unwrap()
+}
+
+const SCALE: MilliValue = MILLI_SCALE as MilliValue;
+
+fn allowed_h_spec() -> AllowedValueSpec<AllowedValueSetOf<Test>> {
+    AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![-SCALE, 0, SCALE]))
+}
+
+fn allowed_j_spec() -> AllowedValueSpec<AllowedValueSetOf<Test>> {
+    AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![-SCALE, SCALE]))
+}
+
+fn allowed_spin_spec() -> AllowedValueSpec<AllowedValueSetOf<Test>> {
+    AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![-SCALE, SCALE]))
 }
 
 fn easy_difficulty() -> DifficultyConfig {
@@ -32,13 +48,29 @@ fn registered_topology() -> (
 ) {
     let nodes = bounded::<_, MaxNodes>(vec![0, 1]);
     let edges = bounded::<_, MaxEdges>(vec![(0, 1)]);
-    let hash = topology::hash_topology(&nodes, &edges);
+    let hash = topology::hash_topology(
+        &nodes,
+        &edges,
+        &allowed_h_spec().as_slice(),
+        &allowed_j_spec().as_slice(),
+        &allowed_spin_spec().as_slice(),
+    );
     assert_ok!(QuantumPow::register_topology(
         RuntimeOrigin::root(),
         nodes.clone(),
         edges.clone(),
+        allowed_h_spec(),
+        allowed_j_spec(),
+        allowed_spin_spec(),
     ));
     (nodes, edges, hash)
+}
+
+fn pack_spins(spins: &[i8]) -> PackedSpinBytesOf<Test> {
+    let milli: Vec<MilliValue> = spins.iter().map(|&s| s as MilliValue * SCALE).collect();
+    let spec = allowed_spin_spec();
+    let bytes = pack_solution(&milli, &spec.as_slice()).expect("binary spin pack");
+    bounded::<u8, MaxNodes>(bytes)
 }
 
 fn proof_for(
@@ -46,26 +78,30 @@ fn proof_for(
     nodes: &BoundedVec<u32, MaxNodes>,
     edges: &BoundedVec<(u32, u32), MaxEdges>,
     topology_hash: sp_core::H256,
-    allowed_h_values: Vec<i32>,
     solution_indexes: &[usize],
-) -> QuantumProof<
-    BoundedVec<u32, MaxNodes>,
-    BoundedVec<(u32, u32), MaxEdges>,
-    BoundedVec<BoundedVec<i8, MaxNodes>, MaxSolutions>,
-    BoundedVec<i32, MaxNodes>,
-> {
+) -> QuantumProof<crate::PackedSolutionsOf<Test>> {
     let block_number = System::block_number() as u32;
-    let salt = bounded::<_, frame_support::traits::ConstU32<32>>(b"salt".to_vec());
-    let nonce = derive_nonce(
-        &System::parent_hash().encode(),
-        &miner.encode(),
-        block_number,
-        salt.as_slice(),
-    );
-    let (h, j) =
-        generate_ising_model(nonce, nodes.as_slice(), edges.as_slice(), &allowed_h_values).unwrap();
+    let salt: [u8; 32] = {
+        let mut s = [0u8; 32];
+        s[..4].copy_from_slice(b"salt");
+        s
+    };
+    let parent_hash = crate::Pallet::<Test>::parent_hash_bytes();
+    let miner_bytes = crate::Pallet::<Test>::account_to_bytes(&miner);
+    let nonce = derive_nonce(&parent_hash, &miner_bytes, block_number, &salt);
 
-    let candidates = [[-1, -1], [-1, 1], [1, -1], [1, 1]];
+    let h_spec = allowed_h_spec();
+    let j_spec = allowed_j_spec();
+    let (h, j) = generate_ising_model(
+        nonce,
+        nodes.as_slice(),
+        edges.as_slice(),
+        &h_spec.as_slice(),
+        &j_spec.as_slice(),
+    )
+    .unwrap();
+
+    let candidates = [[-1i8, -1], [-1, 1], [1, -1], [1, 1]];
     let mut by_energy: Vec<(i64, Vec<i8>)> = candidates
         .iter()
         .map(|solution| {
@@ -78,17 +114,14 @@ fn proof_for(
 
     let solutions = solution_indexes
         .iter()
-        .map(|&index| bounded::<_, MaxNodes>(by_energy[index].1.clone()))
+        .map(|&index| pack_spins(&by_energy[index].1))
         .collect::<Vec<_>>();
 
     QuantumProof {
         topology_hash,
         nonce,
         salt,
-        nodes: nodes.clone(),
-        edges: edges.clone(),
         solutions: bounded::<_, MaxSolutions>(solutions),
-        h_values: bounded::<_, MaxNodes>(allowed_h_values),
     }
 }
 
@@ -119,12 +152,21 @@ fn register_topology_works() {
     new_test_ext().execute_with(|| {
         let nodes = bounded::<_, MaxNodes>(vec![0, 1, 2]);
         let edges = bounded::<_, MaxEdges>(vec![(0, 1), (1, 2)]);
-        let expected_hash = topology::hash_topology(&nodes, &edges);
+        let expected_hash = topology::hash_topology(
+            &nodes,
+            &edges,
+            &allowed_h_spec().as_slice(),
+            &allowed_j_spec().as_slice(),
+            &allowed_spin_spec().as_slice(),
+        );
 
         assert_ok!(QuantumPow::register_topology(
             RuntimeOrigin::root(),
             nodes.clone(),
             edges.clone(),
+            allowed_h_spec(),
+            allowed_j_spec(),
+            allowed_spin_spec(),
         ));
 
         assert!(RegisteredTopologies::<Test>::contains_key(expected_hash));
@@ -140,6 +182,9 @@ fn register_topology_rejects_small_graph() {
                 RuntimeOrigin::root(),
                 bounded::<_, MaxNodes>(vec![0]),
                 bounded::<_, MaxEdges>(vec![]),
+                allowed_h_spec(),
+                allowed_j_spec(),
+                allowed_spin_spec(),
             ),
             crate::Error::<Test>::GraphTooSmall
         );
@@ -154,8 +199,29 @@ fn register_topology_requires_root() {
                 RuntimeOrigin::signed(1),
                 bounded::<_, MaxNodes>(vec![0, 1]),
                 bounded::<_, MaxEdges>(vec![(0, 1)]),
+                allowed_h_spec(),
+                allowed_j_spec(),
+                allowed_spin_spec(),
             ),
             sp_runtime::DispatchError::BadOrigin
+        );
+    });
+}
+
+#[test]
+fn register_topology_rejects_empty_spin_spec() {
+    new_test_ext().execute_with(|| {
+        let empty_spec = AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![]));
+        assert_noop!(
+            QuantumPow::register_topology(
+                RuntimeOrigin::root(),
+                bounded::<_, MaxNodes>(vec![0, 1]),
+                bounded::<_, MaxEdges>(vec![(0, 1)]),
+                allowed_h_spec(),
+                allowed_j_spec(),
+                empty_spec,
+            ),
+            crate::Error::<Test>::EmptyAllowedValues
         );
     });
 }
@@ -204,7 +270,7 @@ fn submit_proof_accepts_valid_proof() {
             easy_difficulty()
         ));
         let (nodes, edges, topology_hash) = registered_topology();
-        let proof = proof_for(1, &nodes, &edges, topology_hash, vec![-1000, 0, 1000], &[0]);
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
 
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
 
@@ -222,8 +288,8 @@ fn submit_proof_rejects_invalid_nonce() {
             easy_difficulty()
         ));
         let (nodes, edges, topology_hash) = registered_topology();
-        let mut proof = proof_for(1, &nodes, &edges, topology_hash, vec![-1000, 0, 1000], &[0]);
-        proof.nonce = proof.nonce.saturating_add(1);
+        let mut proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+        proof.nonce = proof.nonce.saturating_add(sp_core::U256::one());
 
         assert_noop!(
             QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof),
@@ -233,7 +299,7 @@ fn submit_proof_rejects_invalid_nonce() {
 }
 
 #[test]
-fn submit_proof_rejects_invalid_spin_values() {
+fn submit_proof_rejects_solution_with_wrong_byte_length() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
         assert_ok!(QuantumPow::set_difficulty(
@@ -241,12 +307,14 @@ fn submit_proof_rejects_invalid_spin_values() {
             easy_difficulty()
         ));
         let (nodes, edges, topology_hash) = registered_topology();
-        let mut proof = proof_for(1, &nodes, &edges, topology_hash, vec![-1000, 0, 1000], &[0]);
-        proof.solutions = bounded::<_, MaxSolutions>(vec![bounded::<_, MaxNodes>(vec![0, 1])]);
+        let mut proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+        // Replace the packed solution with one byte too many for a 2-spin
+        // binary-encoded solution (1 byte is enough; we send 2 bytes).
+        proof.solutions = bounded::<_, MaxSolutions>(vec![bounded::<u8, MaxNodes>(vec![0, 0])]);
 
         assert_noop!(
             QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof),
-            crate::Error::<Test>::InvalidSpinValues
+            crate::Error::<Test>::PackedSolutionLengthMismatch
         );
     });
 }
@@ -262,8 +330,8 @@ fn better_proof_replaces_worse_proof() {
         ));
         let (nodes, edges, topology_hash) = registered_topology();
 
-        let worse = proof_for(1, &nodes, &edges, topology_hash, vec![-1000, 0, 1000], &[3]);
-        let better = proof_for(2, &nodes, &edges, topology_hash, vec![-1000, 0, 1000], &[0]);
+        let worse = proof_for(1, &nodes, &edges, topology_hash, &[3]);
+        let better = proof_for(2, &nodes, &edges, topology_hash, &[0]);
 
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), worse));
         let first = BlockBestProof::<Test>::get().unwrap();
@@ -285,7 +353,7 @@ fn on_finalize_pays_block_reward_for_best_proof() {
             easy_difficulty()
         ));
         let (nodes, edges, topology_hash) = registered_topology();
-        let proof = proof_for(1, &nodes, &edges, topology_hash, vec![-1000, 0, 1000], &[0]);
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
         let initial_balance = pallet_balances::Pallet::<Test>::free_balance(1);
 
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
@@ -318,7 +386,7 @@ fn submit_proof_uses_decayed_difficulty_after_block_gap() {
         ));
         let (nodes, edges, topology_hash) = registered_topology();
 
-        let early_proof = proof_for(1, &nodes, &edges, topology_hash, vec![-1000, 0, 1000], &[0]);
+        let early_proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
         assert_noop!(
             QuantumPow::submit_proof(RuntimeOrigin::signed(1), early_proof),
             crate::Error::<Test>::InsufficientSolutions
@@ -326,7 +394,7 @@ fn submit_proof_uses_decayed_difficulty_after_block_gap() {
 
         LastProofBlock::<Test>::put(1);
         System::set_block_number(81);
-        let decayed_proof = proof_for(1, &nodes, &edges, topology_hash, vec![-1000, 0, 1000], &[0]);
+        let decayed_proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
 
         assert_ok!(QuantumPow::submit_proof(
             RuntimeOrigin::signed(1),
@@ -346,7 +414,7 @@ fn on_finalize_fast_proof_hardens_difficulty() {
 
         LastProofBlock::<Test>::put(1);
         System::set_block_number(10);
-        let proof = proof_for(1, &nodes, &edges, topology_hash, vec![-1000, 0, 1000], &[0]);
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
 
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
         QuantumPow::on_finalize(System::block_number());
@@ -373,7 +441,7 @@ fn on_finalize_slow_proof_eases_difficulty_from_decayed_base() {
 
         LastProofBlock::<Test>::put(1);
         System::set_block_number(250);
-        let proof = proof_for(1, &nodes, &edges, topology_hash, vec![-1000, 0, 1000], &[0]);
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
 
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
 
@@ -382,6 +450,53 @@ fn on_finalize_slow_proof_eases_difficulty_from_decayed_base() {
 
         let next = Difficulty::<Test>::get();
         assert!(next.max_energy_milli > decayed.max_energy_milli);
+    });
+}
+
+#[test]
+fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        assert_ok!(QuantumPow::set_difficulty(
+            RuntimeOrigin::root(),
+            easy_difficulty()
+        ));
+        let (nodes, edges, topology_hash) = registered_topology();
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+        let original_nonce = proof.nonce;
+        let original_salt = proof.salt;
+
+        assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
+        let block = System::block_number();
+        QuantumPow::on_finalize(block);
+
+        let stored = WinningSolutions::<Test>::get(block).expect("winning solution persisted");
+        assert_eq!(stored.miner, 1);
+        assert_eq!(stored.salt, original_salt);
+        assert_eq!(stored.reward, 50);
+        // LastProofBlock was zero before this proof, so no decay applied —
+        // the active threshold equals whatever set_difficulty just stored.
+        assert_eq!(stored.difficulty, easy_difficulty());
+
+        // Re-derive the nonce via the runtime helper and confirm it matches
+        // the value that was on the submitted proof. This is the round-trip
+        // that lets dashboards recover the nonce from on-chain state alone.
+        let view = crate::Pallet::<Test>::winning_solution_with_nonce(block)
+            .expect("nonce derivation succeeds for a real winner");
+        assert_eq!(view.nonce, original_nonce);
+        assert_eq!(view.solution.salt, original_salt);
+        assert_eq!(view.solution.difficulty, easy_difficulty());
+    });
+}
+
+#[test]
+fn winning_solution_returns_none_for_genesis_block() {
+    new_test_ext().execute_with(|| {
+        // Genesis (block 0) never had a `submit_proof` call, so the storage
+        // entry is absent and the helper short-circuits before any block-hash
+        // arithmetic. Pins the contract that saturating subtraction on
+        // `block_number - 1 == 0u32 - 1` never reaches the nonce derivation.
+        assert!(crate::Pallet::<Test>::winning_solution_with_nonce(0).is_none());
     });
 }
 
@@ -397,11 +512,20 @@ fn mining_snapshot_returns_default_and_selected_topology_views() {
 
         let other_nodes = bounded::<_, MaxNodes>(vec![10, 11, 12]);
         let other_edges = bounded::<_, MaxEdges>(vec![(10, 11), (11, 12)]);
-        let other_hash = topology::hash_topology(&other_nodes, &other_edges);
+        let other_hash = topology::hash_topology(
+            &other_nodes,
+            &other_edges,
+            &allowed_h_spec().as_slice(),
+            &allowed_j_spec().as_slice(),
+            &allowed_spin_spec().as_slice(),
+        );
         assert_ok!(QuantumPow::register_topology(
             RuntimeOrigin::root(),
             other_nodes.clone(),
             other_edges.clone(),
+            allowed_h_spec(),
+            allowed_j_spec(),
+            allowed_spin_spec(),
         ));
 
         let default_snapshot =
@@ -421,5 +545,80 @@ fn mining_snapshot_returns_default_and_selected_topology_views() {
         assert_eq!(selected_snapshot.topology_hash, other_hash);
         assert_eq!(selected_snapshot.nodes, other_nodes);
         assert_eq!(selected_snapshot.edges, other_edges);
+    });
+}
+
+#[test]
+fn winning_solution_records_active_difficulty_threshold() {
+    new_test_ext().execute_with(|| {
+        // Pin the contract that WinningSolution stores the *active* threshold
+        // a proof had to clear (decay applied, pre-adjust) rather than the
+        // post-adjustment value that lives in Difficulty<T> after on_finalize.
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let initial = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: i64::MAX,
+            min_diversity_milli: 0,
+            min_quality_milli: 200,
+        };
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        let (nodes, edges, topology_hash) = registered_topology();
+
+        LastProofBlock::<Test>::put(1);
+        System::set_block_number(45); // (45 - 1) / 20 = 2 decay steps
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+        assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
+        QuantumPow::on_finalize(System::block_number());
+
+        let expected_active = difficulty::apply_decay(initial, 2);
+        let stored = WinningSolutions::<Test>::get(45).expect("winner persisted");
+        assert_eq!(
+            stored.difficulty, expected_active,
+            "stored difficulty must be the decayed-but-pre-adjust threshold"
+        );
+
+        // Mining time blocks = 45 - 1 = 44 < TARGET_PROOF_BLOCKS (100), so the
+        // adjustment hardens. The post-adjust value now in Difficulty<T> must
+        // be strictly tighter than the recorded one on at least one axis.
+        let next = Difficulty::<Test>::get();
+        assert!(
+            next.min_quality_milli > expected_active.min_quality_milli
+                || next.min_solutions > expected_active.min_solutions,
+            "post-adjust difficulty should be harder than the active threshold the proof cleared"
+        );
+    });
+}
+
+#[test]
+fn mining_snapshot_returns_decayed_difficulty_after_epochs() {
+    new_test_ext().execute_with(|| {
+        // Pin the contract that mining_snapshot.difficulty applies decay so
+        // miners querying the runtime API get the live threshold — not the
+        // stale Difficulty<T> baseline that polkadot.js storage queries return.
+        let initial = DifficultyConfig {
+            min_solutions: 5,
+            max_energy_milli: 0,
+            min_diversity_milli: 100,
+            min_quality_milli: 100,
+        };
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        let _ = registered_topology();
+
+        LastProofBlock::<Test>::put(1);
+        System::set_block_number(121); // (121 - 1) / 20 = 6 decay steps
+        let snapshot =
+            QuantumPow::mining_snapshot(System::block_number(), System::parent_hash(), None)
+                .expect("snapshot exists for default topology");
+        let expected = difficulty::apply_decay(initial, 6);
+        assert_eq!(snapshot.difficulty, expected);
+        assert_ne!(
+            snapshot.difficulty, initial,
+            "snapshot must not echo the raw storage baseline once decay has elapsed"
+        );
+
+        // Direct storage query (the polkadot.js default path) must still
+        // return the undecayed baseline — this is the visibility gap that the
+        // runtime API closes.
+        assert_eq!(Difficulty::<Test>::get(), initial);
     });
 }

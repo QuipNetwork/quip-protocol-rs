@@ -9,17 +9,23 @@ edition.workspace = true
 
 [dependencies]
 blake3 = { version = "1.8.2", default-features = false }
+codec = { workspace = true, features = ["derive", "max-encoded-len"] }
 libm = { version = "0.2.15", default-features = false }
 rand_chacha = { version = "0.9.0", default-features = false }
 rand_core = { version = "0.9.3", default-features = false }
+scale-info = { workspace = true, features = ["derive"] }
+sp-core = { workspace = true }
 thiserror = { version = "2.0.18", optional = true }
 
 [features]
 default = ["std"]
 std = [
     "blake3/std",
+    "codec/std",
     "rand_chacha/std",
     "rand_core/std",
+    "scale-info/std",
+    "sp-core/std",
     "dep:thiserror",
 ]
 

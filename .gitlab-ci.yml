@@ -1,26 +1,71 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Build the quip-network-node Docker image and push to GitLab Container Registry.
+# CI pipeline for quip-protocol-rs.
+#
+# Stages:
+#   - test:  fmt / clippy / test / runtime release build on every MR
+#   - build: publish quip-network-node container on main/v0.2/tags
 #
 # Triggers:
-#   - push to main  →  :latest         + :sha-<short>
-#   - push to v0.2  →  :v0.2-preview   + :sha-<short>   (release integration branch)
-#   - git tag       →  :<tag>          + :sha-<short>   (no :latest — main is the floating ref)
+#   - merge_request_event  →  test
+#   - push to main         →  test + build (:latest)
+#   - push to v0.2         →  test + build (:v0.2-preview)
+#   - git tag              →  test + build (:<tag>)
 #
-# Image: registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:<tag>
+# Toolchain image: docker.io/carback1/rust-substrate-builder:latest
+# (built manually from .gitlab/ci-toolchain.Dockerfile and pushed to Docker
+# Hub — see the Dockerfile header for the buildx command). Rebuild it
+# locally and re-push when the toolchain Dockerfile changes.
 #
-# Caching: Kaniko registry-side cache image (:buildcache). This reuses built
-# layers across CI runs without Docker-in-Docker.
-#
-# Context: QUI-528.
+# Runtime image: registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:<tag>
 
 stages:
+  - test
   - build
 
 variables:
+  TOOLCHAIN_IMAGE: docker.io/carback1/rust-substrate-builder:latest
   IMAGE: $CI_REGISTRY_IMAGE/quip-network-node
   CACHE_IMAGE: $CI_REGISTRY_IMAGE/quip-network-node:buildcache
+  # Keep Cargo's registry and the workspace target/ inside the project dir so
+  # the GitLab CI cache can pick them up between runs.
+  CARGO_HOME: $CI_PROJECT_DIR/.cargo
+  CARGO_TERM_COLOR: always
 
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_BRANCH == "v0.2"
+    - if: $CI_COMMIT_TAG
+
+# Single test job: pulls the toolchain image once, restores the Cargo cache
+# once, and runs fmt → clippy → test → runtime release build sequentially so
+# they share compile artifacts and registry state. The toolchain image already
+# has clang/protoc/cmake + the wasm32v1-none target.
+cargo-test:
+  stage: test
+  image: $TOOLCHAIN_IMAGE
+  tags: [linux, amd64]
+  interruptible: true
+  timeout: 60m
+  cache:
+    key:
+      files:
+        - Cargo.lock
+    paths:
+      - .cargo/registry/cache
+      - .cargo/registry/index
+      - target/
+  script:
+    - cargo fmt --all -- --check
+    - cargo clippy --workspace --lib --bins --tests -- -D warnings
+    - cargo test --workspace --lib --bins --tests
+    - cargo build --release -p quip-protocol-runtime
+
+# Publish the production node image. Unchanged from the prior pipeline
+# except for the explicit `stage: build` (was implicit) and the rule on v0.2
+# which now coexists with the test stage that runs on the same push.
 kaniko-build-push:
   stage: build
   image:
