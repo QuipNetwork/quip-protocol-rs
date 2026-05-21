@@ -14,28 +14,28 @@ use crate::validation::ensure_valid_topology;
 
 /// Derive the deterministic puzzle nonce for a `submit_proof` call.
 ///
-/// Inputs are fixed-size 32-byte buffers so the PoW search space is statically
-/// known and identical across every call:
+/// Inputs are three fixed-size 32-byte buffers so the PoW search space is
+/// statically known and identical across every call:
 ///
-/// - `parent_hash` — block header parent hash, 32 bytes
+/// - `last_winning_hash` — `block_hash(LastProofBlock)`, i.e. the header
+///   hash of the most recent winning block. Stable across the entire round
+///   (only changes on the next win), so miners can submit proofs without
+///   racing the txpool / executing-block-number.
 /// - `miner` — 32-byte representation of the submitting account (the pallet
 ///   derives this by hashing the SCALE-encoded `AccountId`, so the input is
 ///   always 32 bytes regardless of the underlying `AccountId` width)
-/// - `block_number` — current block height
 /// - `salt` — the only freely-chosen miner input, 32 bytes
 ///
 /// Returns the full 256-bit BLAKE3 digest as a `U256` so all 256 bits seed
 /// downstream RNG state (no truncation).
 pub fn derive_nonce(
-    parent_hash: &[u8; 32],
+    last_winning_hash: &[u8; 32],
     miner: &[u8; 32],
-    block_number: u32,
     salt: &[u8; 32],
 ) -> U256 {
     let mut hasher = Hasher::new();
-    hasher.update(parent_hash);
+    hasher.update(last_winning_hash);
     hasher.update(miner);
-    hasher.update(&block_number.to_be_bytes());
     hasher.update(salt);
     U256::from_big_endian(hasher.finalize().as_bytes())
 }
@@ -98,18 +98,17 @@ mod tests {
 
     #[test]
     fn nonce_derivation_is_deterministic() {
-        let first = derive_nonce(&[1; 32], &ALICE_BYTES, 42, &SALT_A);
-        let second = derive_nonce(&[1; 32], &ALICE_BYTES, 42, &SALT_A);
+        let first = derive_nonce(&[1; 32], &ALICE_BYTES, &SALT_A);
+        let second = derive_nonce(&[1; 32], &ALICE_BYTES, &SALT_A);
         assert_eq!(first, second);
     }
 
     #[test]
     fn nonce_derivation_changes_with_input_parts() {
-        let baseline = derive_nonce(&[1; 32], &ALICE_BYTES, 42, &SALT_A);
-        assert_ne!(baseline, derive_nonce(&[2; 32], &ALICE_BYTES, 42, &SALT_A));
-        assert_ne!(baseline, derive_nonce(&[1; 32], &BOB_BYTES, 42, &SALT_A));
-        assert_ne!(baseline, derive_nonce(&[1; 32], &ALICE_BYTES, 43, &SALT_A));
-        assert_ne!(baseline, derive_nonce(&[1; 32], &ALICE_BYTES, 42, &SALT_B));
+        let baseline = derive_nonce(&[1; 32], &ALICE_BYTES, &SALT_A);
+        assert_ne!(baseline, derive_nonce(&[2; 32], &ALICE_BYTES, &SALT_A));
+        assert_ne!(baseline, derive_nonce(&[1; 32], &BOB_BYTES, &SALT_A));
+        assert_ne!(baseline, derive_nonce(&[1; 32], &ALICE_BYTES, &SALT_B));
     }
 
     #[test]
@@ -119,7 +118,7 @@ mod tests {
         let allowed_h: &[i32] = &[-1_000, 0, 1_000];
         let allowed_j: &[i32] = &[-1_000, 1_000];
 
-        let nonce = derive_nonce(&[1; 32], &ALICE_BYTES, 42, &SALT_A);
+        let nonce = derive_nonce(&[1; 32], &ALICE_BYTES, &SALT_A);
         let (h, j) = generate_ising_model(
             nonce,
             &nodes,

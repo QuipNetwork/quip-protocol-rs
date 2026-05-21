@@ -11,9 +11,11 @@ use sp_core::{H256, U256};
 ///   pallet looks up nodes, edges, and the allowed value sets from
 ///   `RegisteredTopologies`.
 /// - `nonce` is the full 256-bit BLAKE3 digest of
-///   `(parent_hash, miner, block_number, salt)`. The verifier re-derives it
-///   for free; carrying it in the proof lets `submit_proof` reject mismatched
-///   salts before doing any topology work.
+///   `(last_winning_hash, miner, salt)`, where `last_winning_hash =
+///   block_hash(LastProofBlock)` is the header hash of the most recent
+///   winning block (stable across an entire round). The verifier
+///   re-derives it for free; carrying it in the proof lets `submit_proof`
+///   reject mismatched salts before doing any topology work.
 /// - `salt` is the only freely-chosen miner input. Fixed at 32 bytes so the
 ///   PoW search space is statically known and identical across every call.
 /// - `solutions` is a list of bit-packed spin vectors. Each entry is decoded
@@ -140,9 +142,14 @@ pub struct ProofValidation {
 #[derive(
     Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
 )]
-pub struct MiningSnapshot<BlockNumber, Hash, Nodes, Edges, AllowedValues> {
-    pub block_number: BlockNumber,
-    pub parent_hash: Hash,
+pub struct MiningSnapshot<Nodes, Edges, AllowedValues> {
+    /// `block_hash(LastProofBlock)` — the header hash of the most recent
+    /// winning block. The only "time" input the miner needs: it's stable
+    /// for the whole round and feeds straight into `derive_nonce`. Both
+    /// `block_number` and `parent_hash` were dropped from this snapshot
+    /// because each existed only to feed the old block-number-bound nonce
+    /// derivation; the new contract has neither in its input set.
+    pub last_winning_hash: H256,
     pub difficulty: DifficultyConfig,
     pub topology_hash: H256,
     pub nodes: Nodes,
@@ -155,9 +162,15 @@ pub struct MiningSnapshot<BlockNumber, Hash, Nodes, Edges, AllowedValues> {
 }
 
 /// Persisted record of each block's winning proof, written in `on_finalize`
-/// alongside the `BlockWinner` event. The nonce is not stored — consumers
-/// derive it from `(parent_hash, miner, block_number, salt)`, or call the
+/// alongside the `BlockWinner` event. The nonce is not stored directly —
+/// consumers derive it from `(last_winning_hash, miner, salt)`, or call the
 /// `winning_solution` runtime API which does it server-side.
+///
+/// `last_winning_hash` is the value the proof actually used at submission
+/// time (i.e. `block_hash(previous winning block)`). Storing it makes
+/// `winning_solution_with_nonce` self-contained — no `frame_system::block_hash`
+/// lookup is needed at re-derivation time, and re-derivation stays correct
+/// even after the original block is pruned beyond `BlockHashCount`.
 ///
 /// `difficulty` captures the *active* threshold the proof actually had to
 /// clear (i.e. decay applied, but before the post-win adjustment). The next
@@ -173,6 +186,7 @@ pub struct WinningSolution<AccountId, Balance, BlockNumber> {
     pub reward: Balance,
     pub submitted_at: BlockNumber,
     pub difficulty: DifficultyConfig,
+    pub last_winning_hash: H256,
 }
 
 /// Runtime-API view augmenting [`WinningSolution`] with the derived nonce.
