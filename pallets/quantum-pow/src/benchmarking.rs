@@ -36,7 +36,6 @@ fn easy_difficulty() -> types::DifficultyConfig {
         min_solutions: 1,
         max_energy_milli: i64::MAX,
         min_diversity_milli: 0,
-        min_quality_milli: 0,
     }
 }
 

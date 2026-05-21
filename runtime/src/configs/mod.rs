@@ -278,6 +278,13 @@ parameter_types! {
     /// 2 for spin) so future hardware-spec changes don't force a runtime
     /// upgrade.
     pub const QuantumPowMaxAllowedValues: u32 = 32;
+    /// Energy-curve calibration: per-mille `c` values that define the
+    /// `(max_energy, knee_energy, min_energy)` triple via `expected_gse_with_c`
+    /// on the default topology. Defaults `(0.700, 0.750, 0.800)` centre the
+    /// curve's knee on the canonical `c = 0.75` used elsewhere in validation.
+    pub const QuantumPowCurveCEasyMilli: u32 = 700;
+    pub const QuantumPowCurveCKneeMilli: u32 = 750;
+    pub const QuantumPowCurveCHardMilli: u32 = 800;
 }
 
 impl pallet_quantum_compute_mempool::Config for Runtime {
@@ -308,5 +315,8 @@ impl pallet_quantum_pow::Config for Runtime {
     type BlockReward = QuantumPowBlockReward;
     type MaxProofsPerBlock = QuantumPowMaxProofsPerBlock;
     type MaxAllowedValues = QuantumPowMaxAllowedValues;
+    type CurveCEasyMilli = QuantumPowCurveCEasyMilli;
+    type CurveCKneeMilli = QuantumPowCurveCKneeMilli;
+    type CurveCHardMilli = QuantumPowCurveCHardMilli;
     type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
 }
