@@ -232,6 +232,10 @@ impl_runtime_apis! {
         ) -> Option<pallet_quantum_pow::types::WinningSolutionWithNonce<AccountId, Balance, BlockNumber>> {
             QuantumPow::winning_solution_with_nonce(block_number)
         }
+
+        fn current_difficulty() -> pallet_quantum_pow::types::DifficultyConfig {
+            QuantumPow::current_difficulty_for(System::block_number())
+        }
     }
 
     impl frame_system_rpc_runtime_api::AccountNonceApi<Block, AccountId, Nonce> for Runtime {

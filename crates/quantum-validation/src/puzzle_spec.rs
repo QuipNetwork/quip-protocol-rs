@@ -234,15 +234,18 @@ mod tests {
 
     #[test]
     fn integer_range_uses_minimum_bits() {
-        let spec: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::IntegerRange { min: -6, max: 6 };
+        let spec: AllowedValueSpec<&[MilliValue]> =
+            AllowedValueSpec::IntegerRange { min: -6, max: 6 };
         // 13 values → 4 bits
         assert_eq!(spec.bits_per_value().unwrap(), 4);
     }
 
     #[test]
     fn continuous_range_uses_thirty_two_bits() {
-        let spec: AllowedValueSpec<&[MilliValue]> =
-            AllowedValueSpec::ContinuousRange { min: -6000, max: 6000 };
+        let spec: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::ContinuousRange {
+            min: -6000,
+            max: 6000,
+        };
         assert_eq!(spec.bits_per_value().unwrap(), 32);
     }
 
@@ -260,7 +263,8 @@ mod tests {
 
     #[test]
     fn decode_integer_range_scales_by_milli() {
-        let spec: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::IntegerRange { min: -6, max: 6 };
+        let spec: AllowedValueSpec<&[MilliValue]> =
+            AllowedValueSpec::IntegerRange { min: -6, max: 6 };
         assert_eq!(spec.decode_value(0).unwrap(), -6000);
         assert_eq!(spec.decode_value(6).unwrap(), 0);
         assert_eq!(spec.decode_value(12).unwrap(), 6000);
@@ -290,7 +294,8 @@ mod tests {
     fn canonical_bytes_distinguish_variants() {
         let s = set_spec(&[0]);
         let ir: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::IntegerRange { min: 0, max: 0 };
-        let cr: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::ContinuousRange { min: 0, max: 0 };
+        let cr: AllowedValueSpec<&[MilliValue]> =
+            AllowedValueSpec::ContinuousRange { min: 0, max: 0 };
         assert_ne!(s.canonical_bytes(), ir.canonical_bytes());
         assert_ne!(s.canonical_bytes(), cr.canonical_bytes());
         assert_ne!(ir.canonical_bytes(), cr.canonical_bytes());

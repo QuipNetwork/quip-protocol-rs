@@ -18,10 +18,7 @@ pub fn packed_solution_byte_len(
     spec: &AllowedValueSpec<&[MilliValue]>,
 ) -> Result<usize, ValidationError> {
     let bits_per_spin = spec.bits_per_value()? as usize;
-    Ok(num_spins
-        .saturating_mul(bits_per_spin)
-        .saturating_add(7)
-        / 8)
+    Ok(num_spins.saturating_mul(bits_per_spin).saturating_add(7) / 8)
 }
 
 /// Decode a bit-packed solution payload into a vector of `MilliValue` spins.
@@ -128,7 +125,7 @@ pub fn pack_solution(
         let byte_index = bit_offset / 8;
         let intra_byte = bit_offset % 8;
 
-        let shifted = u32::from(raw) << intra_byte;
+        let shifted = raw << intra_byte;
         out[byte_index] |= (shifted & 0xFF) as u8;
         if byte_index + 1 < out.len() {
             out[byte_index + 1] |= ((shifted >> 8) & 0xFF) as u8;
@@ -230,7 +227,8 @@ mod tests {
     #[test]
     fn integer_range_round_trip() {
         // -2..=2 → 5 values → 3 bits per spin.
-        let spec: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::IntegerRange { min: -2, max: 2 };
+        let spec: AllowedValueSpec<&[MilliValue]> =
+            AllowedValueSpec::IntegerRange { min: -2, max: 2 };
         let values = [-2000, 0, 2000, 1000, -1000];
         let packed = pack_solution(&values, &spec).unwrap();
         let unpacked = unpack_solution(&packed, values.len(), &spec).unwrap();
@@ -239,8 +237,10 @@ mod tests {
 
     #[test]
     fn continuous_range_round_trip_uses_32_bits() {
-        let spec: AllowedValueSpec<&[MilliValue]> =
-            AllowedValueSpec::ContinuousRange { min: -6000, max: 6000 };
+        let spec: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::ContinuousRange {
+            min: -6000,
+            max: 6000,
+        };
         let values = [-6000, -2500, 0, 2500, 6000];
         let packed = pack_solution(&values, &spec).unwrap();
         assert_eq!(packed.len(), values.len() * 4);

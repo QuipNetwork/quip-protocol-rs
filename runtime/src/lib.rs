@@ -332,4 +332,7 @@ mod runtime {
 
     #[runtime::pallet_index(11)]
     pub type FaucetOps = pallet_faucet_ops;
+
+    #[runtime::pallet_index(12)]
+    pub type Session = pallet_session;
 }

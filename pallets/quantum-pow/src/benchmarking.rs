@@ -104,11 +104,10 @@ fn valid_proof_for<T: Config>(
 
     // 2-spin solution: both spins at +1.
     let spin_spec = allowed_spin_set::<T>();
-    let packed = pack_solution(&[SCALE, SCALE], &spin_spec.as_slice())
-        .expect("binary spin pack succeeds");
+    let packed =
+        pack_solution(&[SCALE, SCALE], &spin_spec.as_slice()).expect("binary spin pack succeeds");
     let packed_bv: PackedSpinBytesOf<T> = bounded::<u8, T::MaxNodes>(packed);
-    let solutions: PackedSolutionsOf<T> =
-        bounded::<_, T::MaxSolutions>(vec![packed_bv]);
+    let solutions: PackedSolutionsOf<T> = bounded::<_, T::MaxSolutions>(vec![packed_bv]);
 
     types::QuantumProof {
         topology_hash,
