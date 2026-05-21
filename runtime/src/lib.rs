@@ -71,10 +71,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // Bumped to 101 (and `transaction_version` to 2) when the signed-extrinsic
     // wire format switched from `MultiSignature` to the hybrid envelope. Without
     // these bumps, peers/clients could treat the new format as the old one.
-    //
-    // Bumped to 102 when `pallet-session` was added so client metadata
-    // (e.g. polkadot.js apps) regenerates the new `Session` storage entries.
-    spec_version: 102,
+    spec_version: 101,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 2,
