@@ -3,14 +3,14 @@
 # CI pipeline for quip-protocol-rs.
 #
 # Stages:
-#   - check: fmt / clippy / test / runtime release build on every MR
+#   - test:  fmt / clippy / test / runtime release build on every MR
 #   - build: publish quip-network-node container on main/v0.2/tags
 #
 # Triggers:
-#   - merge_request_event  →  check
-#   - push to main         →  check + build (:latest)
-#   - push to v0.2         →  check + build (:v0.2-preview)
-#   - git tag              →  check + build (:<tag>)
+#   - merge_request_event  →  test
+#   - push to main         →  test + build (:latest)
+#   - push to v0.2         →  test + build (:v0.2-preview)
+#   - git tag              →  test + build (:<tag>)
 #
 # Toolchain image: docker.io/carback1/rust-substrate-builder:latest
 # (built manually from .gitlab/ci-toolchain.Dockerfile and pushed to Docker
@@ -20,7 +20,7 @@
 # Runtime image: registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:<tag>
 
 stages:
-  - check
+  - test
   - build
 
 variables:
@@ -39,12 +39,12 @@ workflow:
     - if: $CI_COMMIT_BRANCH == "v0.2"
     - if: $CI_COMMIT_TAG
 
-# Single check job: pulls the toolchain image once, restores the Cargo cache
+# Single test job: pulls the toolchain image once, restores the Cargo cache
 # once, and runs fmt → clippy → test → runtime release build sequentially so
 # they share compile artifacts and registry state. The toolchain image already
 # has clang/protoc/cmake + the wasm32v1-none target.
-cargo-check:
-  stage: check
+cargo-test:
+  stage: test
   image: $TOOLCHAIN_IMAGE
   tags: [linux, amd64]
   interruptible: true
@@ -65,7 +65,7 @@ cargo-check:
 
 # Publish the production node image. Unchanged from the prior pipeline
 # except for the explicit `stage: build` (was implicit) and the rule on v0.2
-# which now coexists with the check stage that runs on the same push.
+# which now coexists with the test stage that runs on the same push.
 kaniko-build-push:
   stage: build
   image:
