@@ -48,7 +48,6 @@ pub struct DifficultyConfig {
     pub min_solutions: u32,
     pub max_energy_milli: i64,
     pub min_diversity_milli: u32,
-    pub min_quality_milli: u32,
 }
 
 impl Default for DifficultyConfig {
@@ -57,7 +56,6 @@ impl Default for DifficultyConfig {
             min_solutions: 5,
             max_energy_milli: -1_200_000,
             min_diversity_milli: 200,
-            min_quality_milli: 0,
         }
     }
 }
@@ -136,7 +134,6 @@ pub struct ProofValidation {
     pub best_energy_milli: i64,
     pub diversity_milli: u32,
     pub valid_solution_count: u32,
-    pub quality_milli: u32,
 }
 
 #[derive(

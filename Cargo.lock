@@ -6507,6 +6507,7 @@ dependencies = [
  "frame-benchmarking",
  "frame-support",
  "frame-system",
+ "libm",
  "pallet-balances",
  "parity-scale-codec",
  "quantum-validation",

@@ -82,6 +82,9 @@ impl pallet_quantum_pow::Config for Test {
     type BlockReward = BlockReward;
     type MaxProofsPerBlock = MaxProofsPerBlock;
     type MaxAllowedValues = MaxAllowedValues;
+    type CurveCEasyMilli = ConstU32<700>;
+    type CurveCKneeMilli = ConstU32<750>;
+    type CurveCHardMilli = ConstU32<800>;
     type WeightInfo = ();
 }
 

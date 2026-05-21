@@ -37,8 +37,15 @@ fn easy_difficulty() -> DifficultyConfig {
         min_solutions: 1,
         max_energy_milli: i64::MAX,
         min_diversity_milli: 0,
-        min_quality_milli: 0,
     }
+}
+
+/// Energy curve calibrated against the same `(2, 1)` topology that
+/// `registered_topology()` registers. Tests that call `apply_decay` or
+/// `adjust_on_proof` directly need this so their behaviour matches what
+/// the pallet computes through `current_energy_curve()`.
+fn test_curve() -> crate::difficulty::EnergyCurve {
+    crate::difficulty::EnergyCurve::new(2, 1, 700, 750, 800)
 }
 
 fn registered_topology() -> (
@@ -236,7 +243,6 @@ fn set_difficulty_requires_root() {
             min_solutions: 2,
             max_energy_milli: -1_000,
             min_diversity_milli: 500,
-            min_quality_milli: 750,
         };
 
         assert_noop!(
@@ -253,7 +259,6 @@ fn set_difficulty_works() {
             min_solutions: 3,
             max_energy_milli: -2_000,
             min_diversity_milli: 800,
-            min_quality_milli: 900,
         };
 
         assert_ok!(QuantumPow::set_difficulty(
@@ -376,29 +381,61 @@ fn on_finalize_pays_block_reward_for_best_proof() {
 #[test]
 fn submit_proof_uses_decayed_difficulty_after_block_gap() {
     new_test_ext().execute_with(|| {
+        // Regression: submit_proof must validate against the *decayed*
+        // Self::current_difficulty(), not the raw Difficulty::<T>::get().
+        // Under the new curve policy, only max_energy_milli decays — so we
+        // build the discriminator out of energy: set the threshold to exactly
+        // the proof's best energy (validation requires strict-less-than) so
+        // the same-block submit fails, then wait an epoch for decay to raise
+        // the threshold above the proof's energy and admit it.
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        let difficulty = DifficultyConfig {
-            min_solutions: 5,
-            max_energy_milli: i64::MAX,
-            min_diversity_milli: 0,
-            min_quality_milli: 0,
-        };
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            difficulty
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
 
+        // Fix the nonce-derivation seed so both submissions use the same
+        // proof contents.
+        LastProofBlock::<Test>::put(1);
+        System::set_block_number(1);
+
+        // Build the proof once and compute its best energy.
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+        let h_spec = allowed_h_spec();
+        let j_spec = allowed_j_spec();
+        let (h, j) = generate_ising_model(
+            proof.nonce,
+            nodes.as_slice(),
+            edges.as_slice(),
+            &h_spec.as_slice(),
+            &j_spec.as_slice(),
+        )
+        .unwrap();
+        let best_energy_milli: i64 = [[-1i8, -1], [-1, 1], [1, -1], [1, 1]]
+            .iter()
+            .map(|s| energy_of_solution(s, &h, edges.as_slice(), &j, nodes.as_slice()).unwrap())
+            .min()
+            .unwrap();
+
+        // Threshold == best energy: validation's strict-less-than gate
+        // rejects same-block submissions (no decay yet).
+        assert_ok!(QuantumPow::set_difficulty(
+            RuntimeOrigin::root(),
+            DifficultyConfig {
+                min_solutions: 1,
+                max_energy_milli: best_energy_milli,
+                min_diversity_milli: 0,
+            },
+        ));
         let early_proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
         assert_noop!(
             QuantumPow::submit_proof(RuntimeOrigin::signed(1), early_proof),
-            crate::Error::<Test>::InsufficientSolutions
+            crate::Error::<Test>::InsufficientEnergy
         );
 
-        LastProofBlock::<Test>::put(1);
-        System::set_block_number(81);
+        // One full epoch later: decay raises the threshold by at least
+        // MIN_DECAY_DELTA_MILLI (= 3 milli), strictly above the proof's
+        // energy. Validation now admits the same proof — proving submit_proof
+        // consulted current_difficulty(), not the raw storage baseline.
+        System::set_block_number(21); // (21 - 1) / EpochLength(20) = 1 decay step
         let decayed_proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
-
         assert_ok!(QuantumPow::submit_proof(
             RuntimeOrigin::signed(1),
             decayed_proof
@@ -423,9 +460,10 @@ fn on_finalize_fast_proof_hardens_difficulty() {
         QuantumPow::on_finalize(System::block_number());
 
         let next = Difficulty::<Test>::get();
-        assert!(next.min_solutions > initial.min_solutions);
+        // Only the energy threshold moves; the chain-static fields stay put.
         assert!(next.max_energy_milli < initial.max_energy_milli);
-        assert!(next.min_quality_milli > initial.min_quality_milli);
+        assert_eq!(next.min_solutions, initial.min_solutions);
+        assert_eq!(next.min_diversity_milli, initial.min_diversity_milli);
     });
 }
 
@@ -433,11 +471,15 @@ fn on_finalize_fast_proof_hardens_difficulty() {
 fn on_finalize_slow_proof_eases_difficulty_from_decayed_base() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        // min_solutions / min_diversity_milli are chain-static under the new
+        // curve policy; only max_energy_milli decays. Set the chain-static
+        // fields permissively so the proof passes those gates, and let the
+        // assertion below measure the energy easing through both decay and
+        // the post-win adjustment.
         let initial = DifficultyConfig {
-            min_solutions: 3,
+            min_solutions: 1,
             max_energy_milli: 0,
-            min_diversity_milli: 100,
-            min_quality_milli: 100,
+            min_diversity_milli: 0,
         };
         assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
         let (nodes, edges, topology_hash) = registered_topology();
@@ -448,11 +490,19 @@ fn on_finalize_slow_proof_eases_difficulty_from_decayed_base() {
 
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
 
-        let decayed = difficulty::apply_decay(initial, (250_u32 - 1) / EpochLength::get() as u32);
+        let decayed = difficulty::apply_decay(
+            initial,
+            (250_u32 - 1) / EpochLength::get() as u32,
+            test_curve(),
+        );
         QuantumPow::on_finalize(System::block_number());
 
         let next = Difficulty::<Test>::get();
+        // Slow proof eases the threshold further past the decayed value.
         assert!(next.max_energy_milli > decayed.max_energy_milli);
+        // Chain-static fields untouched throughout decay + adjust.
+        assert_eq!(next.min_solutions, initial.min_solutions);
+        assert_eq!(next.min_diversity_milli, initial.min_diversity_milli);
     });
 }
 
@@ -579,7 +629,6 @@ fn winning_solution_records_active_difficulty_threshold() {
             min_solutions: 1,
             max_energy_milli: i64::MAX,
             min_diversity_milli: 0,
-            min_quality_milli: 200,
         };
         assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
         let (nodes, edges, topology_hash) = registered_topology();
@@ -590,7 +639,7 @@ fn winning_solution_records_active_difficulty_threshold() {
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
         QuantumPow::on_finalize(System::block_number());
 
-        let expected_active = difficulty::apply_decay(initial, 2);
+        let expected_active = difficulty::apply_decay(initial, 2, test_curve());
         let stored = WinningSolutions::<Test>::get(45).expect("winner persisted");
         assert_eq!(
             stored.difficulty, expected_active,
@@ -598,13 +647,17 @@ fn winning_solution_records_active_difficulty_threshold() {
         );
 
         // Mining time blocks = 45 - 1 = 44 < TARGET_PROOF_BLOCKS (100), so the
-        // adjustment hardens. The post-adjust value now in Difficulty<T> must
-        // be strictly tighter than the recorded one on at least one axis.
+        // adjustment hardens. Only the energy threshold moves now; chain-static
+        // fields stay put.
         let next = Difficulty::<Test>::get();
         assert!(
-            next.min_quality_milli > expected_active.min_quality_milli
-                || next.min_solutions > expected_active.min_solutions,
-            "post-adjust difficulty should be harder than the active threshold the proof cleared"
+            next.max_energy_milli < expected_active.max_energy_milli,
+            "post-adjust energy must be harder (more negative) than the active threshold"
+        );
+        assert_eq!(next.min_solutions, expected_active.min_solutions);
+        assert_eq!(
+            next.min_diversity_milli,
+            expected_active.min_diversity_milli
         );
     });
 }
@@ -619,7 +672,6 @@ fn mining_snapshot_returns_decayed_difficulty_after_epochs() {
             min_solutions: 5,
             max_energy_milli: 0,
             min_diversity_milli: 100,
-            min_quality_milli: 100,
         };
         assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
         let _ = registered_topology();
@@ -628,7 +680,7 @@ fn mining_snapshot_returns_decayed_difficulty_after_epochs() {
         System::set_block_number(121); // (121 - 1) / 20 = 6 decay steps
         let snapshot =
             QuantumPow::mining_snapshot(None).expect("snapshot exists for default topology");
-        let expected = difficulty::apply_decay(initial, 6);
+        let expected = difficulty::apply_decay(initial, 6, test_curve());
         assert_eq!(snapshot.difficulty, expected);
         assert_ne!(
             snapshot.difficulty, initial,
@@ -701,6 +753,233 @@ fn submit_proof_rejected_after_intervening_win() {
         assert_noop!(
             QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof),
             crate::Error::<Test>::InvalidNonce
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Curve and pure-function tests (no chain state required)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn current_difficulty_passes_through_when_no_decay_steps() {
+    let curve = test_curve();
+    let base = DifficultyConfig {
+        min_solutions: 5,
+        max_energy_milli: -2_500,
+        min_diversity_milli: 200,
+    };
+    // block_number == last_proof_block: zero elapsed → no decay.
+    assert_eq!(
+        difficulty::current_difficulty(100, base, 100, 10, Some(curve)),
+        base,
+    );
+    // Less than one full epoch elapsed: still no decay.
+    assert_eq!(
+        difficulty::current_difficulty(109, base, 100, 10, Some(curve)),
+        base,
+    );
+}
+
+#[test]
+fn current_difficulty_applies_decay_per_full_epoch() {
+    let curve = test_curve();
+    let base = DifficultyConfig {
+        min_solutions: 5,
+        max_energy_milli: -2_500,
+        min_diversity_milli: 200,
+    };
+    // 25 blocks elapsed, epoch_length=10 → 2 decay steps.
+    let result = difficulty::current_difficulty(125, base, 100, 10, Some(curve));
+    let expected = difficulty::apply_decay(base, 2, curve);
+    assert_eq!(result, expected);
+}
+
+#[test]
+fn current_difficulty_short_circuits_without_curve() {
+    // Even with elapsed > epoch_length, missing curve → no decay applied.
+    let base = DifficultyConfig {
+        min_solutions: 5,
+        max_energy_milli: -2_500,
+        min_diversity_milli: 200,
+    };
+    assert_eq!(
+        difficulty::current_difficulty(200, base, 100, 10, None),
+        base,
+    );
+}
+
+#[test]
+fn current_difficulty_short_circuits_at_genesis() {
+    let curve = test_curve();
+    let base = DifficultyConfig {
+        min_solutions: 5,
+        max_energy_milli: -2_500,
+        min_diversity_milli: 200,
+    };
+    // last_proof_block == 0 → genesis path → no decay.
+    assert_eq!(
+        difficulty::current_difficulty(500, base, 0, 10, Some(curve)),
+        base,
+    );
+}
+
+#[test]
+fn adjust_on_proof_only_mutates_max_energy() {
+    let curve = test_curve();
+    let before = DifficultyConfig {
+        min_solutions: 7,
+        max_energy_milli: -2_500,
+        min_diversity_milli: 400,
+    };
+    let after = difficulty::adjust_on_proof(before, 30, curve, b"seed");
+    assert_eq!(after.min_solutions, before.min_solutions);
+    assert_eq!(after.min_diversity_milli, before.min_diversity_milli);
+    assert_ne!(after.max_energy_milli, before.max_energy_milli);
+}
+
+#[test]
+fn apply_decay_only_mutates_max_energy() {
+    let curve = test_curve();
+    let before = DifficultyConfig {
+        min_solutions: 7,
+        max_energy_milli: -2_500,
+        min_diversity_milli: 400,
+    };
+    let after = difficulty::apply_decay(before, 3, curve);
+    assert_eq!(after.min_solutions, before.min_solutions);
+    assert_eq!(after.min_diversity_milli, before.min_diversity_milli);
+    assert!(
+        after.max_energy_milli > before.max_energy_milli,
+        "decay must ease the threshold (move toward zero)"
+    );
+}
+
+#[test]
+fn decay_moves_less_than_hardening_per_step() {
+    let curve = test_curve();
+    let start = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: -2_500,
+        min_diversity_milli: 0,
+    };
+    let after_decay = difficulty::apply_decay(start, 5, curve);
+    let after_harden = (0..5).fold(start, |d, _| {
+        // mining_time = 30 blocks → fast/hardening branch.
+        difficulty::adjust_on_proof(d, 30, curve, b"seed")
+    });
+    let decay_move = after_decay.max_energy_milli - start.max_energy_milli;
+    let harden_move = start.max_energy_milli - after_harden.max_energy_milli;
+    assert!(
+        harden_move > decay_move,
+        "hardening must move energy farther than decay at equal step count \
+         (harden={harden_move}, decay={decay_move})",
+    );
+}
+
+#[test]
+fn curve_compresses_motion_near_boundaries() {
+    let curve = test_curve();
+    // Pick two starting points inside the curve range: one near the knee
+    // (max curve_factor ≈ 1.0) and one near the max boundary (curve_factor ≈ 0.1).
+    let mid_start = (curve.min_milli + curve.knee_milli) / 2;
+    let near_max = curve.max_milli - 1;
+    let mid_after = difficulty::adjust_on_proof(
+        DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: mid_start,
+            min_diversity_milli: 0,
+        },
+        30,
+        curve,
+        b"seed",
+    )
+    .max_energy_milli;
+    let near_after = difficulty::adjust_on_proof(
+        DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: near_max,
+            min_diversity_milli: 0,
+        },
+        30,
+        curve,
+        b"seed",
+    )
+    .max_energy_milli;
+    let mid_move = mid_start - mid_after;
+    let near_move = near_max - near_after;
+    assert!(
+        mid_move > near_move,
+        "curve must compress motion near boundaries (mid={mid_move}, near_max={near_move})",
+    );
+}
+
+/// Enforces the miner-independence invariant from GitLab issue #5: the
+/// energy curve must depend only on `DefaultTopology`, never on any
+/// other registered topology. We register two topologies of different
+/// sizes and verify that the decay magnitude observed via
+/// `mining_snapshot` matches what the *default* topology's curve
+/// produces — not the second registered topology's curve. If a future
+/// "optimisation" routes `current_energy_curve()` through some
+/// non-default topology, this test fails.
+#[test]
+fn energy_curve_uses_default_topology_not_other_registered() {
+    new_test_ext().execute_with(|| {
+        // Topology A is (2 nodes, 1 edge) — becomes DefaultTopology.
+        let _ = registered_topology();
+        let default_hash = DefaultTopology::<Test>::get().expect("default registered");
+
+        // Register topology B with clearly different size so its curve
+        // produces a clearly different decay magnitude.
+        let b_nodes = bounded::<_, MaxNodes>(vec![0u32, 1, 2, 3]);
+        let b_edges = bounded::<_, MaxEdges>(vec![(0u32, 1), (1, 2), (2, 3), (0, 3)]);
+        assert_ok!(QuantumPow::register_topology(
+            RuntimeOrigin::root(),
+            b_nodes,
+            b_edges,
+            allowed_h_spec(),
+            allowed_j_spec(),
+            allowed_spin_spec(),
+        ));
+        // First-write-wins keeps A as the default.
+        assert_eq!(DefaultTopology::<Test>::get(), Some(default_hash));
+
+        // Set a stored difficulty and let decay elapse.
+        let initial = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: -10_000,
+            min_diversity_milli: 0,
+        };
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        LastProofBlock::<Test>::put(1);
+        System::set_block_number(101); // (101 - 1) / 20 = 5 decay steps
+
+        // `mining_snapshot` populates `difficulty` via current_difficulty,
+        // which builds its curve from DefaultTopology.
+        let snapshot =
+            QuantumPow::mining_snapshot(None).expect("snapshot exists for default topology");
+
+        // Expected decay using A's curve (the default).
+        let expected_default = difficulty::apply_decay(
+            initial,
+            5,
+            crate::difficulty::EnergyCurve::new(2, 1, 700, 750, 800),
+        );
+        // Decay using B's curve (the *non-default* topology — this is what
+        // a miner-controlled curve would produce if the invariant were broken).
+        let expected_other = difficulty::apply_decay(
+            initial,
+            5,
+            crate::difficulty::EnergyCurve::new(4, 4, 700, 750, 800),
+        );
+
+        assert_eq!(
+            snapshot.difficulty, expected_default,
+            "current_difficulty must calibrate the curve on DefaultTopology"
+        );
+        assert_ne!(
+            expected_default.max_energy_milli, expected_other.max_energy_milli,
+            "sanity: A and B must produce different decay magnitudes for the test to mean anything"
         );
     });
 }

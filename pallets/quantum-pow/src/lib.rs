@@ -96,7 +96,7 @@ pub mod pallet {
     use frame_support::{pallet_prelude::*, traits::ReservableCurrency};
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
-        calculate_diversity, derive_nonce, energy_of_solution, expected_gse, generate_ising_model,
+        calculate_diversity, derive_nonce, energy_of_solution, generate_ising_model,
         packed::unpack_solution, select_diverse, validate_spins, validate_topology_consistency,
         AllowedValueSpec, MilliValue,
     };
@@ -135,6 +135,22 @@ pub mod pallet {
         type BlockReward: Get<BalanceOf<Self>>;
         #[pallet::constant]
         type MaxProofsPerBlock: Get<u32>;
+
+        /// Per-mille `c` value for the easiest (least-negative) end of the
+        /// energy curve. The difficulty curve is calibrated against the
+        /// default topology's `(num_nodes, num_edges)` and these three c
+        /// values; see `crate::difficulty::EnergyCurve`.
+        #[pallet::constant]
+        type CurveCEasyMilli: Get<u32>;
+        /// Per-mille `c` value for the curve's knee (where motion is most
+        /// aggressive). Conventionally the canonical `c = 0.75` used by
+        /// `quantum_validation::expected_gse`.
+        #[pallet::constant]
+        type CurveCKneeMilli: Get<u32>;
+        /// Per-mille `c` value for the hardest (most-negative) end of the
+        /// energy curve.
+        #[pallet::constant]
+        type CurveCHardMilli: Get<u32>;
 
         type WeightInfo: WeightInfo;
     }
@@ -203,7 +219,6 @@ pub mod pallet {
             energy_milli: i64,
             diversity_milli: u32,
             valid_solution_count: u32,
-            quality_milli: u32,
         },
         BlockWinner {
             miner: T::AccountId,
@@ -229,7 +244,6 @@ pub mod pallet {
         InsufficientEnergy,
         InsufficientDiversity,
         InsufficientSolutions,
-        QualityTooLow,
         ArithmeticOverflow,
         /// One of the allowed value specs is empty or has inverted bounds.
         EmptyAllowedValues,
@@ -290,11 +304,21 @@ pub mod pallet {
             // this so explorers and miners can answer "what difficulty did
             // block N actually clear?" without replaying decay client-side.
             let active = Self::current_difficulty(n);
-            let next = crate::difficulty::adjust_on_proof(
-                active,
-                mining_time_blocks,
-                &(frame_system::Pallet::<T>::parent_hash(), &record.miner, n).encode(),
-            );
+            // Curve calibration MUST come from chain state (DefaultTopology),
+            // not from the winning proof. See `current_energy_curve` docs and
+            // GitLab issue #5 for the invariant rationale.
+            let next = match Self::current_energy_curve() {
+                Some(curve) => crate::difficulty::adjust_on_proof(
+                    active,
+                    mining_time_blocks,
+                    curve,
+                    &(frame_system::Pallet::<T>::parent_hash(), &record.miner, n).encode(),
+                ),
+                // Unreachable in normal operation: a proof would not have
+                // been submitted without a registered topology, and the
+                // first registration also seeds `DefaultTopology`.
+                None => active,
+            };
             Difficulty::<T>::put(next);
             LastProofBlock::<T>::put(n);
 
@@ -513,10 +537,6 @@ pub mod pallet {
                 validation.diversity_milli >= current.min_diversity_milli,
                 Error::<T>::InsufficientDiversity
             );
-            ensure!(
-                validation.quality_milli >= current.min_quality_milli,
-                Error::<T>::QualityTooLow
-            );
 
             let mut miner = Miners::<T>::get(&who).ok_or(Error::<T>::MinerNotRegistered)?;
             miner.proofs_submitted = miner.proofs_submitted.saturating_add(1);
@@ -546,7 +566,6 @@ pub mod pallet {
                 energy_milli: validation.best_energy_milli,
                 diversity_milli: validation.diversity_milli,
                 valid_solution_count: validation.valid_solution_count,
-                quality_milli: validation.quality_milli,
             });
 
             Ok(())
@@ -653,23 +672,44 @@ pub mod pallet {
             }
         }
 
+        /// Build the energy curve used by `adjust_on_proof` and
+        /// `apply_decay`.
+        ///
+        /// CRITICAL INVARIANT (see GitLab issue #5 and the topology-registry
+        /// fix that addressed `h_values`-in-proof): the curve depends only
+        /// on chain state. It must never be derived from any field of a
+        /// submitted proof.
+        ///
+        /// Specifically: even though `submit_proof` accepts proofs against
+        /// any hash in `RegisteredTopologies`, the curve is calibrated
+        /// against `DefaultTopology::<T>::get()`. Miners cannot shift
+        /// difficulty by choosing a different registered topology to mine
+        /// against.
+        ///
+        /// Returns `None` when `DefaultTopology` is unset (no topology has
+        /// been registered yet). Callers treat that as a defensive no-op —
+        /// in practice the case is unreachable during mining because
+        /// `submit_proof` requires the proof's topology to be registered
+        /// first, and the first registration also seeds `DefaultTopology`.
+        fn current_energy_curve() -> Option<crate::difficulty::EnergyCurve> {
+            let (_, topology) = Self::default_topology_meta()?;
+            Some(crate::difficulty::EnergyCurve::new(
+                topology.nodes.len() as u32,
+                topology.edges.len() as u32,
+                T::CurveCEasyMilli::get(),
+                T::CurveCKneeMilli::get(),
+                T::CurveCHardMilli::get(),
+            ))
+        }
+
         fn current_difficulty(block_number: BlockNumberFor<T>) -> types::DifficultyConfig {
-            let current = Difficulty::<T>::get();
-            let last_proof_block = LastProofBlock::<T>::get();
-            if last_proof_block.is_zero() || T::EpochLength::get().is_zero() {
-                return current;
-            }
-
-            let elapsed_blocks = block_number
-                .saturating_sub(last_proof_block)
-                .saturated_into::<u32>();
-            let steps = elapsed_blocks / T::EpochLength::get().saturated_into::<u32>();
-
-            if steps == 0 {
-                current
-            } else {
-                crate::difficulty::apply_decay(current, steps)
-            }
+            crate::difficulty::current_difficulty(
+                block_number.saturated_into::<u32>(),
+                Difficulty::<T>::get(),
+                LastProofBlock::<T>::get().saturated_into::<u32>(),
+                T::EpochLength::get().saturated_into::<u32>(),
+                Self::current_energy_curve(),
+            )
         }
 
         fn validate_proof(
@@ -767,26 +807,7 @@ pub mod pallet {
                 best_energy_milli,
                 diversity_milli,
                 valid_solution_count: energy_valid_solutions.len() as u32,
-                quality_milli: Self::quality_milli(
-                    best_energy_milli,
-                    topology.nodes.len() as u32,
-                    topology.edges.len() as u32,
-                ),
             })
-        }
-
-        fn quality_milli(energy_milli: i64, num_nodes: u32, num_edges: u32) -> u32 {
-            let expected = expected_gse(num_nodes, num_edges);
-            if expected == 0 {
-                return 0;
-            }
-
-            let numerator = (energy_milli as i128).abs().saturating_mul(1000);
-            let denominator = (expected as i128).abs();
-            if denominator == 0 {
-                return 0;
-            }
-            numerator.saturating_div(denominator).min(u32::MAX as i128) as u32
         }
     }
 }
