@@ -11,7 +11,7 @@ use sp_core::{H256, U256};
 ///   pallet looks up nodes, edges, and the allowed value sets from
 ///   `RegisteredTopologies`.
 /// - `nonce` is the full 256-bit BLAKE3 digest of
-///   `(last_winning_hash, miner, salt)`, where `last_winning_hash =
+///   `(last_proof_block_hash, miner, salt)`, where `last_proof_block_hash =
 ///   block_hash(LastProofBlock)` is the header hash of the most recent
 ///   winning block (stable across an entire round). The verifier
 ///   re-derives it for free; carrying it in the proof lets `submit_proof`
@@ -146,7 +146,7 @@ pub struct MiningSnapshot<Nodes, Edges, AllowedValues> {
     /// `block_number` and `parent_hash` were dropped from this snapshot
     /// because each existed only to feed the old block-number-bound nonce
     /// derivation; the new contract has neither in its input set.
-    pub last_winning_hash: H256,
+    pub last_proof_block_hash: H256,
     pub difficulty: DifficultyConfig,
     pub topology_hash: H256,
     pub nodes: Nodes,
@@ -160,10 +160,10 @@ pub struct MiningSnapshot<Nodes, Edges, AllowedValues> {
 
 /// Persisted record of each block's winning proof, written in `on_finalize`
 /// alongside the `BlockWinner` event. The nonce is not stored directly —
-/// consumers derive it from `(last_winning_hash, miner, salt)`, or call the
+/// consumers derive it from `(last_proof_block_hash, miner, salt)`, or call the
 /// `winning_solution` runtime API which does it server-side.
 ///
-/// `last_winning_hash` is the value the proof actually used at submission
+/// `last_proof_block_hash` is the value the proof actually used at submission
 /// time (i.e. `block_hash(previous winning block)`). Storing it makes
 /// `winning_solution_with_nonce` self-contained — no `frame_system::block_hash`
 /// lookup is needed at re-derivation time, and re-derivation stays correct
@@ -183,7 +183,7 @@ pub struct WinningSolution<AccountId, Balance, BlockNumber> {
     pub reward: Balance,
     pub submitted_at: BlockNumber,
     pub difficulty: DifficultyConfig,
-    pub last_winning_hash: H256,
+    pub last_proof_block_hash: H256,
 }
 
 /// Runtime-API view augmenting [`WinningSolution`] with the derived nonce.

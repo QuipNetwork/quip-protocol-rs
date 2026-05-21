@@ -67,7 +67,7 @@ sp_api::decl_runtime_apis! {
 
         /// Winning solution for `block_number`, augmented with its derived
         /// nonce. The nonce is reconstructed from the persisted
-        /// `last_winning_hash`, miner, and salt — no `frame_system::block_hash`
+        /// `last_proof_block_hash`, miner, and salt — no `frame_system::block_hash`
         /// lookup needed, so this stays correct even for blocks pruned beyond
         /// `BlockHashCount`. Returns `None` if the block had no accepted
         /// proof (e.g. genesis, or any block where no `submit_proof` cleared
@@ -187,9 +187,9 @@ pub mod pallet {
     /// `on_finalize` alongside the `BlockWinner` event.
     ///
     /// Consumers derive the winning nonce by hashing
-    /// `(last_winning_hash, miner, salt)` with BLAKE3, or call the
+    /// `(last_proof_block_hash, miner, salt)` with BLAKE3, or call the
     /// `QuantumPowApi::winning_solution` runtime API which does it
-    /// server-side. `last_winning_hash` for each entry is the value the
+    /// server-side. `last_proof_block_hash` for each entry is the value the
     /// round used at submission time, persisted in the `WinningSolution`
     /// itself so re-derivation needs no chain-state lookup.
     #[pallet::storage]
@@ -287,7 +287,7 @@ pub mod pallet {
             // re-derive the nonce without a `frame_system::block_hash`
             // lookup — which means re-derivation stays correct even after
             // the original block is pruned beyond `BlockHashCount`.
-            let last_winning_hash = H256::from(Self::hash_to_bytes_32(
+            let last_proof_block_hash = H256::from(Self::hash_to_bytes_32(
                 frame_system::Pallet::<T>::block_hash(previous_proof_block),
             ));
 
@@ -331,7 +331,7 @@ pub mod pallet {
                     reward,
                     submitted_at: record.submitted_at,
                     difficulty: active,
-                    last_winning_hash,
+                    last_proof_block_hash,
                 },
             );
 
@@ -505,12 +505,13 @@ pub mod pallet {
             // changes when a new proof wins, so a miner's submission stays
             // valid for as long as the current round runs — no txpool-delay
             // race (the original bug).
-            let last_winning_hash =
+            let last_proof_block_hash =
                 frame_system::Pallet::<T>::block_hash(LastProofBlock::<T>::get());
-            let last_winning_hash_bytes = Self::hash_to_bytes_32(last_winning_hash);
+            let last_proof_block_hash_bytes = Self::hash_to_bytes_32(last_proof_block_hash);
             let miner_bytes = Self::account_to_bytes(&who);
 
-            let expected_nonce = derive_nonce(&last_winning_hash_bytes, &miner_bytes, &proof.salt);
+            let expected_nonce =
+                derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &proof.salt);
             ensure!(proof.nonce == expected_nonce, Error::<T>::InvalidNonce);
 
             let (h, j) = generate_ising_model(
@@ -604,12 +605,12 @@ pub mod pallet {
             // Difficulty still tracks the current block (decay is block-based)
             // even though the nonce input no longer is.
             let block_number = frame_system::Pallet::<T>::block_number();
-            let last_winning_hash = H256::from(Self::hash_to_bytes_32(
+            let last_proof_block_hash = H256::from(Self::hash_to_bytes_32(
                 frame_system::Pallet::<T>::block_hash(LastProofBlock::<T>::get()),
             ));
 
             Some(types::MiningSnapshot {
-                last_winning_hash,
+                last_proof_block_hash,
                 difficulty: Self::current_difficulty_for(block_number),
                 topology_hash,
                 nodes: topology.nodes,
@@ -632,16 +633,16 @@ pub mod pallet {
         ///
         /// Returns `None` if the block had no accepted proof (e.g. genesis
         /// where no `submit_proof` ever ran). Re-derivation reads the
-        /// `last_winning_hash` stored alongside the solution, so this stays
+        /// `last_proof_block_hash` stored alongside the solution, so this stays
         /// correct even when `block_number` is older than `BlockHashCount`
         /// (no `frame_system::block_hash` lookup is involved).
         pub fn winning_solution_with_nonce(
             block_number: BlockNumberFor<T>,
         ) -> Option<WinningSolutionWithNonceOf<T>> {
             let solution = WinningSolutions::<T>::get(block_number)?;
-            let last_winning_hash_bytes = solution.last_winning_hash.0;
+            let last_proof_block_hash_bytes = solution.last_proof_block_hash.0;
             let miner_bytes = Self::account_to_bytes(&solution.miner);
-            let nonce = derive_nonce(&last_winning_hash_bytes, &miner_bytes, &solution.salt);
+            let nonce = derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &solution.salt);
             Some(types::WinningSolutionWithNonce { solution, nonce })
         }
 

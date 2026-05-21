@@ -17,7 +17,7 @@ use crate::validation::ensure_valid_topology;
 /// Inputs are three fixed-size 32-byte buffers so the PoW search space is
 /// statically known and identical across every call:
 ///
-/// - `last_winning_hash` — `block_hash(LastProofBlock)`, i.e. the header
+/// - `last_proof_block_hash` — `block_hash(LastProofBlock)`, i.e. the header
 ///   hash of the most recent winning block. Stable across the entire round
 ///   (only changes on the next win), so miners can submit proofs without
 ///   racing the txpool / executing-block-number.
@@ -28,9 +28,9 @@ use crate::validation::ensure_valid_topology;
 ///
 /// Returns the full 256-bit BLAKE3 digest as a `U256` so all 256 bits seed
 /// downstream RNG state (no truncation).
-pub fn derive_nonce(last_winning_hash: &[u8; 32], miner: &[u8; 32], salt: &[u8; 32]) -> U256 {
+pub fn derive_nonce(last_proof_block_hash: &[u8; 32], miner: &[u8; 32], salt: &[u8; 32]) -> U256 {
     let mut hasher = Hasher::new();
-    hasher.update(last_winning_hash);
+    hasher.update(last_proof_block_hash);
     hasher.update(miner);
     hasher.update(salt);
     U256::from_big_endian(hasher.finalize().as_bytes())

@@ -95,10 +95,12 @@ fn proof_for(
     // Mirror the chain-side lookup: `block_hash(LastProofBlock)` is the
     // sole "time" input to the nonce. Reading the same value the
     // pallet does keeps the helper coupling-free with the test runtime.
-    let last_winning_hash = frame_system::Pallet::<Test>::block_hash(LastProofBlock::<Test>::get());
-    let last_winning_hash_bytes = crate::Pallet::<Test>::hash_to_bytes_32(last_winning_hash);
+    let last_proof_block_hash =
+        frame_system::Pallet::<Test>::block_hash(LastProofBlock::<Test>::get());
+    let last_proof_block_hash_bytes =
+        crate::Pallet::<Test>::hash_to_bytes_32(last_proof_block_hash);
     let miner_bytes = crate::Pallet::<Test>::account_to_bytes(&miner);
-    let nonce = derive_nonce(&last_winning_hash_bytes, &miner_bytes, &salt);
+    let nonce = derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &salt);
 
     let h_spec = allowed_h_spec();
     let j_spec = allowed_j_spec();
@@ -518,7 +520,7 @@ fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
         // Capture the seed the round will use, before submit_proof, so the
         // assertion below pins the chain-stored value against the value
         // the helper actually fed into derive_nonce.
-        let expected_last_winning_hash =
+        let expected_last_proof_block_hash =
             sp_core::H256::from(crate::Pallet::<Test>::hash_to_bytes_32(
                 frame_system::Pallet::<Test>::block_hash(LastProofBlock::<Test>::get()),
             ));
@@ -537,7 +539,7 @@ fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
         // LastProofBlock was zero before this proof, so no decay applied —
         // the active threshold equals whatever set_difficulty just stored.
         assert_eq!(stored.difficulty, easy_difficulty());
-        assert_eq!(stored.last_winning_hash, expected_last_winning_hash);
+        assert_eq!(stored.last_proof_block_hash, expected_last_proof_block_hash);
 
         // Re-derive the nonce via the runtime helper and confirm it matches
         // the value that was on the submitted proof. This is the round-trip
@@ -547,7 +549,10 @@ fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
         assert_eq!(view.nonce, original_nonce);
         assert_eq!(view.solution.salt, original_salt);
         assert_eq!(view.solution.difficulty, easy_difficulty());
-        assert_eq!(view.solution.last_winning_hash, expected_last_winning_hash);
+        assert_eq!(
+            view.solution.last_proof_block_hash,
+            expected_last_proof_block_hash
+        );
     });
 }
 
@@ -590,7 +595,7 @@ fn mining_snapshot_returns_default_and_selected_topology_views() {
             allowed_spin_spec(),
         ));
 
-        let expected_last_winning_hash =
+        let expected_last_proof_block_hash =
             sp_core::H256::from(crate::Pallet::<Test>::hash_to_bytes_32(
                 frame_system::Pallet::<Test>::block_hash(LastProofBlock::<Test>::get()),
             ));
@@ -602,8 +607,8 @@ fn mining_snapshot_returns_default_and_selected_topology_views() {
         assert_eq!(default_snapshot.edges, default_edges);
         assert_eq!(default_snapshot.difficulty, easy_difficulty());
         assert_eq!(
-            default_snapshot.last_winning_hash,
-            expected_last_winning_hash
+            default_snapshot.last_proof_block_hash,
+            expected_last_proof_block_hash
         );
 
         let selected_snapshot = QuantumPow::mining_snapshot(Some(other_hash))
@@ -612,8 +617,8 @@ fn mining_snapshot_returns_default_and_selected_topology_views() {
         assert_eq!(selected_snapshot.nodes, other_nodes);
         assert_eq!(selected_snapshot.edges, other_edges);
         assert_eq!(
-            selected_snapshot.last_winning_hash,
-            expected_last_winning_hash
+            selected_snapshot.last_proof_block_hash,
+            expected_last_proof_block_hash
         );
     });
 }
@@ -697,7 +702,7 @@ fn mining_snapshot_returns_decayed_difficulty_after_epochs() {
 #[test]
 fn submit_proof_survives_long_block_gap() {
     // Regression test for the txpool-delay race: a proof derived against
-    // the current round's `last_winning_hash` must remain valid for as long
+    // the current round's `last_proof_block_hash` must remain valid for as long
     // as no new proof has won, no matter how many blocks elapse between
     // derivation and validation. Under the old block-number-bound contract
     // this scenario produced InvalidNonce.
@@ -726,7 +731,7 @@ fn submit_proof_survives_long_block_gap() {
 #[test]
 fn submit_proof_rejected_after_intervening_win() {
     // Mirror of the survives-gap test: if a *different* round closed
-    // between derivation and submission, the round seed has changed and
+    // between derivation and submission, the last proof block hash has changed and
     // the proof must be rejected. Otherwise old proofs could replay
     // across rounds.
     new_test_ext().execute_with(|| {
@@ -737,12 +742,12 @@ fn submit_proof_rejected_after_intervening_win() {
         ));
         let (nodes, edges, topology_hash) = registered_topology();
 
-        // Derive against the current round seed (`block_hash(0)` in the
+        // Derive against the current last proof block hash (`block_hash(0)` in the
         // test env — defaults to zero, but the value itself is incidental
         // here; what matters is that we later mutate the lookup target).
         let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
 
-        // Force the round seed to a distinct value by (a) pointing
+        // Force the last proof block hash to a distinct value by (a) pointing
         // `LastProofBlock` at a fresh block and (b) populating
         // `block_hash` for that block with a non-zero entry. Together
         // these simulate a winning on_finalize having run in the meantime.

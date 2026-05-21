@@ -244,42 +244,42 @@
   "derive_nonce_cases": [
     {
       "name": "alice_seedA_saltA",
-      "last_winning_hash_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "last_proof_block_hash_hex": "0101010101010101010101010101010101010101010101010101010101010101",
       "miner_hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
       "salt_hex": "0101010101010101010101010101010101010101010101010101010101010101",
       "expected_nonce_hex": "7a9df8a921f5a8970e35d459f20cf899545b14bb2c1ff5ac0223a634a826158d"
     },
     {
       "name": "alice_seedA_saltB",
-      "last_winning_hash_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "last_proof_block_hash_hex": "0101010101010101010101010101010101010101010101010101010101010101",
       "miner_hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
       "salt_hex": "0202020202020202020202020202020202020202020202020202020202020202",
       "expected_nonce_hex": "f1843f53ac7d823ad5c7c4e800bff2fe56565a32e772425f96531890b3acdb79"
     },
     {
       "name": "bob_seedA_saltA",
-      "last_winning_hash_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "last_proof_block_hash_hex": "0101010101010101010101010101010101010101010101010101010101010101",
       "miner_hex": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
       "salt_hex": "0101010101010101010101010101010101010101010101010101010101010101",
       "expected_nonce_hex": "7959f45a2689156b1ff64ea87de6229bb599bf360313ebfc87c3d62b22a7bdf2"
     },
     {
       "name": "alice_seedB_saltA",
-      "last_winning_hash_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+      "last_proof_block_hash_hex": "4242424242424242424242424242424242424242424242424242424242424242",
       "miner_hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
       "salt_hex": "0101010101010101010101010101010101010101010101010101010101010101",
       "expected_nonce_hex": "e89544dd7115f4ddfdd51f295cb7aa752db8fef993b149c78f75b58aba229ecd"
     },
     {
       "name": "alice_zeros",
-      "last_winning_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "last_proof_block_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
       "miner_hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
       "salt_hex": "0000000000000000000000000000000000000000000000000000000000000000",
       "expected_nonce_hex": "f02d9adf91497abf71b6cf0e473495ad12709ba2a387deba3c627ed85bb46a42"
     },
     {
       "name": "alice_max",
-      "last_winning_hash_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "last_proof_block_hash_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       "miner_hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
       "salt_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       "expected_nonce_hex": "befea9c2fba1888dab0bf12d98b3c1d30bdc47ff87acdc3603fbf914c6520880"
