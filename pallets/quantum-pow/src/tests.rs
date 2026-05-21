@@ -88,8 +88,7 @@ fn proof_for(
     // Mirror the chain-side lookup: `block_hash(LastProofBlock)` is the
     // sole "time" input to the nonce. Reading the same value the
     // pallet does keeps the helper coupling-free with the test runtime.
-    let last_winning_hash =
-        frame_system::Pallet::<Test>::block_hash(LastProofBlock::<Test>::get());
+    let last_winning_hash = frame_system::Pallet::<Test>::block_hash(LastProofBlock::<Test>::get());
     let last_winning_hash_bytes = crate::Pallet::<Test>::hash_to_bytes_32(last_winning_hash);
     let miner_bytes = crate::Pallet::<Test>::account_to_bytes(&miner);
     let nonce = derive_nonce(&last_winning_hash_bytes, &miner_bytes, &salt);
@@ -469,11 +468,10 @@ fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
         // Capture the seed the round will use, before submit_proof, so the
         // assertion below pins the chain-stored value against the value
         // the helper actually fed into derive_nonce.
-        let expected_last_winning_hash = sp_core::H256::from(
-            crate::Pallet::<Test>::hash_to_bytes_32(frame_system::Pallet::<Test>::block_hash(
-                LastProofBlock::<Test>::get(),
-            )),
-        );
+        let expected_last_winning_hash =
+            sp_core::H256::from(crate::Pallet::<Test>::hash_to_bytes_32(
+                frame_system::Pallet::<Test>::block_hash(LastProofBlock::<Test>::get()),
+            ));
         let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
         let original_nonce = proof.nonce;
         let original_salt = proof.salt;
@@ -542,24 +540,31 @@ fn mining_snapshot_returns_default_and_selected_topology_views() {
             allowed_spin_spec(),
         ));
 
-        let expected_last_winning_hash = sp_core::H256::from(crate::Pallet::<Test>::hash_to_bytes_32(
-            frame_system::Pallet::<Test>::block_hash(LastProofBlock::<Test>::get()),
-        ));
+        let expected_last_winning_hash =
+            sp_core::H256::from(crate::Pallet::<Test>::hash_to_bytes_32(
+                frame_system::Pallet::<Test>::block_hash(LastProofBlock::<Test>::get()),
+            ));
 
-        let default_snapshot = QuantumPow::mining_snapshot(None)
-            .expect("default topology snapshot exists");
+        let default_snapshot =
+            QuantumPow::mining_snapshot(None).expect("default topology snapshot exists");
         assert_eq!(default_snapshot.topology_hash, default_hash);
         assert_eq!(default_snapshot.nodes, default_nodes);
         assert_eq!(default_snapshot.edges, default_edges);
         assert_eq!(default_snapshot.difficulty, easy_difficulty());
-        assert_eq!(default_snapshot.last_winning_hash, expected_last_winning_hash);
+        assert_eq!(
+            default_snapshot.last_winning_hash,
+            expected_last_winning_hash
+        );
 
         let selected_snapshot = QuantumPow::mining_snapshot(Some(other_hash))
             .expect("selected topology snapshot exists");
         assert_eq!(selected_snapshot.topology_hash, other_hash);
         assert_eq!(selected_snapshot.nodes, other_nodes);
         assert_eq!(selected_snapshot.edges, other_edges);
-        assert_eq!(selected_snapshot.last_winning_hash, expected_last_winning_hash);
+        assert_eq!(
+            selected_snapshot.last_winning_hash,
+            expected_last_winning_hash
+        );
     });
 }
 
@@ -621,8 +626,8 @@ fn mining_snapshot_returns_decayed_difficulty_after_epochs() {
 
         LastProofBlock::<Test>::put(1);
         System::set_block_number(121); // (121 - 1) / 20 = 6 decay steps
-        let snapshot = QuantumPow::mining_snapshot(None)
-            .expect("snapshot exists for default topology");
+        let snapshot =
+            QuantumPow::mining_snapshot(None).expect("snapshot exists for default topology");
         let expected = difficulty::apply_decay(initial, 6);
         assert_eq!(snapshot.difficulty, expected);
         assert_ne!(

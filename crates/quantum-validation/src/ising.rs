@@ -28,11 +28,7 @@ use crate::validation::ensure_valid_topology;
 ///
 /// Returns the full 256-bit BLAKE3 digest as a `U256` so all 256 bits seed
 /// downstream RNG state (no truncation).
-pub fn derive_nonce(
-    last_winning_hash: &[u8; 32],
-    miner: &[u8; 32],
-    salt: &[u8; 32],
-) -> U256 {
+pub fn derive_nonce(last_winning_hash: &[u8; 32], miner: &[u8; 32], salt: &[u8; 32]) -> U256 {
     let mut hasher = Hasher::new();
     hasher.update(last_winning_hash);
     hasher.update(miner);

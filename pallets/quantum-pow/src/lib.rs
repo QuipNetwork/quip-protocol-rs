@@ -40,8 +40,7 @@ type TopologyMetaOf<T> =
     types::TopologyMeta<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>, BlockNumberOf<T>>;
 type MinerInfoOf<T> = types::MinerInfo<BalanceOf<T>, BlockNumberOf<T>>;
 type ProofRecordOf<T> = types::ProofRecord<AccountIdOf<T>, BlockNumberOf<T>>;
-type MiningSnapshotOf<T> =
-    types::MiningSnapshot<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>>;
+type MiningSnapshotOf<T> = types::MiningSnapshot<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>>;
 type WinningSolutionOf<T> = types::WinningSolution<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 type WinningSolutionWithNonceOf<T> =
     types::WinningSolutionWithNonce<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
@@ -487,8 +486,7 @@ pub mod pallet {
             let last_winning_hash_bytes = Self::hash_to_bytes_32(last_winning_hash);
             let miner_bytes = Self::account_to_bytes(&who);
 
-            let expected_nonce =
-                derive_nonce(&last_winning_hash_bytes, &miner_bytes, &proof.salt);
+            let expected_nonce = derive_nonce(&last_winning_hash_bytes, &miner_bytes, &proof.salt);
             ensure!(proof.nonce == expected_nonce, Error::<T>::InvalidNonce);
 
             let (h, j) = generate_ising_model(
@@ -624,8 +622,7 @@ pub mod pallet {
             let solution = WinningSolutions::<T>::get(block_number)?;
             let last_winning_hash_bytes = solution.last_winning_hash.0;
             let miner_bytes = Self::account_to_bytes(&solution.miner);
-            let nonce =
-                derive_nonce(&last_winning_hash_bytes, &miner_bytes, &solution.salt);
+            let nonce = derive_nonce(&last_winning_hash_bytes, &miner_bytes, &solution.salt);
             Some(types::WinningSolutionWithNonce { solution, nonce })
         }
 
