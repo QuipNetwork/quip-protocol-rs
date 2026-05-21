@@ -80,15 +80,19 @@ fn proof_for(
     topology_hash: sp_core::H256,
     solution_indexes: &[usize],
 ) -> QuantumProof<crate::PackedSolutionsOf<Test>> {
-    let block_number = System::block_number() as u32;
     let salt: [u8; 32] = {
         let mut s = [0u8; 32];
         s[..4].copy_from_slice(b"salt");
         s
     };
-    let parent_hash = crate::Pallet::<Test>::parent_hash_bytes();
+    // Mirror the chain-side lookup: `block_hash(LastProofBlock)` is the
+    // sole "time" input to the nonce. Reading the same value the
+    // pallet does keeps the helper coupling-free with the test runtime.
+    let last_winning_hash =
+        frame_system::Pallet::<Test>::block_hash(LastProofBlock::<Test>::get());
+    let last_winning_hash_bytes = crate::Pallet::<Test>::hash_to_bytes_32(last_winning_hash);
     let miner_bytes = crate::Pallet::<Test>::account_to_bytes(&miner);
-    let nonce = derive_nonce(&parent_hash, &miner_bytes, block_number, &salt);
+    let nonce = derive_nonce(&last_winning_hash_bytes, &miner_bytes, &salt);
 
     let h_spec = allowed_h_spec();
     let j_spec = allowed_j_spec();
@@ -462,6 +466,14 @@ fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
             easy_difficulty()
         ));
         let (nodes, edges, topology_hash) = registered_topology();
+        // Capture the seed the round will use, before submit_proof, so the
+        // assertion below pins the chain-stored value against the value
+        // the helper actually fed into derive_nonce.
+        let expected_last_winning_hash = sp_core::H256::from(
+            crate::Pallet::<Test>::hash_to_bytes_32(frame_system::Pallet::<Test>::block_hash(
+                LastProofBlock::<Test>::get(),
+            )),
+        );
         let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
         let original_nonce = proof.nonce;
         let original_salt = proof.salt;
@@ -477,6 +489,7 @@ fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
         // LastProofBlock was zero before this proof, so no decay applied —
         // the active threshold equals whatever set_difficulty just stored.
         assert_eq!(stored.difficulty, easy_difficulty());
+        assert_eq!(stored.last_winning_hash, expected_last_winning_hash);
 
         // Re-derive the nonce via the runtime helper and confirm it matches
         // the value that was on the submitted proof. This is the round-trip
@@ -486,6 +499,7 @@ fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
         assert_eq!(view.nonce, original_nonce);
         assert_eq!(view.solution.salt, original_salt);
         assert_eq!(view.solution.difficulty, easy_difficulty());
+        assert_eq!(view.solution.last_winning_hash, expected_last_winning_hash);
     });
 }
 
@@ -528,23 +542,24 @@ fn mining_snapshot_returns_default_and_selected_topology_views() {
             allowed_spin_spec(),
         ));
 
-        let default_snapshot =
-            QuantumPow::mining_snapshot(System::block_number(), System::parent_hash(), None)
-                .expect("default topology snapshot exists");
+        let expected_last_winning_hash = sp_core::H256::from(crate::Pallet::<Test>::hash_to_bytes_32(
+            frame_system::Pallet::<Test>::block_hash(LastProofBlock::<Test>::get()),
+        ));
+
+        let default_snapshot = QuantumPow::mining_snapshot(None)
+            .expect("default topology snapshot exists");
         assert_eq!(default_snapshot.topology_hash, default_hash);
         assert_eq!(default_snapshot.nodes, default_nodes);
         assert_eq!(default_snapshot.edges, default_edges);
         assert_eq!(default_snapshot.difficulty, easy_difficulty());
+        assert_eq!(default_snapshot.last_winning_hash, expected_last_winning_hash);
 
-        let selected_snapshot = QuantumPow::mining_snapshot(
-            System::block_number(),
-            System::parent_hash(),
-            Some(other_hash),
-        )
-        .expect("selected topology snapshot exists");
+        let selected_snapshot = QuantumPow::mining_snapshot(Some(other_hash))
+            .expect("selected topology snapshot exists");
         assert_eq!(selected_snapshot.topology_hash, other_hash);
         assert_eq!(selected_snapshot.nodes, other_nodes);
         assert_eq!(selected_snapshot.edges, other_edges);
+        assert_eq!(selected_snapshot.last_winning_hash, expected_last_winning_hash);
     });
 }
 
@@ -606,9 +621,8 @@ fn mining_snapshot_returns_decayed_difficulty_after_epochs() {
 
         LastProofBlock::<Test>::put(1);
         System::set_block_number(121); // (121 - 1) / 20 = 6 decay steps
-        let snapshot =
-            QuantumPow::mining_snapshot(System::block_number(), System::parent_hash(), None)
-                .expect("snapshot exists for default topology");
+        let snapshot = QuantumPow::mining_snapshot(None)
+            .expect("snapshot exists for default topology");
         let expected = difficulty::apply_decay(initial, 6);
         assert_eq!(snapshot.difficulty, expected);
         assert_ne!(
@@ -620,5 +634,68 @@ fn mining_snapshot_returns_decayed_difficulty_after_epochs() {
         // return the undecayed baseline — this is the visibility gap that the
         // runtime API closes.
         assert_eq!(Difficulty::<Test>::get(), initial);
+    });
+}
+
+#[test]
+fn submit_proof_survives_long_block_gap() {
+    // Regression test for the txpool-delay race: a proof derived against
+    // the current round's `last_winning_hash` must remain valid for as long
+    // as no new proof has won, no matter how many blocks elapse between
+    // derivation and validation. Under the old block-number-bound contract
+    // this scenario produced InvalidNonce.
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        assert_ok!(QuantumPow::set_difficulty(
+            RuntimeOrigin::root(),
+            easy_difficulty()
+        ));
+        let (nodes, edges, topology_hash) = registered_topology();
+
+        // Derive at block 1 (default after new_test_ext).
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+
+        // Simulate a txpool that backed up by 500 blocks before the
+        // extrinsic finally landed. No win happened in between, so
+        // `LastProofBlock` is unchanged and the round is still the same.
+        System::set_block_number(501);
+
+        assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
+        assert_eq!(BlockProofCount::<Test>::get(), 1);
+        assert!(BlockBestProof::<Test>::get().is_some());
+    });
+}
+
+#[test]
+fn submit_proof_rejected_after_intervening_win() {
+    // Mirror of the survives-gap test: if a *different* round closed
+    // between derivation and submission, the round seed has changed and
+    // the proof must be rejected. Otherwise old proofs could replay
+    // across rounds.
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        assert_ok!(QuantumPow::set_difficulty(
+            RuntimeOrigin::root(),
+            easy_difficulty()
+        ));
+        let (nodes, edges, topology_hash) = registered_topology();
+
+        // Derive against the current round seed (`block_hash(0)` in the
+        // test env — defaults to zero, but the value itself is incidental
+        // here; what matters is that we later mutate the lookup target).
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+
+        // Force the round seed to a distinct value by (a) pointing
+        // `LastProofBlock` at a fresh block and (b) populating
+        // `block_hash` for that block with a non-zero entry. Together
+        // these simulate a winning on_finalize having run in the meantime.
+        System::set_block_number(50);
+        LastProofBlock::<Test>::put(10);
+        frame_system::BlockHash::<Test>::insert(10u64, sp_core::H256::from([0xAB; 32]));
+
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof),
+            crate::Error::<Test>::InvalidNonce
+        );
     });
 }

@@ -40,22 +40,16 @@ type TopologyMetaOf<T> =
     types::TopologyMeta<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>, BlockNumberOf<T>>;
 type MinerInfoOf<T> = types::MinerInfo<BalanceOf<T>, BlockNumberOf<T>>;
 type ProofRecordOf<T> = types::ProofRecord<AccountIdOf<T>, BlockNumberOf<T>>;
-type MiningSnapshotOf<T> = types::MiningSnapshot<
-    BlockNumberOf<T>,
-    <T as frame_system::Config>::Hash,
-    NodesOf<T>,
-    EdgesOf<T>,
-    AllowedValueSetOf<T>,
->;
+type MiningSnapshotOf<T> =
+    types::MiningSnapshot<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>>;
 type WinningSolutionOf<T> = types::WinningSolution<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 type WinningSolutionWithNonceOf<T> =
     types::WinningSolutionWithNonce<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 
 sp_api::decl_runtime_apis! {
-    pub trait QuantumPowApi<BlockNumber, Hash, AccountId, Balance, Nodes, Edges, AllowedValues>
+    pub trait QuantumPowApi<BlockNumber, AccountId, Balance, Nodes, Edges, AllowedValues>
     where
         BlockNumber: codec::Codec,
-        Hash: codec::Codec,
         AccountId: codec::Codec,
         Balance: codec::Codec,
         Nodes: codec::Codec,
@@ -63,7 +57,7 @@ sp_api::decl_runtime_apis! {
         AllowedValues: codec::Codec,
     {
         fn mining_snapshot(topology_hash: Option<sp_core::H256>) -> Option<
-            crate::types::MiningSnapshot<BlockNumber, Hash, Nodes, Edges, AllowedValues>
+            crate::types::MiningSnapshot<Nodes, Edges, AllowedValues>
         >;
 
         /// Look up a registered topology by hash (nodes, edges, allowed value
@@ -72,9 +66,12 @@ sp_api::decl_runtime_apis! {
             crate::types::TopologyMeta<Nodes, Edges, AllowedValues, BlockNumber>
         >;
 
-        /// Winning solution for `block_number`, augmented with the derived
-        /// nonce. Returns `None` if the block had no accepted proof
-        /// (e.g. genesis, or any block where no `submit_proof` cleared
+        /// Winning solution for `block_number`, augmented with its derived
+        /// nonce. The nonce is reconstructed from the persisted
+        /// `last_winning_hash`, miner, and salt — no `frame_system::block_hash`
+        /// lookup needed, so this stays correct even for blocks pruned beyond
+        /// `BlockHashCount`. Returns `None` if the block had no accepted
+        /// proof (e.g. genesis, or any block where no `submit_proof` cleared
         /// difficulty).
         fn winning_solution(block_number: BlockNumber) -> Option<
             crate::types::WinningSolutionWithNonce<AccountId, Balance, BlockNumber>
@@ -175,8 +172,11 @@ pub mod pallet {
     /// `on_finalize` alongside the `BlockWinner` event.
     ///
     /// Consumers derive the winning nonce by hashing
-    /// `(parent_hash, miner, block_number, salt)` with BLAKE3, or call the
-    /// `QuantumPowApi::winning_solution` runtime API which does it server-side.
+    /// `(last_winning_hash, miner, salt)` with BLAKE3, or call the
+    /// `QuantumPowApi::winning_solution` runtime API which does it
+    /// server-side. `last_winning_hash` for each entry is the value the
+    /// round used at submission time, persisted in the `WinningSolution`
+    /// itself so re-derivation needs no chain-state lookup.
     #[pallet::storage]
     pub type WinningSolutions<T: Config> =
         StorageMap<_, Blake2_128Concat, BlockNumberFor<T>, WinningSolutionOf<T>>;
@@ -267,6 +267,17 @@ pub mod pallet {
             }
 
             let previous_proof_block = LastProofBlock::<T>::get();
+            // Capture the hash the just-won round actually used in its
+            // `derive_nonce` input. Read here, before the `LastProofBlock`
+            // mutation below makes the next round's hash visible. Persisting
+            // it in `WinningSolution` lets `winning_solution_with_nonce`
+            // re-derive the nonce without a `frame_system::block_hash`
+            // lookup — which means re-derivation stays correct even after
+            // the original block is pruned beyond `BlockHashCount`.
+            let last_winning_hash = H256::from(Self::hash_to_bytes_32(
+                frame_system::Pallet::<T>::block_hash(previous_proof_block),
+            ));
+
             let mining_time_blocks = if previous_proof_block.is_zero() || n <= previous_proof_block
             {
                 T::EpochLength::get().saturated_into::<u64>()
@@ -297,6 +308,7 @@ pub mod pallet {
                     reward,
                     submitted_at: record.submitted_at,
                     difficulty: active,
+                    last_winning_hash,
                 },
             );
 
@@ -465,12 +477,18 @@ pub mod pallet {
                 Error::<T>::GraphTooSmall
             );
 
-            let parent_hash_bytes = Self::parent_hash_bytes();
+            // Nonce is bound to `block_hash(LastProofBlock)`, not to the
+            // executing block's number or parent hash. That value only
+            // changes when a new proof wins, so a miner's submission stays
+            // valid for as long as the current round runs — no txpool-delay
+            // race (the original bug).
+            let last_winning_hash =
+                frame_system::Pallet::<T>::block_hash(LastProofBlock::<T>::get());
+            let last_winning_hash_bytes = Self::hash_to_bytes_32(last_winning_hash);
             let miner_bytes = Self::account_to_bytes(&who);
-            let block_number = frame_system::Pallet::<T>::block_number().saturated_into::<u32>();
 
             let expected_nonce =
-                derive_nonce(&parent_hash_bytes, &miner_bytes, block_number, &proof.salt);
+                derive_nonce(&last_winning_hash_bytes, &miner_bytes, &proof.salt);
             ensure!(proof.nonce == expected_nonce, Error::<T>::InvalidNonce);
 
             let (h, j) = generate_ising_model(
@@ -560,19 +578,21 @@ pub mod pallet {
             Self::current_difficulty(block_number)
         }
 
-        pub fn mining_snapshot(
-            block_number: BlockNumberFor<T>,
-            parent_hash: <T as frame_system::Config>::Hash,
-            topology_hash: Option<H256>,
-        ) -> Option<MiningSnapshotOf<T>> {
+        pub fn mining_snapshot(topology_hash: Option<H256>) -> Option<MiningSnapshotOf<T>> {
             let (topology_hash, topology) = match topology_hash {
                 Some(hash) => (hash, Self::topology_meta(hash)?),
                 None => Self::default_topology_meta()?,
             };
 
+            // Difficulty still tracks the current block (decay is block-based)
+            // even though the nonce input no longer is.
+            let block_number = frame_system::Pallet::<T>::block_number();
+            let last_winning_hash = H256::from(Self::hash_to_bytes_32(
+                frame_system::Pallet::<T>::block_hash(LastProofBlock::<T>::get()),
+            ));
+
             Some(types::MiningSnapshot {
-                block_number,
-                parent_hash,
+                last_winning_hash,
                 difficulty: Self::current_difficulty_for(block_number),
                 topology_hash,
                 nodes: topology.nodes,
@@ -594,37 +614,28 @@ pub mod pallet {
         /// Look up a persisted winning solution and re-derive its nonce.
         ///
         /// Returns `None` if the block had no accepted proof (e.g. genesis
-        /// where no `submit_proof` ever ran). The `?` short-circuits before
-        /// any block-hash arithmetic, so the saturating
-        /// `block_hash(block_number - 1)` lookup is only ever reached for
-        /// blocks where `submit_proof` succeeded — which guarantees a
-        /// real parent hash, not the zero hash.
+        /// where no `submit_proof` ever ran). Re-derivation reads the
+        /// `last_winning_hash` stored alongside the solution, so this stays
+        /// correct even when `block_number` is older than `BlockHashCount`
+        /// (no `frame_system::block_hash` lookup is involved).
         pub fn winning_solution_with_nonce(
             block_number: BlockNumberFor<T>,
         ) -> Option<WinningSolutionWithNonceOf<T>> {
             let solution = WinningSolutions::<T>::get(block_number)?;
-            let parent_block = block_number.saturating_sub(BlockNumberFor::<T>::from(1u32));
-            let parent_hash = frame_system::Pallet::<T>::block_hash(parent_block);
-            let parent_hash_encoded = parent_hash.encode();
-            let parent_hash_bytes = <[u8; 32]>::try_from(parent_hash_encoded.as_slice())
-                .unwrap_or_else(|_| sp_io::hashing::blake2_256(&parent_hash_encoded));
+            let last_winning_hash_bytes = solution.last_winning_hash.0;
             let miner_bytes = Self::account_to_bytes(&solution.miner);
-            let nonce = derive_nonce(
-                &parent_hash_bytes,
-                &miner_bytes,
-                block_number.saturated_into::<u32>(),
-                &solution.salt,
-            );
+            let nonce =
+                derive_nonce(&last_winning_hash_bytes, &miner_bytes, &solution.salt);
             Some(types::WinningSolutionWithNonce { solution, nonce })
         }
 
-        /// 32-byte parent-hash representation. Works for any `T::Hash` whose
-        /// SCALE encoding is exactly 32 bytes (the substrate default
+        /// 32-byte representation of a block hash, suitable for use as a
+        /// fixed-size input to `derive_nonce`. Works for any `T::Hash`
+        /// whose SCALE encoding is exactly 32 bytes (the substrate default
         /// `BlakeTwo256` `H256`). Falls back to `blake2_256` of the encoded
         /// form so non-32-byte `T::Hash` configurations are also covered.
-        pub fn parent_hash_bytes() -> [u8; 32] {
-            let parent_hash = frame_system::Pallet::<T>::parent_hash();
-            let encoded = parent_hash.encode();
+        pub fn hash_to_bytes_32(hash: <T as frame_system::Config>::Hash) -> [u8; 32] {
+            let encoded = hash.encode();
             if let Ok(arr) = <[u8; 32]>::try_from(encoded.as_slice()) {
                 arr
             } else {

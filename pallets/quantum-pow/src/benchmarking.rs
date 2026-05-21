@@ -93,14 +93,11 @@ fn valid_proof_for<T: Config>(
     frame_system::Pallet::<T>::set_block_number(1u32.into());
 
     let salt = [7u8; 32];
-    let parent_hash = QuantumPow::<T>::parent_hash_bytes();
+    let last_winning_hash =
+        frame_system::Pallet::<T>::block_hash(LastProofBlock::<T>::get());
+    let last_winning_hash_bytes = QuantumPow::<T>::hash_to_bytes_32(last_winning_hash);
     let miner_bytes = QuantumPow::<T>::account_to_bytes(miner);
-    let nonce = derive_nonce(
-        &parent_hash,
-        &miner_bytes,
-        frame_system::Pallet::<T>::block_number().saturated_into::<u32>(),
-        &salt,
-    );
+    let nonce = derive_nonce(&last_winning_hash_bytes, &miner_bytes, &salt);
 
     // 2-spin solution: both spins at +1.
     let spin_spec = allowed_spin_set::<T>();
