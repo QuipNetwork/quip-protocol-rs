@@ -97,8 +97,9 @@ pub mod pallet {
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
         calculate_diversity, derive_nonce, energy_of_solution, generate_ising_model,
-        packed::unpack_solution, select_diverse, validate_spins, validate_topology_consistency,
-        AllowedValueSpec, MilliValue,
+        packed::{packed_solution_byte_len, unpack_solution},
+        select_diverse, validate_spins, validate_topology_consistency, AllowedValueSpec,
+        MilliValue,
     };
     use sp_core::H256;
     use sp_runtime::traits::{SaturatedConversion, Saturating, Zero};
@@ -256,6 +257,12 @@ pub mod pallet {
         /// A submitted packed solution contained a bit pattern that does not
         /// map to any value in the allowed_spin_values spec.
         InvalidEncodedSpin,
+        /// The topology's allowed_spin_values spec and node count combine to
+        /// require more packed-solution bytes than the runtime's MaxNodes
+        /// bound permits. Most often hit when a ContinuousRange spin spec
+        /// (32 bits per spin) is paired with more than `MaxNodes / 4` nodes,
+        /// which would leave the topology accepted but unmineable.
+        PackedSolutionTooLarge,
     }
 
     #[pallet::hooks]
@@ -410,6 +417,30 @@ pub mod pallet {
             Self::check_spec(&allowed_h_values)?;
             Self::check_spec(&allowed_j_values)?;
             Self::check_spec(&allowed_spin_values)?;
+
+            // Canonicalize Set ordering so the stored representation matches
+            // the order-independent topology hash. Without this, registering
+            // [a, b, c] and [b, a, c] in different orders hash to the same
+            // value but produce different deterministic puzzles from the same
+            // nonce.
+            let allowed_h_values = Self::canonicalize_spec(allowed_h_values)?;
+            let allowed_j_values = Self::canonicalize_spec(allowed_j_values)?;
+            let allowed_spin_values = Self::canonicalize_spec(allowed_spin_values)?;
+
+            // A submitted solution is a `BoundedVec<u8, MaxNodes>` per the
+            // PackedSpinBytesOf type alias. Indexed spin specs (Set,
+            // IntegerRange) pack <= 8 bits per spin so num_nodes spins always
+            // fit, but ContinuousRange uses 32 bits per spin (4 bytes), making
+            // any topology with num_nodes > MaxNodes/4 unmineable. Reject at
+            // registration so the operator gets a clear error instead of
+            // silently shipping a dead topology.
+            let packed_bytes =
+                packed_solution_byte_len(nodes.len(), &allowed_spin_values.as_slice())
+                    .map_err(|_| Error::<T>::InvalidTopology)?;
+            ensure!(
+                packed_bytes <= T::MaxNodes::get() as usize,
+                Error::<T>::PackedSolutionTooLarge
+            );
 
             ensure!(
                 validate_topology_consistency(
@@ -670,6 +701,24 @@ pub mod pallet {
                     Err(Error::<T>::EncodingTooWide.into())
                 }
                 Err(_) => Err(Error::<T>::InvalidTopology.into()),
+            }
+        }
+
+        /// Sort the inner Set values so the stored spec matches the
+        /// order-independent layout used by `canonical_bytes` / `hash_topology`.
+        /// `IntegerRange` and `ContinuousRange` carry no order to canonicalize.
+        fn canonicalize_spec(
+            spec: AllowedValueSpec<AllowedValueSetOf<T>>,
+        ) -> Result<AllowedValueSpec<AllowedValueSetOf<T>>, DispatchError> {
+            match spec {
+                AllowedValueSpec::Set(values) => {
+                    let mut inner: alloc::vec::Vec<MilliValue> = values.into_inner();
+                    inner.sort_unstable();
+                    let sorted = AllowedValueSetOf::<T>::try_from(inner)
+                        .map_err(|_| Error::<T>::InvalidTopology)?;
+                    Ok(AllowedValueSpec::Set(sorted))
+                }
+                other => Ok(other),
             }
         }
 

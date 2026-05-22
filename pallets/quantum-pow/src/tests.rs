@@ -988,3 +988,82 @@ fn energy_curve_uses_default_topology_not_other_registered() {
         );
     });
 }
+
+/// Two registrations with identical Set values in different orders must
+/// collide via `topology_hash` (the design intent of `canonical_bytes`
+/// sorting). Before the canonicalize_spec fix the stored order matched the
+/// caller-supplied order, so the second registration would be rejected as
+/// already-registered but the stored representation would be whichever
+/// order won the race — meaning sample()/decode_value() walked the unsorted
+/// order while the hash claimed canonical-sorted equivalence.
+#[test]
+fn register_topology_canonicalizes_set_order() {
+    new_test_ext().execute_with(|| {
+        let nodes = bounded::<_, MaxNodes>(vec![0, 1]);
+        let edges = bounded::<_, MaxEdges>(vec![(0, 1)]);
+        let reordered_spin_spec: AllowedValueSpec<AllowedValueSetOf<Test>> =
+            AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![SCALE, -SCALE]));
+
+        assert_ok!(QuantumPow::register_topology(
+            RuntimeOrigin::root(),
+            nodes.clone(),
+            edges.clone(),
+            allowed_h_spec(),
+            allowed_j_spec(),
+            reordered_spin_spec,
+        ));
+
+        let hash = topology::hash_topology(
+            &nodes,
+            &edges,
+            &allowed_h_spec().as_slice(),
+            &allowed_j_spec().as_slice(),
+            &allowed_spin_spec().as_slice(),
+        );
+        let stored =
+            RegisteredTopologies::<Test>::get(hash).expect("topology stored under canonical hash");
+        match stored.allowed_spin_values {
+            AllowedValueSpec::Set(values) => {
+                let v: Vec<MilliValue> = values.into_inner();
+                assert_eq!(v, vec![-SCALE, SCALE], "stored Set must be sorted");
+            }
+            _ => panic!("expected Set variant"),
+        }
+    });
+}
+
+/// `ContinuousRange` spin specs need 4 bytes per spin, which would overflow
+/// the `BoundedVec<u8, MaxNodes>` packed-solution bound for any topology
+/// with `nodes > MaxNodes / 4`. Reject at registration so operators see a
+/// concrete error instead of shipping a topology that no valid proof can
+/// satisfy.
+#[test]
+fn register_topology_rejects_unmineable_continuous_spin_spec() {
+    new_test_ext().execute_with(|| {
+        let mut node_ids: Vec<u32> = (0..(MaxNodes::get() / 2)).collect();
+        // Drop one node to make sure the test still exceeds MaxNodes/4 even
+        // for very small MaxNodes. (MaxNodes/2 > MaxNodes/4 for MaxNodes >= 2.)
+        if node_ids.len() < 2 {
+            node_ids = vec![0, 1, 2, 3];
+        }
+        let nodes = bounded::<_, MaxNodes>(node_ids);
+        let edges = bounded::<_, MaxEdges>(vec![(0, 1)]);
+        let continuous_spin: AllowedValueSpec<AllowedValueSetOf<Test>> =
+            AllowedValueSpec::ContinuousRange {
+                min: -SCALE,
+                max: SCALE,
+            };
+
+        assert_noop!(
+            QuantumPow::register_topology(
+                RuntimeOrigin::root(),
+                nodes,
+                edges,
+                allowed_h_spec(),
+                allowed_j_spec(),
+                continuous_spin,
+            ),
+            crate::Error::<Test>::PackedSolutionTooLarge
+        );
+    });
+}

@@ -75,7 +75,7 @@ impl AllowedValueSpec<&[MilliValue]> {
                 if values.is_empty() {
                     return Err(ValidationError::EmptyAllowedValues);
                 }
-                let bits = bits_for_count(values.len() as u32);
+                let bits = bits_for_count(values.len() as u64);
                 check_indexed_bits(bits)?;
                 Ok(bits)
             }
@@ -83,7 +83,12 @@ impl AllowedValueSpec<&[MilliValue]> {
                 if max < min {
                     return Err(ValidationError::EmptyAllowedValues);
                 }
-                let span = (max as i64 - min as i64 + 1) as u32;
+                // The span is up to (i32::MAX - i32::MIN + 1) == 2^32, which
+                // overflows u32. Compute in u64 (which always fits) and let
+                // bits_for_count return up to 33, so check_indexed_bits below
+                // correctly rejects ranges wider than MAX_INDEXED_BITS instead
+                // of silently accepting them as a 1-bit spec.
+                let span = (max as i64 - min as i64 + 1) as u64;
                 let bits = bits_for_count(span);
                 check_indexed_bits(bits)?;
                 Ok(bits)
@@ -112,8 +117,11 @@ impl AllowedValueSpec<&[MilliValue]> {
                     .ok_or(ValidationError::InvalidEncodedValue { raw })
             }
             Self::IntegerRange { min, max } => {
-                let span = (max as i64 - min as i64 + 1) as u32;
-                if raw >= span {
+                // Use u64 so a full-i32-span range computes correctly instead
+                // of wrapping to 0 (which would silently mark every encoded
+                // value as invalid).
+                let span = (max as i64 - min as i64 + 1) as u64;
+                if (raw as u64) >= span {
                     return Err(ValidationError::InvalidEncodedValue { raw });
                 }
                 let value = (min as i64).saturating_add(raw as i64);
@@ -151,9 +159,16 @@ impl AllowedValueSpec<&[MilliValue]> {
                 if max < min {
                     return Err(ValidationError::EmptyAllowedValues);
                 }
-                let span = (max as i64 - min as i64 + 1) as u32;
-                let offset = rng.next_u32() % span;
-                self.decode_value(offset)
+                // Compute the span in u64 so a full-i32 range (span == 2^32)
+                // does not wrap to 0 and trap on the modulo below. The
+                // protocol caps indexed bits at MAX_INDEXED_BITS, so any spec
+                // that reaches sample() through register_topology has been
+                // validated by bits_per_value() and span fits in u32 — but
+                // the helper has to be safe even if a future caller bypasses
+                // that validation.
+                let span = (max as i64 - min as i64 + 1) as u64;
+                let offset = (rng.next_u32() as u64) % span;
+                self.decode_value(offset as u32)
             }
             Self::ContinuousRange { min, max } => {
                 if max < min {
@@ -197,10 +212,10 @@ impl AllowedValueSpec<&[MilliValue]> {
     }
 }
 
-fn bits_for_count(count: u32) -> u8 {
+fn bits_for_count(count: u64) -> u8 {
     match count {
         0 | 1 => 1,
-        _ => 32u8 - (count - 1).leading_zeros() as u8,
+        _ => 64u8 - (count - 1).leading_zeros() as u8,
     }
 }
 
@@ -280,6 +295,22 @@ mod tests {
         assert!(matches!(
             spec.bits_per_value(),
             Err(ValidationError::EmptyAllowedValues)
+        ));
+    }
+
+    #[test]
+    fn full_span_integer_range_rejected_as_too_wide() {
+        // i32::MAX - i32::MIN + 1 == 2^32. Prior to the u64 fix the span
+        // wrapped to 0 in u32 and bits_for_count(0) returned 1, so the spec
+        // was silently accepted as 1-bit; sample() would then panic on
+        // `rng.next_u32() % 0`.
+        let spec: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::IntegerRange {
+            min: i32::MIN,
+            max: i32::MAX,
+        };
+        assert!(matches!(
+            spec.bits_per_value(),
+            Err(ValidationError::EncodingTooWide { .. })
         ));
     }
 
