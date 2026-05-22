@@ -68,8 +68,13 @@ fn tx_account_from_seed(seed: &str) -> AccountId {
 
 /// Parse a hex string (with or without `0x` prefix, leading/trailing whitespace
 /// from `include_str!`-loaded files is tolerated) into the raw byte vector.
-fn decode_hex(hex: &str) -> Vec<u8> {
-    sp_core::bytes::from_hex(hex.trim()).expect("static hex constant is well-formed")
+///
+/// `source` is the human-readable origin (e.g. the operator hex filename); it
+/// is interpolated into the panic message so a malformed operator-supplied
+/// file is identifiable from the runtime panic alone.
+fn decode_hex(hex: &str, source: &str) -> Vec<u8> {
+    sp_core::bytes::from_hex(hex.trim())
+        .unwrap_or_else(|e| panic!("{source}: malformed hex: {e:?}"))
 }
 
 /// Build a BABE authority id from raw hybrid public key bytes.
@@ -77,27 +82,27 @@ fn decode_hex(hex: &str) -> Vec<u8> {
 /// The bytes must be the SCALE-encoded `sr25519_mldsa44::Public` (sr25519 32-byte
 /// prefix followed by the ML-DSA-44 public key). Used by [`quip_testnet_config_genesis`]
 /// to commit operator-submitted public material directly into genesis.
-fn babe_authority_from_public_hex(hex: &str) -> BabeId {
-    HybridBabePublic::from_slice(&decode_hex(hex))
-        .expect("static testnet operator BABE public bytes have the expected length")
+fn babe_authority_from_public_hex(hex: &str, source: &str) -> BabeId {
+    HybridBabePublic::from_slice(&decode_hex(hex, source))
+        .unwrap_or_else(|_| panic!("{source}: hybrid BABE public has wrong byte length"))
         .into()
 }
 
 /// Build a GRANDPA authority id from raw hybrid public key bytes.
-fn grandpa_authority_from_public_hex(hex: &str) -> GrandpaId {
-    HybridGrandpaPublic::from_slice(&decode_hex(hex))
-        .expect("static testnet operator GRANDPA public bytes have the expected length")
+fn grandpa_authority_from_public_hex(hex: &str, source: &str) -> GrandpaId {
+    HybridGrandpaPublic::from_slice(&decode_hex(hex, source))
+        .unwrap_or_else(|_| panic!("{source}: hybrid GRANDPA public has wrong byte length"))
         .into()
 }
 
 /// Build a transaction account id from its 32-byte raw hex (the `tx_account_hex`
 /// emitted by `derive_genesis_keys`).
-fn tx_account_from_hex(hex: &str) -> AccountId {
-    let bytes = decode_hex(hex);
+fn tx_account_from_hex(hex: &str, source: &str) -> AccountId {
+    let bytes = decode_hex(hex, source);
     let array: [u8; 32] = bytes
         .as_slice()
         .try_into()
-        .expect("static testnet operator tx account is exactly 32 bytes");
+        .unwrap_or_else(|_| panic!("{source}: tx account hex must decode to exactly 32 bytes"));
     AccountId::new(array)
 }
 
@@ -232,28 +237,43 @@ pub fn local_three_validator_config_genesis() -> Value {
 /// — there is no separate faucet account yet. Sudo is held by operator 1; a
 /// migration to a multisig is tracked for a later release.
 pub fn quip_testnet_config_genesis() -> Value {
-    let op1_babe =
-        babe_authority_from_public_hex(include_str!("genesis_quip_testnet/operator_1_babe.hex"));
-    let op1_grandpa = grandpa_authority_from_public_hex(include_str!(
-        "genesis_quip_testnet/operator_1_grandpa.hex"
-    ));
-    let op2_babe =
-        babe_authority_from_public_hex(include_str!("genesis_quip_testnet/operator_2_babe.hex"));
-    let op2_grandpa = grandpa_authority_from_public_hex(include_str!(
-        "genesis_quip_testnet/operator_2_grandpa.hex"
-    ));
-    let op3_babe =
-        babe_authority_from_public_hex(include_str!("genesis_quip_testnet/operator_3_babe.hex"));
-    let op3_grandpa = grandpa_authority_from_public_hex(include_str!(
-        "genesis_quip_testnet/operator_3_grandpa.hex"
-    ));
+    let op1_babe = babe_authority_from_public_hex(
+        include_str!("genesis_quip_testnet/operator_1_babe.hex"),
+        "genesis_quip_testnet/operator_1_babe.hex",
+    );
+    let op1_grandpa = grandpa_authority_from_public_hex(
+        include_str!("genesis_quip_testnet/operator_1_grandpa.hex"),
+        "genesis_quip_testnet/operator_1_grandpa.hex",
+    );
+    let op2_babe = babe_authority_from_public_hex(
+        include_str!("genesis_quip_testnet/operator_2_babe.hex"),
+        "genesis_quip_testnet/operator_2_babe.hex",
+    );
+    let op2_grandpa = grandpa_authority_from_public_hex(
+        include_str!("genesis_quip_testnet/operator_2_grandpa.hex"),
+        "genesis_quip_testnet/operator_2_grandpa.hex",
+    );
+    let op3_babe = babe_authority_from_public_hex(
+        include_str!("genesis_quip_testnet/operator_3_babe.hex"),
+        "genesis_quip_testnet/operator_3_babe.hex",
+    );
+    let op3_grandpa = grandpa_authority_from_public_hex(
+        include_str!("genesis_quip_testnet/operator_3_grandpa.hex"),
+        "genesis_quip_testnet/operator_3_grandpa.hex",
+    );
 
-    let op1_account =
-        tx_account_from_hex("c6cb8a79a71b11347a7ce0d983104278c0682dc70b7f90be9afd92ab54f1404b");
-    let op2_account =
-        tx_account_from_hex("96ab60c5a90f6b18566155d2187fae8f52e3cd43627fb4a40d5c89f3a512bb5b");
-    let op3_account =
-        tx_account_from_hex("f8a5d50a6b32c3784b1e9fd9811e57b63524e5ec0defaafc289304bf99061db7");
+    let op1_account = tx_account_from_hex(
+        "c6cb8a79a71b11347a7ce0d983104278c0682dc70b7f90be9afd92ab54f1404b",
+        "operator_1 tx_account_hex literal",
+    );
+    let op2_account = tx_account_from_hex(
+        "96ab60c5a90f6b18566155d2187fae8f52e3cd43627fb4a40d5c89f3a512bb5b",
+        "operator_2 tx_account_hex literal",
+    );
+    let op3_account = tx_account_from_hex(
+        "f8a5d50a6b32c3784b1e9fd9811e57b63524e5ec0defaafc289304bf99061db7",
+        "operator_3 tx_account_hex literal",
+    );
 
     testnet_genesis(
         vec![
@@ -391,9 +411,24 @@ mod tests {
 
     #[test]
     fn quip_testnet_operator_1_account_is_pinned() {
-        let op1 = tx_account_from_hex(OPERATOR_1_PINNED_ACCOUNT_HEX);
-        let hex = hex_encode(&op1.encode());
-        assert_eq!(hex, OPERATOR_1_PINNED_ACCOUNT_HEX);
+        // Drive the same derivation `quip_testnet_config_genesis` uses: parse
+        // the committed BABE public bytes, then derive the account id via
+        // `account_id_from_public`. A regression in either step (hybrid public
+        // wire format, account id domain separator) re-keys every operator at
+        // genesis, so this assertion is the load-bearing canary.
+        let op1_babe = HybridBabePublic::from_slice(&decode_hex(
+            include_str!("genesis_quip_testnet/operator_1_babe.hex"),
+            "genesis_quip_testnet/operator_1_babe.hex",
+        ))
+        .expect("operator_1_babe.hex must decode to a valid hybrid BABE public");
+        let derived = account_id_from_public(&op1_babe);
+        let derived_hex = hex_encode(&derived.encode());
+        assert_eq!(
+            derived_hex, OPERATOR_1_PINNED_ACCOUNT_HEX,
+            "operator-1 account derivation drift. If intentional, update \
+             OPERATOR_1_PINNED_ACCOUNT_HEX and the committed operator hex files \
+             together: {derived_hex}",
+        );
     }
 
     #[test]

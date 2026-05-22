@@ -71,7 +71,11 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // Bumped to 101 (and `transaction_version` to 2) when the signed-extrinsic
     // wire format switched from `MultiSignature` to the hybrid envelope. Without
     // these bumps, peers/clients could treat the new format as the old one.
-    spec_version: 101,
+    // Bumped to 102 for v0.2.0: adds `pallet_faucet_ops` (idx 11) and
+    // `pallet_session` (idx 12). New dispatchables, events, and storage entries
+    // change the runtime metadata; the signed-extrinsic wire format is
+    // unchanged, so `transaction_version` stays at 2.
+    spec_version: 102,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 2,

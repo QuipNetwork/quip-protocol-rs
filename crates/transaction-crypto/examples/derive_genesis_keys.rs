@@ -38,10 +38,18 @@ fn main() {
         }
     };
 
-    let babe = sr25519_mldsa44::Pair::from_string(&uri, None)
-        .expect("URI must be a valid BIP39 mnemonic or //seed string");
-    let grandpa = ed25519_mldsa44::Pair::from_string(&uri, None)
-        .expect("URI must be a valid BIP39 mnemonic or //seed string");
+    // Surface `SecretStringError` text to the operator instead of panicking
+    // with a backtrace — this binary's only caller is `scripts/derive-operator-keys.sh`,
+    // which captures stderr and shows it as the failure reason. A clean
+    // message ("invalid checksum") is far more actionable than a panic trace.
+    let babe = sr25519_mldsa44::Pair::from_string(&uri, None).unwrap_or_else(|e| {
+        eprintln!("invalid SURI for hybrid-babe-h344: {e:?}");
+        std::process::exit(2);
+    });
+    let grandpa = ed25519_mldsa44::Pair::from_string(&uri, None).unwrap_or_else(|e| {
+        eprintln!("invalid SURI for hybrid-grandpa-h144: {e:?}");
+        std::process::exit(2);
+    });
 
     let babe_pub = babe.public();
     let grandpa_pub = grandpa.public();

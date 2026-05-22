@@ -82,18 +82,24 @@ impl InsertHybridKeyCmd {
         // `Public` implements both `AsRef<[u8]>` and `AsRef<InnerPublic>` since
         // upstream `d125cbde` (polkadot-sdk v0.2). Bind the public to a local
         // first, then disambiguate the byte-slice borrow explicitly.
+        //
+        // Surface the underlying `SecretStringError` so operators see *why*
+        // the SURI was rejected (bad checksum, unknown junction, etc.) instead
+        // of a bare "invalid SURI" message.
         let (key_type, public_bytes) = match self.scheme {
             HybridScheme::BabeH344 => {
-                let pair = HybridBabePair::from_string(&suri, None)
-                    .map_err(|_| Error::Input("invalid SURI for hybrid-babe-h344".into()))?;
+                let pair = HybridBabePair::from_string(&suri, None).map_err(|e| {
+                    Error::Input(format!("invalid SURI for hybrid-babe-h344: {e:?}"))
+                })?;
                 let key_type = self.resolve_key_type(sp_consensus_babe::KEY_TYPE)?;
                 let public = pair.public();
                 let bytes: &[u8] = public.as_ref();
                 (key_type, bytes.to_vec())
             }
             HybridScheme::GrandpaH144 => {
-                let pair = HybridGrandpaPair::from_string(&suri, None)
-                    .map_err(|_| Error::Input("invalid SURI for hybrid-grandpa-h144".into()))?;
+                let pair = HybridGrandpaPair::from_string(&suri, None).map_err(|e| {
+                    Error::Input(format!("invalid SURI for hybrid-grandpa-h144: {e:?}"))
+                })?;
                 let key_type = self.resolve_key_type(sp_consensus_grandpa::KEY_TYPE)?;
                 let public = pair.public();
                 let bytes: &[u8] = public.as_ref();
@@ -108,14 +114,20 @@ impl InsertHybridKeyCmd {
 
         keystore
             .insert(key_type, &suri, &public_bytes)
-            .map_err(|_| Error::KeystoreOperation)?;
+            .map_err(|e| {
+                Error::Input(format!(
+                    "keystore insert failed for key_type={key_type:?}: {e:?}"
+                ))
+            })?;
 
         Ok(())
     }
 
     fn resolve_key_type(&self, default: KeyTypeId) -> sc_cli::Result<KeyTypeId> {
         match &self.key_type {
-            Some(s) => KeyTypeId::try_from(s.as_str()).map_err(|_| Error::KeyTypeInvalid),
+            Some(s) => KeyTypeId::try_from(s.as_str()).map_err(|_| {
+                Error::Input(format!("--key-type {s:?} is not a valid 4-byte KeyTypeId"))
+            }),
             None => Ok(default),
         }
     }

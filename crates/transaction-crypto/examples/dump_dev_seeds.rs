@@ -25,12 +25,17 @@ fn dump(name: &str, uri: &str) {
     let public = pair.public();
     let account = account_id_from_public(&public);
 
+    // `Public` implements both `AsRef<[u8]>` and `AsRef<InnerPublic>`; bind
+    // the byte slice through an explicit type annotation so neither call site
+    // requires disambiguation.
+    let public_bytes: &[u8] = public.as_ref();
+
     println!("// {} ({})", name, uri);
     println!("master_seed_hex   = {:?}", hex(&seed));
     println!(
         "public_bytes_hex  = {:?} (len={})",
-        hex(public.as_ref()),
-        public.as_ref().len()
+        hex(public_bytes),
+        public_bytes.len()
     );
     println!("account_id_hex    = {:?}", hex(&account.encode()));
     println!();
