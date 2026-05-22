@@ -1,9 +1,16 @@
 //! Bit-packed solution payloads.
 //!
 //! A submitted Ising solution is a vector of spins. With binary spins the
-//! natural wire format is one bit per spin; higher-resolution spin specs use
-//! more bits each. This module owns the pack/unpack boundary so the rest of
-//! the validation code keeps operating on `&[MilliValue]` slices.
+//! natural wire format is one bit per spin; the encoding supports
+//! higher-resolution spin specs (Set, IntegerRange with `MAX_INDEXED_BITS`
+//! bits per spin, ContinuousRange with 32 bits) so the wire format can
+//! carry magnitudes.
+//!
+//! Note: the v0.2 `pallet-quantum-pow::validate_proof` pipeline currently
+//! collapses every decoded spin to its signum (±1) before evaluating
+//! `energy_of_solution`. That's a v0.2 pallet-level limitation, not a
+//! property of this packing format — when higher-resolution spin magnitudes
+//! are wired into the energy calculation, no change is needed here.
 
 use alloc::vec::Vec;
 
@@ -65,9 +72,10 @@ fn decode_indexed(
         let byte_index = bit_offset / 8;
         let intra_byte = bit_offset % 8;
 
-        // Read up to 5 bytes so we can extract bits_per_spin <= 32 bits that
-        // may straddle byte boundaries. For bits_per_spin <= 8, two bytes
-        // always suffice.
+        // bits_per_spin <= MAX_INDEXED_BITS (8) and intra_byte <= 7, so the
+        // value never spans more than two bytes. The second byte may be
+        // out-of-bounds for the very last spin (when the unused trailing
+        // bits are all zero), in which case it's safely defaulted to 0.
         let b0 = u32::from(packed[byte_index]);
         let b1 = u32::from(*packed.get(byte_index + 1).unwrap_or(&0));
         let raw = ((b0 | (b1 << 8)) >> intra_byte) & mask;
@@ -127,11 +135,11 @@ pub fn pack_solution(
 
         let shifted = raw << intra_byte;
         out[byte_index] |= (shifted & 0xFF) as u8;
+        // bits_per_spin <= MAX_INDEXED_BITS (8) and intra_byte <= 7, so the
+        // value never spans more than two bytes — a third-byte spill would
+        // need intra_byte + bits_per_spin > 16, which is unreachable.
         if byte_index + 1 < out.len() {
             out[byte_index + 1] |= ((shifted >> 8) & 0xFF) as u8;
-        }
-        if byte_index + 2 < out.len() && intra_byte + bits_per_spin > 16 {
-            out[byte_index + 2] |= ((shifted >> 16) & 0xFF) as u8;
         }
     }
     Ok(out)

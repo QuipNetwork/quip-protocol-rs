@@ -103,6 +103,13 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
     let mut ext: sp_io::TestExternalities = storage.into();
     ext.execute_with(|| {
         System::set_block_number(1);
+        // Mirror production: on_initialize at block 1 captures
+        // parent_hash() (== block_hash(0)) into LastProofBlockHash so
+        // nonce derivation has a stable seed before any proof has won.
+        // Without this, tests would see LastProofBlockHash == zero while
+        // production sees block_hash(0).
+        use frame_support::traits::Hooks;
+        QuantumPow::on_initialize(1);
     });
     ext
 }

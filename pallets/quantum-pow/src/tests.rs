@@ -3,7 +3,8 @@ use crate::{
     difficulty, topology,
     types::{DifficultyConfig, QuantumProof},
     AllowedValueSetOf, BlockBestProof, BlockProofCount, DefaultTopology, Difficulty,
-    LastProofBlock, Miners, PackedSpinBytesOf, RegisteredTopologies, WinningSolutions,
+    LastProofBlock, LastProofBlockHash, Miners, PackedSpinBytesOf, RegisteredTopologies,
+    WinningSolutions,
 };
 use frame_support::{assert_noop, assert_ok, traits::Hooks, BoundedVec};
 use quantum_validation::{
@@ -92,13 +93,10 @@ fn proof_for(
         s[..4].copy_from_slice(b"salt");
         s
     };
-    // Mirror the chain-side lookup: `block_hash(LastProofBlock)` is the
-    // sole "time" input to the nonce. Reading the same value the
-    // pallet does keeps the helper coupling-free with the test runtime.
-    let last_proof_block_hash =
-        frame_system::Pallet::<Test>::block_hash(LastProofBlock::<Test>::get());
-    let last_proof_block_hash_bytes =
-        crate::Pallet::<Test>::hash_to_bytes_32(last_proof_block_hash);
+    // Mirror the chain-side lookup: the pallet reads from the cached
+    // `LastProofBlockHash` storage value (populated lazily by
+    // on_initialize), not directly from frame_system's ring buffer.
+    let last_proof_block_hash_bytes = LastProofBlockHash::<Test>::get().0;
     let miner_bytes = crate::Pallet::<Test>::account_to_bytes(&miner);
     let nonce = derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &salt);
 
@@ -748,12 +746,16 @@ fn submit_proof_rejected_after_intervening_win() {
         let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
 
         // Force the last proof block hash to a distinct value by (a) pointing
-        // `LastProofBlock` at a fresh block and (b) populating
-        // `block_hash` for that block with a non-zero entry. Together
-        // these simulate a winning on_finalize having run in the meantime.
+        // `LastProofBlock` at a fresh block, (b) populating `block_hash`
+        // for that block, and (c) writing the cached `LastProofBlockHash`
+        // that the pallet's submit_proof reads. The on_initialize hook is
+        // what would normally refresh the cache from parent_hash() on the
+        // block immediately after the proof block; tests don't run hooks
+        // automatically, so we mimic that side-effect explicitly.
         System::set_block_number(50);
         LastProofBlock::<Test>::put(10);
         frame_system::BlockHash::<Test>::insert(10u64, sp_core::H256::from([0xAB; 32]));
+        LastProofBlockHash::<Test>::put(sp_core::H256::from([0xAB; 32]));
 
         assert_noop!(
             QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof),
@@ -1066,4 +1068,73 @@ fn register_topology_rejects_unmineable_continuous_spin_spec() {
             crate::Error::<Test>::PackedSolutionTooLarge
         );
     });
+}
+
+/// `LastProofBlockHash` must remain stable for the entire mining round even
+/// after `frame_system::block_hash(LastProofBlock)` ages out of its
+/// `BlockHashCount` ring buffer. Before the fix, a long-running round
+/// (longer than `BlockHashCount`) would see the nonce seed silently flip
+/// to the zero hash mid-round and reject every in-flight proof.
+#[test]
+fn last_proof_block_hash_stable_after_block_hash_ages_out() {
+    use frame_support::traits::Hooks;
+
+    new_test_ext().execute_with(|| {
+        // Simulate a winning proof at block 5: write LastProofBlock and the
+        // expected parent_hash, then run on_initialize for block 6 — which
+        // is what captures the cache from parent_hash() (== block_hash(5)
+        // in production). `set_parent_hash` is the test-only frame_system
+        // helper for setting up this storage value.
+        let proof_block_hash = sp_core::H256::from([0x77; 32]);
+        LastProofBlock::<Test>::put(5u64);
+        System::set_block_number(6);
+        frame_system::Pallet::<Test>::set_parent_hash(proof_block_hash);
+        QuantumPow::on_initialize(6);
+
+        let cached = LastProofBlockHash::<Test>::get();
+        assert_eq!(
+            cached, proof_block_hash,
+            "captured hash must equal block_hash(LastProofBlock)"
+        );
+
+        // Now jump far past `BlockHashCount` (production default 256) and
+        // run on_initialize again with a different parent_hash. The cache
+        // must NOT be overwritten — LastProofBlock hasn't changed, so the
+        // round's nonce seed is still bound to block 5's hash.
+        System::set_block_number(1000);
+        frame_system::Pallet::<Test>::set_parent_hash(sp_core::H256::from([0x99; 32]));
+        QuantumPow::on_initialize(1000);
+
+        assert_eq!(
+            LastProofBlockHash::<Test>::get(),
+            cached,
+            "LastProofBlockHash must not change on a no-op on_initialize"
+        );
+    });
+}
+
+/// `adjust_energy_along_curve` must apply `min_delta_milli` when the raw
+/// float delta is in (0, 0.5). Before the fix, `libm::round(0.4) = 0` made
+/// the guard `delta > 0` fail and difficulty stalled instead of advancing.
+#[test]
+fn difficulty_adjust_applies_min_delta_for_small_positive_floats() {
+    // Construct a curve and inputs where the raw delta falls in (0, 0.5).
+    // Pick numbers that make total_range * rate * curve_factor < 0.5 milli.
+    // total_range = 1000, rate = 0.0001 (rate_milli=0). 1000 * 0.0001 = 0.1.
+    // round(0.1) = 0 → without the fix, delta stays 0, function returns
+    // current. With the fix, raw_delta_f > 0.0 triggers the floor.
+    let current = -500_000i64;
+    let curve = crate::difficulty::EnergyCurve::new(2, 1, 700, 750, 800);
+
+    let result = crate::difficulty::adjust_energy_along_curve(
+        current,
+        /* rate_milli */ 1,
+        crate::difficulty::Direction::Harder,
+        curve,
+        /* min_delta_milli */ 100,
+    );
+    assert_ne!(
+        result, current,
+        "difficulty must advance by min_delta_milli when raw float delta is small but positive"
+    );
 }

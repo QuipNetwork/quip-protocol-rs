@@ -102,7 +102,7 @@ pub mod pallet {
         MilliValue,
     };
     use sp_core::H256;
-    use sp_runtime::traits::{SaturatedConversion, Saturating, Zero};
+    use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
 
     #[pallet::pallet]
     pub struct Pallet<T>(_);
@@ -180,6 +180,18 @@ pub mod pallet {
     /// difficulty path stays coherent with `EpochLength` and does not depend on
     /// mixing wall-clock moments with block numbers.
     pub type LastProofBlock<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
+
+    /// Hash of the block recorded in `LastProofBlock`. Captured lazily in
+    /// `on_initialize` of the *next* block (when `parent_hash()` first equals
+    /// `block_hash(LastProofBlock)`) and held in storage thereafter. Reading
+    /// from this storage value — instead of calling
+    /// `frame_system::block_hash(LastProofBlock)` directly — keeps the nonce
+    /// seed stable across the entire mining round, even if no proof clears
+    /// difficulty for longer than `BlockHashCount` (~25 minutes at 6s
+    /// blocks). Without this cache the seed would silently flip to the
+    /// zero hash once the ring buffer aged past the proof block.
+    #[pallet::storage]
+    pub type LastProofBlockHash<T: Config> = StorageValue<_, H256, ValueQuery>;
 
     #[pallet::storage]
     pub type BlockProofCount<T: Config> = StorageValue<_, u32, ValueQuery>;
@@ -267,8 +279,29 @@ pub mod pallet {
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-        fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
+        fn on_initialize(n: BlockNumberFor<T>) -> Weight {
             BlockProofCount::<T>::put(0);
+
+            // Capture `block_hash(LastProofBlock)` permanently as soon as it
+            // becomes available. The only place this hash is freshly known
+            // without depending on `frame_system::block_hash` (which ages
+            // out after `BlockHashCount` blocks) is `parent_hash()` of the
+            // very next block after the winning proof was finalized.
+            //
+            // Trigger conditions:
+            //   - `n > 0` and `LastProofBlock == n - 1`: this is the block
+            //     right after a fresh winning proof; `parent_hash()` is
+            //     exactly `block_hash(LastProofBlock)`.
+            //   - On the first block of any chain we also seed the cache
+            //     with the genesis hash so pre-proof nonce derivation
+            //     remains stable.
+            let last_proof_block = LastProofBlock::<T>::get();
+            let one: BlockNumberFor<T> = One::one();
+            if n == one || (n > one && last_proof_block.saturating_add(one) == n) {
+                let parent = frame_system::Pallet::<T>::parent_hash();
+                LastProofBlockHash::<T>::put(H256::from(Self::hash_to_bytes_32(parent)));
+            }
+
             <T as Config>::WeightInfo::register_miner()
         }
 
@@ -288,15 +321,13 @@ pub mod pallet {
 
             let previous_proof_block = LastProofBlock::<T>::get();
             // Capture the hash the just-won round actually used in its
-            // `derive_nonce` input. Read here, before the `LastProofBlock`
-            // mutation below makes the next round's hash visible. Persisting
-            // it in `WinningSolution` lets `winning_solution_with_nonce`
-            // re-derive the nonce without a `frame_system::block_hash`
-            // lookup — which means re-derivation stays correct even after
-            // the original block is pruned beyond `BlockHashCount`.
-            let last_proof_block_hash = H256::from(Self::hash_to_bytes_32(
-                frame_system::Pallet::<T>::block_hash(previous_proof_block),
-            ));
+            // `derive_nonce` input. Read from the `LastProofBlockHash` cache
+            // (populated lazily in `on_initialize`) rather than calling
+            // `frame_system::block_hash(previous_proof_block)` directly: if
+            // the round ran longer than `BlockHashCount`, the live lookup
+            // would return the zero hash instead of the value miners
+            // actually used to derive their nonce.
+            let last_proof_block_hash = LastProofBlockHash::<T>::get();
 
             let mining_time_blocks = if previous_proof_block.is_zero() || n <= previous_proof_block
             {
@@ -535,10 +566,12 @@ pub mod pallet {
             // executing block's number or parent hash. That value only
             // changes when a new proof wins, so a miner's submission stays
             // valid for as long as the current round runs — no txpool-delay
-            // race (the original bug).
-            let last_proof_block_hash =
-                frame_system::Pallet::<T>::block_hash(LastProofBlock::<T>::get());
-            let last_proof_block_hash_bytes = Self::hash_to_bytes_32(last_proof_block_hash);
+            // race (the original bug). Read from the `LastProofBlockHash`
+            // cache rather than `frame_system::block_hash`, which falls off
+            // the ring buffer after `BlockHashCount` (~25 min) and would
+            // otherwise silently flip the nonce seed to zero for any round
+            // that runs longer than that window.
+            let last_proof_block_hash_bytes = LastProofBlockHash::<T>::get().0;
             let miner_bytes = Self::account_to_bytes(&who);
 
             let expected_nonce =
@@ -634,11 +667,12 @@ pub mod pallet {
             };
 
             // Difficulty still tracks the current block (decay is block-based)
-            // even though the nonce input no longer is.
+            // even though the nonce input no longer is. Read the nonce seed
+            // from the `LastProofBlockHash` cache so the snapshot remains
+            // stable across the full mining round, even after the underlying
+            // proof block ages out of `frame_system::block_hash`.
             let block_number = frame_system::Pallet::<T>::block_number();
-            let last_proof_block_hash = H256::from(Self::hash_to_bytes_32(
-                frame_system::Pallet::<T>::block_hash(LastProofBlock::<T>::get()),
-            ));
+            let last_proof_block_hash = LastProofBlockHash::<T>::get();
 
             Some(types::MiningSnapshot {
                 last_proof_block_hash,

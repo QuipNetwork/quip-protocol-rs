@@ -91,6 +91,15 @@ impl AllowedValueSpec<&[MilliValue]> {
                 let span = (max as i64 - min as i64 + 1) as u64;
                 let bits = bits_for_count(span);
                 check_indexed_bits(bits)?;
+                // decode_value scales the decoded integer by MILLI_SCALE
+                // into MilliValue (= i32). Catch range endpoints that
+                // overflow that scaling at registration so every proof
+                // attempt doesn't later die with ArithmeticOverflow.
+                let scaled_min = (min as i64).saturating_mul(MILLI_SCALE);
+                let scaled_max = (max as i64).saturating_mul(MILLI_SCALE);
+                if scaled_min < MilliValue::MIN as i64 || scaled_max > MilliValue::MAX as i64 {
+                    return Err(ValidationError::ArithmeticOverflow);
+                }
                 Ok(bits)
             }
             Self::ContinuousRange { min, max } => {
@@ -296,6 +305,43 @@ mod tests {
             spec.bits_per_value(),
             Err(ValidationError::EmptyAllowedValues)
         ));
+    }
+
+    #[test]
+    fn integer_range_rejected_when_milli_scaling_would_overflow() {
+        // bits_per_value caps the *span* at 256 (8 bits), not the absolute
+        // value of min/max. A narrow range high in the i32 space can still
+        // overflow MILLI_SCALE multiplication at decode_value time. Catch
+        // this at bits_per_value so registration fails instead of every
+        // proof attempt later dying with ArithmeticOverflow.
+        //
+        // max = 3_000_000 → 3_000_000 * 1000 = 3 * 10^9 overflows i32::MAX
+        // (2.147 * 10^9). Span = 100 (7 bits) — well under MAX_INDEXED_BITS.
+        let spec: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::IntegerRange {
+            min: 3_000_000,
+            max: 3_000_100,
+        };
+        assert!(matches!(
+            spec.bits_per_value(),
+            Err(ValidationError::ArithmeticOverflow)
+        ));
+
+        // Symmetric check for negative overflow on min.
+        let spec: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::IntegerRange {
+            min: -3_000_100,
+            max: -3_000_000,
+        };
+        assert!(matches!(
+            spec.bits_per_value(),
+            Err(ValidationError::ArithmeticOverflow)
+        ));
+
+        // Sanity: a narrow, in-range spec is still accepted.
+        let spec: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::IntegerRange {
+            min: -100,
+            max: 100,
+        };
+        assert!(spec.bits_per_value().is_ok());
     }
 
     #[test]

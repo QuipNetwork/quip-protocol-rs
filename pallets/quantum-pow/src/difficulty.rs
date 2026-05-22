@@ -134,7 +134,8 @@ fn sample_adjustment_milli(mining_time_blocks: u64, harder: bool, seed: &[u8]) -
 /// `33a4837^`. When `current_milli` lies outside `[min_milli, max_milli]`,
 /// the curve degrades to a linear `total_range * rate` adjustment — same
 /// behaviour as v0.1.
-fn adjust_energy_along_curve(
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn adjust_energy_along_curve(
     current_milli: i64,
     rate_milli: u32,
     direction: Direction,
@@ -173,7 +174,12 @@ fn adjust_energy_along_curve(
     };
 
     let mut delta = libm::round(raw_delta_f) as i64;
-    if delta > 0 && delta < min_delta_milli {
+    // Gate the min-delta floor on the raw float, not the rounded int. A
+    // raw_delta_f in (0, 0.5) rounds to 0, which would skip the floor and
+    // stall difficulty progress — exactly the case `min_delta_milli` exists
+    // to prevent. Once the floor is applied, subsequent rounds compound the
+    // adjustment instead of getting stuck at no-op.
+    if raw_delta_f > 0.0 && delta < min_delta_milli {
         delta = min_delta_milli;
     }
     if delta == 0 {
