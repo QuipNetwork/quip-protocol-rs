@@ -256,6 +256,20 @@ mod tests {
         });
     }
 
+    /// Confirms the runtime's `CanonicalDefaultIsingSpecId` resolves to the
+    /// same hash that the pallet's mock test pins. SDKs and downstream docs
+    /// embed this hash; a mock-vs-runtime divergence would silently break
+    /// every client that hardcodes it.
+    #[test]
+    fn default_ising_spec_id_matches_pinned_hash() {
+        use frame_support::traits::Get as _;
+        let id = <Runtime as pallet_quantum_compute_mempool::Config>::DefaultIsingSpecId::get();
+        assert_eq!(
+            format!("{id:?}"),
+            "0x8f46f3a31321d1d093314fc769c42cbe7a83d71a0b69e6571a0f68e2a04067f0",
+        );
+    }
+
     #[test]
     fn hybrid_signed_extrinsic_rejects_wrong_account() {
         let mut ext =

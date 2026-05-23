@@ -191,13 +191,17 @@ fn propose_job_works_with_genesis_default_ising_spec() {
     });
 }
 
+fn test_db_weight() -> frame_support::weights::RuntimeDbWeight {
+    <<Test as frame_system::Config>::DbWeight as frame_support::traits::Get<_>>::get()
+}
+
 #[test]
 fn runtime_upgrade_migration_inserts_default_ising_spec_when_missing() {
     new_test_ext().execute_with(|| {
         StorageVersion::new(0).put::<QuantumComputeMempool>();
         assert!(JobSpecs::<Test>::get(QuantumComputeMempool::default_ising_spec_id()).is_none());
 
-        let _weight = QuantumComputeMempool::on_runtime_upgrade();
+        let weight = QuantumComputeMempool::on_runtime_upgrade();
 
         let spec = JobSpecs::<Test>::get(QuantumComputeMempool::default_ising_spec_id()).unwrap();
         assert_eq!(spec.builder, 1);
@@ -205,6 +209,7 @@ fn runtime_upgrade_migration_inserts_default_ising_spec_when_missing() {
             StorageVersion::get::<QuantumComputeMempool>(),
             StorageVersion::new(1)
         );
+        assert_eq!(weight, test_db_weight().reads_writes(3, 2));
     });
 }
 
@@ -221,13 +226,88 @@ fn runtime_upgrade_migration_keeps_existing_default_ising_spec() {
         ));
         StorageVersion::new(0).put::<QuantumComputeMempool>();
 
-        let _weight = QuantumComputeMempool::on_runtime_upgrade();
+        let weight = QuantumComputeMempool::on_runtime_upgrade();
 
         let spec = JobSpecs::<Test>::get(QuantumComputeMempool::default_ising_spec_id()).unwrap();
         assert_eq!(spec.builder, 4);
         assert_eq!(
             StorageVersion::get::<QuantumComputeMempool>(),
             StorageVersion::new(1)
+        );
+        assert_eq!(weight, test_db_weight().reads_writes(2, 1));
+    });
+}
+
+#[test]
+fn runtime_upgrade_migration_is_idempotent_when_already_at_v1() {
+    new_test_ext_with_default_ising_spec(true).execute_with(|| {
+        // Genesis seeded the spec and the pallet's storage version is already 1.
+        let spec_id = QuantumComputeMempool::default_ising_spec_id();
+        let pre = JobSpecs::<Test>::get(spec_id).unwrap();
+
+        let weight = QuantumComputeMempool::on_runtime_upgrade();
+
+        // Spec is untouched (no over-write of `registered_at` or counters).
+        let post = JobSpecs::<Test>::get(spec_id).unwrap();
+        assert_eq!(post.builder, pre.builder);
+        assert_eq!(post.registered_at, pre.registered_at);
+        // Weight matches the early-return branch.
+        assert_eq!(weight, test_db_weight().reads(1));
+    });
+}
+
+#[test]
+fn root_register_job_spec_emits_event_with_provided_builder() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        let (name, formulation, validation_program, transform_program) = sample_spec();
+        let spec_id = <Test as frame_system::Config>::Hashing::hash_of(&(
+            name.clone(),
+            formulation,
+            validation_program,
+            transform_program,
+        ));
+
+        assert_ok!(QuantumComputeMempool::register_job_spec(
+            RuntimeOrigin::root(),
+            42,
+            name,
+            formulation,
+            validation_program,
+            transform_program,
+        ));
+
+        let found = System::events().into_iter().any(|record| {
+            matches!(
+                record.event,
+                RuntimeEvent::QuantumComputeMempool(
+                    QuantumComputeMempoolEvent::JobSpecRegistered { spec_id: emitted_id, builder },
+                ) if emitted_id == spec_id && builder == 42,
+            )
+        });
+        assert!(found, "root register_job_spec must emit JobSpecRegistered");
+    });
+}
+
+#[test]
+fn migration_does_not_emit_job_spec_registered_event() {
+    new_test_ext().execute_with(|| {
+        System::set_block_number(1);
+        StorageVersion::new(0).put::<QuantumComputeMempool>();
+
+        let _ = QuantumComputeMempool::on_runtime_upgrade();
+
+        let emitted = System::events().into_iter().any(|record| {
+            matches!(
+                record.event,
+                RuntimeEvent::QuantumComputeMempool(
+                    QuantumComputeMempoolEvent::JobSpecRegistered { .. },
+                ),
+            )
+        });
+        assert!(
+            !emitted,
+            "migration must not emit JobSpecRegistered (genesis/migration are silent)",
         );
     });
 }

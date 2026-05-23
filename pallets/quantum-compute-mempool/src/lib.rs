@@ -81,6 +81,14 @@ type StoredResultOf<T> = types::StoredResult<AccountIdOf<T>, BalanceOf<T>, Block
 /// tuple field changes, update the pinned hash test and SDK docs together.
 pub const DEFAULT_ISING_SPEC_NAME: &[u8] = b"plain-ising-v1";
 
+// Compile-time check that `DEFAULT_ISING_SPEC_NAME` fits the bound used by
+// `JobSpec::name`. Surfaces a build failure rather than a runtime panic if a
+// future rename pushes the name past the cap.
+const _: () = assert!(
+    DEFAULT_ISING_SPEC_NAME.len() <= 128,
+    "DEFAULT_ISING_SPEC_NAME must fit BoundedVec<u8, ConstU32<128>>",
+);
+
 /// Pallet-constant provider for the canonical plain Ising `spec_id`.
 ///
 /// This is intentionally generic over the runtime because the concrete hash
@@ -176,8 +184,17 @@ pub mod pallet {
     impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
         fn build(&self) {
             if let Some(builder) = &self.default_ising_spec_builder {
-                Pallet::<T>::insert_default_ising_spec(builder.clone(), false)
-                    .expect("canonical default plain Ising job spec is valid");
+                if let Err(err) = Pallet::<T>::insert_default_ising_spec(builder.clone(), false) {
+                    // Failing here means the chain spec is broken (e.g. another
+                    // preset already inserted the canonical spec, or the wired
+                    // VM rejects empty validation/transform programs). Genesis
+                    // panics make the node refuse to start — surface enough
+                    // context to make the misconfiguration debuggable.
+                    panic!(
+                        "quantum_compute_mempool genesis: failed to insert default \
+                         plain Ising spec: {err:?}",
+                    );
+                }
             }
         }
     }
@@ -801,19 +818,80 @@ pub mod pallet {
         /// upgrade to storage version 1 get the same spec inserted exactly once
         /// if it is missing. If a chain already registered the canonical spec,
         /// this migration leaves its stored builder and counters untouched.
+        ///
+        /// The insert is treated as best-effort: a failure (e.g. a future VM
+        /// that rejects empty validation/transform programs) emits a defensive
+        /// log and still bumps the storage version so this code does not retry
+        /// every block. Operators can backfill via root `register_job_spec`.
         fn on_runtime_upgrade() -> Weight {
             let on_chain = Pallet::<T>::on_chain_storage_version();
             if on_chain >= STORAGE_VERSION {
                 return T::DbWeight::get().reads(1);
             }
 
-            if !JobSpecs::<T>::contains_key(T::DefaultIsingSpecId::get()) {
-                Self::insert_default_ising_spec(T::DefaultJobSpecBuilder::get(), false)
-                    .expect("canonical default plain Ising job spec is valid");
-            }
+            let spec_id = T::DefaultIsingSpecId::get();
+            let inserted = if JobSpecs::<T>::contains_key(spec_id) {
+                false
+            } else {
+                match Self::insert_default_ising_spec(T::DefaultJobSpecBuilder::get(), false) {
+                    Ok(_) => true,
+                    Err(err) => {
+                        frame_support::defensive!(
+                            "on_runtime_upgrade: failed to seed default Ising spec",
+                            err
+                        );
+                        false
+                    }
+                }
+            };
 
             STORAGE_VERSION.put::<Pallet<T>>();
-            T::DbWeight::get().reads_writes(2, 2)
+
+            if inserted {
+                // 1 read (storage version) + 1 read (outer contains_key) +
+                // 1 read (inner contains_key in insert_job_spec)
+                // + 1 write (JobSpecs insert) + 1 write (storage version).
+                T::DbWeight::get().reads_writes(3, 2)
+            } else {
+                // 1 read (storage version) + 1 read (outer contains_key)
+                // + 1 write (storage version).
+                T::DbWeight::get().reads_writes(2, 1)
+            }
+        }
+
+        #[cfg(feature = "try-runtime")]
+        fn pre_upgrade() -> Result<alloc::vec::Vec<u8>, sp_runtime::TryRuntimeError> {
+            use codec::Encode;
+            let pre_existed = JobSpecs::<T>::contains_key(T::DefaultIsingSpecId::get());
+            Ok(pre_existed.encode())
+        }
+
+        #[cfg(feature = "try-runtime")]
+        fn post_upgrade(state: alloc::vec::Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
+            use codec::Decode;
+            let pre_existed = bool::decode(&mut &state[..])
+                .map_err(|_| sp_runtime::TryRuntimeError::Other("pre_upgrade state decode"))?;
+            ensure!(
+                Pallet::<T>::on_chain_storage_version() >= STORAGE_VERSION,
+                sp_runtime::TryRuntimeError::Other("storage version not bumped"),
+            );
+            let spec_id = T::DefaultIsingSpecId::get();
+            ensure!(
+                JobSpecs::<T>::contains_key(spec_id),
+                sp_runtime::TryRuntimeError::Other("default Ising spec missing after migration"),
+            );
+            if !pre_existed {
+                let spec = JobSpecs::<T>::get(spec_id).ok_or(
+                    sp_runtime::TryRuntimeError::Other("spec disappeared between checks"),
+                )?;
+                ensure!(
+                    spec.builder == T::DefaultJobSpecBuilder::get(),
+                    sp_runtime::TryRuntimeError::Other(
+                        "default Ising spec builder mismatch after migration",
+                    ),
+                );
+            }
+            Ok(())
         }
     }
 

@@ -340,3 +340,18 @@ impl pallet_quantum_pow::Config for Runtime {
     type CurveCHardMilli = QuantumPowCurveCHardMilli;
     type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Catches typos and silent address drift in the hardcoded SS58 string.
+    /// Without this, a malformed constant would only surface as a panic inside
+    /// `on_runtime_upgrade` on a live chain — a chain-bricking failure mode.
+    #[test]
+    fn default_job_spec_builder_ss58_decodes() {
+        let parsed = AccountId::from_ss58check(QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58)
+            .expect("hardcoded SS58 must decode");
+        assert_eq!(parsed, QuantumDefaultJobSpecBuilder::get());
+    }
+}
