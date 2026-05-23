@@ -20,7 +20,8 @@ mod tests;
 
 pub use weights::*;
 
-use frame_support::traits::Currency;
+use core::marker::PhantomData;
+use frame_support::traits::{Currency, Get};
 
 type AccountIdOf<T> = <T as frame_system::Config>::AccountId;
 type BlockNumberOf<T> = frame_system::pallet_prelude::BlockNumberFor<T>;
@@ -66,6 +67,32 @@ type WinnerSummariesOf<T> = frame_support::pallet_prelude::BoundedVec<
 >;
 type StoredResultOf<T> = types::StoredResult<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 
+/// Canonical SDK-facing plain Ising job spec name.
+///
+/// The full canonical spec tuple is:
+///
+/// - `name = b"plain-ising-v1"`
+/// - `formulation = Formulation::Ising`
+/// - `validation_program = None`
+/// - `transform_program = None`
+///
+/// `DefaultIsingSpecId` is the runtime hash of the SCALE-encoded tuple
+/// `(name, formulation, validation_program, transform_program)`. If any
+/// tuple field changes, update the pinned hash test and SDK docs together.
+pub const DEFAULT_ISING_SPEC_NAME: &[u8] = b"plain-ising-v1";
+
+/// Pallet-constant provider for the canonical plain Ising `spec_id`.
+///
+/// This is intentionally generic over the runtime because the concrete hash
+/// type and hasher come from `frame_system::Config`.
+pub struct CanonicalDefaultIsingSpecId<T>(PhantomData<T>);
+
+impl<T: Config> Get<<T as frame_system::Config>::Hash> for CanonicalDefaultIsingSpecId<T> {
+    fn get() -> <T as frame_system::Config>::Hash {
+        Pallet::<T>::default_ising_spec_id()
+    }
+}
+
 #[frame_support::pallet]
 pub mod pallet {
     use super::*;
@@ -73,7 +100,7 @@ pub mod pallet {
     use alloc::vec::Vec;
     use frame_support::{
         pallet_prelude::*,
-        traits::{ExistenceRequirement::AllowDeath, ReservableCurrency},
+        traits::{ExistenceRequirement::AllowDeath, ReservableCurrency, StorageVersion},
     };
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
@@ -81,7 +108,11 @@ pub mod pallet {
     };
     use sp_runtime::traits::{Hash as _, SaturatedConversion, Saturating, Zero};
 
+    /// Storage version that introduces the canonical default plain Ising spec.
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
     #[pallet::pallet]
+    #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
 
     #[pallet::config]
@@ -115,9 +146,40 @@ pub mod pallet {
         /// needs stronger archival or callback accountability guarantees.
         #[pallet::constant]
         type ResultTtlBlocks: Get<BlockNumberFor<Self>>;
+        #[pallet::constant]
+        /// Canonical plain Ising job spec id exposed through metadata for SDKs.
+        type DefaultIsingSpecId: Get<Self::Hash>;
+
+        /// Account recorded as the builder when the runtime migration backfills
+        /// the canonical default spec on already-running chains.
+        type DefaultJobSpecBuilder: Get<Self::AccountId>;
 
         type VM: xqvm::QuantumVm<Self::AccountId, BalanceOf<Self>, Self::Hash>;
         type WeightInfo: WeightInfo;
+    }
+
+    /// Genesis inputs for seeding team-controlled job specs.
+    ///
+    /// v1 only seeds the canonical default plain Ising spec. Additional
+    /// blessed specs should be registered by root after genesis.
+    #[pallet::genesis_config]
+    #[derive(frame_support::DefaultNoBound)]
+    pub struct GenesisConfig<T: Config> {
+        /// Builder account recorded on the canonical default plain Ising spec.
+        ///
+        /// `None` keeps genesis empty, which is useful for tests that exercise
+        /// registration or migration paths directly.
+        pub default_ising_spec_builder: Option<T::AccountId>,
+    }
+
+    #[pallet::genesis_build]
+    impl<T: Config> BuildGenesisConfig for GenesisConfig<T> {
+        fn build(&self) {
+            if let Some(builder) = &self.default_ising_spec_builder {
+                Pallet::<T>::insert_default_ising_spec(builder.clone(), false)
+                    .expect("canonical default plain Ising job spec is valid");
+            }
+        }
     }
 
     #[pallet::storage]
@@ -316,41 +378,30 @@ pub mod pallet {
 
         #[pallet::call_index(2)]
         #[pallet::weight(<T as Config>::WeightInfo::register_job_spec())]
+        /// Register a team-controlled job spec.
+        ///
+        /// This is root-only because registered specs are intended to be
+        /// blessed protocol/team templates. The builder is explicit because a
+        /// sudo-dispatched call reaches this pallet as `Root`, not as the sudo
+        /// account's signed origin.
         pub fn register_job_spec(
             origin: OriginFor<T>,
+            builder: T::AccountId,
             name: BoundedVec<u8, ConstU32<128>>,
             formulation: types::Formulation,
             validation_program: Option<T::Hash>,
             transform_program: Option<T::Hash>,
         ) -> DispatchResult {
-            let builder = ensure_signed(origin)?;
-            let spec_id = T::Hashing::hash_of(&(
-                name.clone(),
+            ensure_root(origin)?;
+            Self::insert_job_spec(
+                builder,
+                name,
                 formulation,
                 validation_program,
                 transform_program,
-            ));
-            ensure!(
-                !JobSpecs::<T>::contains_key(&spec_id),
-                Error::<T>::JobSpecAlreadyExists
-            );
-            T::VM::validate_programs(validation_program.as_ref(), transform_program.as_ref())?;
-
-            JobSpecs::<T>::insert(
-                spec_id,
-                JobSpecOf::<T> {
-                    builder: builder.clone(),
-                    name,
-                    formulation,
-                    validation_program,
-                    transform_program,
-                    registered_at: frame_system::Pallet::<T>::block_number(),
-                    total_orders: 0,
-                    successful_orders: 0,
-                },
-            );
-
-            Self::deposit_event(Event::JobSpecRegistered { spec_id, builder });
+                frame_system::Pallet::<T>::block_number(),
+                true,
+            )?;
             Ok(())
         }
 
@@ -742,11 +793,138 @@ pub mod pallet {
         }
     }
 
+    #[pallet::hooks]
+    impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
+        /// Backfill the canonical default plain Ising spec on existing chains.
+        ///
+        /// New chains receive the spec through genesis. Existing chains that
+        /// upgrade to storage version 1 get the same spec inserted exactly once
+        /// if it is missing. If a chain already registered the canonical spec,
+        /// this migration leaves its stored builder and counters untouched.
+        fn on_runtime_upgrade() -> Weight {
+            let on_chain = Pallet::<T>::on_chain_storage_version();
+            if on_chain >= STORAGE_VERSION {
+                return T::DbWeight::get().reads(1);
+            }
+
+            if !JobSpecs::<T>::contains_key(T::DefaultIsingSpecId::get()) {
+                Self::insert_default_ising_spec(T::DefaultJobSpecBuilder::get(), false)
+                    .expect("canonical default plain Ising job spec is valid");
+            }
+
+            STORAGE_VERSION.put::<Pallet<T>>();
+            T::DbWeight::get().reads_writes(2, 2)
+        }
+    }
+
     impl<T: Config> Pallet<T> {
+        /// Return the bounded canonical default plain Ising spec name.
+        ///
+        /// This is the `name` component of the canonical tuple documented on
+        /// `DEFAULT_ISING_SPEC_NAME`.
+        pub fn default_ising_spec_name() -> BoundedVec<u8, ConstU32<128>> {
+            BoundedVec::try_from(DEFAULT_ISING_SPEC_NAME.to_vec())
+                .expect("default Ising spec name is within bound")
+        }
+
+        /// Derive the canonical default plain Ising job spec id.
+        ///
+        /// The hash input is exactly the SCALE-encoded tuple:
+        /// `(b"plain-ising-v1", Formulation::Ising, None, None)`.
+        pub fn default_ising_spec_id() -> T::Hash {
+            Self::job_spec_id(
+                &Self::default_ising_spec_name(),
+                types::Formulation::Ising,
+                None,
+                None,
+            )
+        }
+
         /// Read a persisted poll result without exposing raw storage access as
         /// the pallet’s external contract.
         pub fn result_for_order(order_id: u64) -> Option<StoredResultOf<T>> {
             OrderResults::<T>::get(order_id)
+        }
+
+        /// Derive the storage key hash for a job spec tuple.
+        ///
+        /// All spec registration paths use this helper so genesis, migration,
+        /// and the root extrinsic agree on `spec_id` derivation.
+        fn job_spec_id(
+            name: &BoundedVec<u8, ConstU32<128>>,
+            formulation: types::Formulation,
+            validation_program: Option<T::Hash>,
+            transform_program: Option<T::Hash>,
+        ) -> T::Hash {
+            T::Hashing::hash_of(&(
+                name.clone(),
+                formulation,
+                validation_program,
+                transform_program,
+            ))
+        }
+
+        /// Insert the canonical default plain Ising spec.
+        ///
+        /// `builder` is stored as attribution on the resulting `JobSpec`.
+        /// `emit_event` is `false` for genesis/migration and `true` only when
+        /// this helper is reused by an extrinsic path.
+        fn insert_default_ising_spec(
+            builder: T::AccountId,
+            emit_event: bool,
+        ) -> Result<T::Hash, DispatchError> {
+            Self::insert_job_spec(
+                builder,
+                Self::default_ising_spec_name(),
+                types::Formulation::Ising,
+                None,
+                None,
+                frame_system::Pallet::<T>::block_number(),
+                emit_event,
+            )
+        }
+
+        /// Validate and insert a job spec with consistent duplicate handling.
+        ///
+        /// This is the single write path for job specs. It computes the
+        /// `spec_id`, rejects duplicates, asks the VM to validate referenced
+        /// programs, writes `JobSpecs`, and optionally emits
+        /// `JobSpecRegistered`.
+        fn insert_job_spec(
+            builder: T::AccountId,
+            name: BoundedVec<u8, ConstU32<128>>,
+            formulation: types::Formulation,
+            validation_program: Option<T::Hash>,
+            transform_program: Option<T::Hash>,
+            registered_at: BlockNumberFor<T>,
+            emit_event: bool,
+        ) -> Result<T::Hash, DispatchError> {
+            let spec_id =
+                Self::job_spec_id(&name, formulation, validation_program, transform_program);
+            ensure!(
+                !JobSpecs::<T>::contains_key(&spec_id),
+                Error::<T>::JobSpecAlreadyExists
+            );
+            T::VM::validate_programs(validation_program.as_ref(), transform_program.as_ref())?;
+
+            JobSpecs::<T>::insert(
+                spec_id,
+                JobSpecOf::<T> {
+                    builder: builder.clone(),
+                    name,
+                    formulation,
+                    validation_program,
+                    transform_program,
+                    registered_at,
+                    total_orders: 0,
+                    successful_orders: 0,
+                },
+            );
+
+            if emit_event {
+                Self::deposit_event(Event::JobSpecRegistered { spec_id, builder });
+            }
+            Ok(spec_id)
         }
 
         fn ensure_valid_mode(mode: &JobModeOf<T>) -> Result<(), DispatchError> {

@@ -1,7 +1,11 @@
 use super::mock::*;
 use crate::types::{Formulation, JobMode, MinerType, ResultDelivery, RewardResolution};
-use crate::{Event as QuantumComputeMempoolEvent, JobOrders, OrderFrontRunner, Solvers};
-use frame_support::{assert_noop, assert_ok, BoundedVec};
+use crate::{Event as QuantumComputeMempoolEvent, JobOrders, JobSpecs, OrderFrontRunner, Solvers};
+use frame_support::{
+    assert_noop, assert_ok,
+    traits::{Hooks, StorageVersion},
+    BoundedVec,
+};
 use sp_runtime::traits::Hash;
 
 fn bounded<T, S>(items: Vec<T>) -> BoundedVec<T, S>
@@ -55,7 +59,8 @@ fn weighted_params() -> crate::IsingParamsOf<Test> {
 fn register_spec() -> <Test as frame_system::Config>::Hash {
     let (name, formulation, validation_program, transform_program) = sample_spec();
     assert_ok!(QuantumComputeMempool::register_job_spec(
-        RuntimeOrigin::signed(1),
+        RuntimeOrigin::root(),
+        1,
         name.clone(),
         formulation,
         validation_program,
@@ -67,6 +72,17 @@ fn register_spec() -> <Test as frame_system::Config>::Hash {
         validation_program,
         transform_program,
     ))
+}
+
+#[test]
+fn default_ising_spec_id_is_pinned() {
+    new_test_ext().execute_with(|| {
+        let spec_id = QuantumComputeMempool::default_ising_spec_id();
+        assert_eq!(
+            format!("{spec_id:?}"),
+            "0x8f46f3a31321d1d093314fc769c42cbe7a83d71a0b69e6571a0f68e2a04067f0",
+        );
+    });
 }
 
 #[test]
@@ -88,7 +104,8 @@ fn register_job_spec_invokes_vm_validate_programs() {
         let (name, formulation, validation_program, transform_program) = sample_spec();
 
         assert_ok!(QuantumComputeMempool::register_job_spec(
-            RuntimeOrigin::signed(1),
+            RuntimeOrigin::root(),
+            1,
             name,
             formulation,
             validation_program,
@@ -100,6 +117,25 @@ fn register_job_spec_invokes_vm_validate_programs() {
 }
 
 #[test]
+fn signed_register_job_spec_is_rejected() {
+    new_test_ext().execute_with(|| {
+        let (name, formulation, validation_program, transform_program) = sample_spec();
+
+        assert_noop!(
+            QuantumComputeMempool::register_job_spec(
+                RuntimeOrigin::signed(1),
+                1,
+                name,
+                formulation,
+                validation_program,
+                transform_program,
+            ),
+            sp_runtime::DispatchError::BadOrigin
+        );
+    });
+}
+
+#[test]
 fn register_job_spec_propagates_vm_validation_error() {
     new_test_ext().execute_with(|| {
         set_vm_fail_validate_programs(true);
@@ -107,13 +143,91 @@ fn register_job_spec_propagates_vm_validation_error() {
 
         assert_noop!(
             QuantumComputeMempool::register_job_spec(
-                RuntimeOrigin::signed(1),
+                RuntimeOrigin::root(),
+                1,
                 name,
                 formulation,
                 validation_program,
                 transform_program,
             ),
             sp_runtime::DispatchError::Other("vm-validate-programs")
+        );
+    });
+}
+
+#[test]
+fn genesis_seeds_default_ising_spec() {
+    new_test_ext_with_default_ising_spec(true).execute_with(|| {
+        let spec_id = QuantumComputeMempool::default_ising_spec_id();
+        let spec = JobSpecs::<Test>::get(spec_id).unwrap();
+        assert_eq!(spec.builder, 1);
+        assert_eq!(spec.name, QuantumComputeMempool::default_ising_spec_name());
+        assert_eq!(spec.formulation, Formulation::Ising);
+        assert_eq!(spec.validation_program, None);
+        assert_eq!(spec.transform_program, None);
+    });
+}
+
+#[test]
+fn propose_job_works_with_genesis_default_ising_spec() {
+    new_test_ext_with_default_ising_spec(true).execute_with(|| {
+        let spec_id = QuantumComputeMempool::default_ising_spec_id();
+
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            10,
+            5,
+            ResultDelivery::OnChainOnly,
+        ));
+
+        let order = JobOrders::<Test>::get(0).unwrap();
+        assert_eq!(order.spec_id, spec_id);
+        assert_eq!(order.proposer, 1);
+    });
+}
+
+#[test]
+fn runtime_upgrade_migration_inserts_default_ising_spec_when_missing() {
+    new_test_ext().execute_with(|| {
+        StorageVersion::new(0).put::<QuantumComputeMempool>();
+        assert!(JobSpecs::<Test>::get(QuantumComputeMempool::default_ising_spec_id()).is_none());
+
+        let _weight = QuantumComputeMempool::on_runtime_upgrade();
+
+        let spec = JobSpecs::<Test>::get(QuantumComputeMempool::default_ising_spec_id()).unwrap();
+        assert_eq!(spec.builder, 1);
+        assert_eq!(
+            StorageVersion::get::<QuantumComputeMempool>(),
+            StorageVersion::new(1)
+        );
+    });
+}
+
+#[test]
+fn runtime_upgrade_migration_keeps_existing_default_ising_spec() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumComputeMempool::register_job_spec(
+            RuntimeOrigin::root(),
+            4,
+            QuantumComputeMempool::default_ising_spec_name(),
+            Formulation::Ising,
+            None,
+            None,
+        ));
+        StorageVersion::new(0).put::<QuantumComputeMempool>();
+
+        let _weight = QuantumComputeMempool::on_runtime_upgrade();
+
+        let spec = JobSpecs::<Test>::get(QuantumComputeMempool::default_ising_spec_id()).unwrap();
+        assert_eq!(spec.builder, 4);
+        assert_eq!(
+            StorageVersion::get::<QuantumComputeMempool>(),
+            StorageVersion::new(1)
         );
     });
 }

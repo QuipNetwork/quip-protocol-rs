@@ -75,10 +75,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // `pallet_session` (idx 12). New dispatchables, events, and storage entries
     // change the runtime metadata; the signed-extrinsic wire format is
     // unchanged, so `transaction_version` stays at 2.
-    spec_version: 102,
+    // Bumped to 103 for QUI-567: adds the canonical default plain Ising job
+    // spec, root-gates `QuantumComputeMempool::register_job_spec`, and changes
+    // that call's argument encoding, so `transaction_version` moves to 3.
+    spec_version: 103,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
-    transaction_version: 2,
+    transaction_version: 3,
     system_version: 1,
 };
 

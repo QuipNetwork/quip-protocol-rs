@@ -26,7 +26,7 @@
 // Substrate and Polkadot dependencies
 use frame_support::{
     derive_impl, parameter_types,
-    traits::{ConstU128, ConstU32, ConstU64, ConstU8, VariantCountOf},
+    traits::{ConstU128, ConstU32, ConstU64, ConstU8, Get, VariantCountOf},
     weights::{
         constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
         IdentityFee, Weight,
@@ -34,6 +34,7 @@ use frame_support::{
 };
 use frame_system::limits::{BlockLength, BlockWeights};
 use pallet_transaction_payment::{ConstFeeMultiplier, FungibleAdapter, Multiplier};
+use sp_core::crypto::Ss58Codec;
 use sp_runtime::{
     traits::{ConvertInto, One, OpaqueKeys},
     Perbill,
@@ -287,6 +288,23 @@ parameter_types! {
     pub const QuantumPowCurveCHardMilli: u32 = 800;
 }
 
+/// Account attributed as the builder for migration-inserted default job specs.
+///
+/// Genesis presets can record each preset's actual root account directly, but
+/// runtime migrations need one chain-independent account baked into the
+/// runtime. Operator 1 is the current quip-testnet sudo holder.
+pub const QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58: &str =
+    "5GZMoWFMoNGLZKT1tduLMQQQC7dBQo4MHkYqriCdDATXqaYi";
+
+pub struct QuantumDefaultJobSpecBuilder;
+
+impl Get<AccountId> for QuantumDefaultJobSpecBuilder {
+    fn get() -> AccountId {
+        AccountId::from_ss58check(QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58)
+            .expect("default job spec builder SS58 address is valid")
+    }
+}
+
 impl pallet_quantum_compute_mempool::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type Currency = Balances;
@@ -299,6 +317,8 @@ impl pallet_quantum_compute_mempool::Config for Runtime {
     type MaxBlockWait = QuantumMaxBlockWait;
     type MinReward = QuantumMinReward;
     type ResultTtlBlocks = QuantumResultTtlBlocks;
+    type DefaultIsingSpecId = pallet_quantum_compute_mempool::CanonicalDefaultIsingSpecId<Runtime>;
+    type DefaultJobSpecBuilder = QuantumDefaultJobSpecBuilder;
     type VM = pallet_quantum_compute_mempool::xqvm::NoOpVm;
     type WeightInfo = pallet_quantum_compute_mempool::weights::SubstrateWeight<Runtime>;
 }
