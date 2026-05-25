@@ -16,8 +16,8 @@
 // limitations under the License.
 
 use crate::{
-    AccountId, BalancesConfig, RuntimeGenesisConfig, SessionConfig, SessionKeys, SudoConfig,
-    BABE_GENESIS_EPOCH_CONFIG,
+    AccountId, BalancesConfig, QuantumComputeMempoolConfig, RuntimeGenesisConfig, SessionConfig,
+    SessionKeys, SudoConfig, BABE_GENESIS_EPOCH_CONFIG,
 };
 use alloc::{vec, vec::Vec};
 use frame_support::build_struct_json_patch;
@@ -151,6 +151,10 @@ fn testnet_genesis(
                 })
                 .collect::<Vec<_>>(),
             ..Default::default()
+        },
+        // Must match QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58 on the canonical testnet
+        quantum_compute_mempool: QuantumComputeMempoolConfig {
+            default_ising_spec_builder: Some(root.clone()),
         },
         sudo: SudoConfig { key: Some(root) },
     })
