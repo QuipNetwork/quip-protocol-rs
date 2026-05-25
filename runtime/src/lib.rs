@@ -75,10 +75,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // `pallet_session` (idx 12). New dispatchables, events, and storage entries
     // change the runtime metadata; the signed-extrinsic wire format is
     // unchanged, so `transaction_version` stays at 2.
-    spec_version: 102,
+    // Bumped to 103 for QUI-567: adds the canonical default plain Ising job
+    // spec, root-gates `QuantumComputeMempool::register_job_spec`, and changes
+    // that call's argument encoding, so `transaction_version` moves to 3.
+    spec_version: 103,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
-    transaction_version: 2,
+    transaction_version: 3,
     system_version: 1,
 };
 
@@ -251,6 +254,20 @@ mod tests {
 
             assert!(checked.is_ok());
         });
+    }
+
+    /// Confirms the runtime's `CanonicalDefaultIsingSpecId` resolves to the
+    /// same hash that the pallet's mock test pins. SDKs and downstream docs
+    /// embed this hash; a mock-vs-runtime divergence would silently break
+    /// every client that hardcodes it.
+    #[test]
+    fn default_ising_spec_id_matches_pinned_hash() {
+        use frame_support::traits::Get as _;
+        let id = <Runtime as pallet_quantum_compute_mempool::Config>::DefaultIsingSpecId::get();
+        assert_eq!(
+            format!("{id:?}"),
+            "0x8f46f3a31321d1d093314fc769c42cbe7a83d71a0b69e6571a0f68e2a04067f0",
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use crate as pallet_quantum_compute_mempool;
 use frame_support::{
     derive_impl, parameter_types,
-    traits::{ConstU128, ConstU32},
+    traits::{ConstU128, ConstU32, ConstU64},
 };
 use sp_runtime::BuildStorage;
 use std::cell::RefCell;
@@ -177,11 +177,19 @@ impl pallet_quantum_compute_mempool::Config for Test {
     type MaxBlockWait = MaxBlockWait;
     type MinReward = MinReward;
     type ResultTtlBlocks = ResultTtlBlocks;
+    type DefaultIsingSpecId = pallet_quantum_compute_mempool::CanonicalDefaultIsingSpecId<Test>;
+    type DefaultJobSpecBuilder = ConstU64<1>;
     type VM = TestVm;
     type WeightInfo = ();
 }
 
 pub fn new_test_ext() -> sp_io::TestExternalities {
+    new_test_ext_with_default_ising_spec(false)
+}
+
+pub fn new_test_ext_with_default_ising_spec(
+    seed_default_ising_spec: bool,
+) -> sp_io::TestExternalities {
     let mut storage = frame_system::GenesisConfig::<Test>::default()
         .build_storage()
         .unwrap();
@@ -194,6 +202,12 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
             (4, 1_000_000),
         ],
         dev_accounts: None,
+    }
+    .assimilate_storage(&mut storage)
+    .unwrap();
+
+    pallet_quantum_compute_mempool::GenesisConfig::<Test> {
+        default_ising_spec_builder: seed_default_ising_spec.then_some(1),
     }
     .assimilate_storage(&mut storage)
     .unwrap();

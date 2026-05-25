@@ -80,7 +80,8 @@ fn register_spec_for<T: Config>(builder: &T::AccountId) -> T::Hash {
     let (name, formulation, validation_program, transform_program) = sample_spec::<T>();
     let spec_id = sample_spec_id::<T>(&name, formulation, validation_program, transform_program);
     assert!(QuantumComputeMempool::<T>::register_job_spec(
-        RawOrigin::Signed(builder.clone()).into(),
+        RawOrigin::Root.into(),
+        builder.clone(),
         name,
         formulation,
         validation_program,
@@ -161,7 +162,8 @@ mod benchmarks {
 
         #[extrinsic_call]
         QuantumComputeMempool::register_job_spec(
-            RawOrigin::Signed(caller.clone()),
+            RawOrigin::Root,
+            caller.clone(),
             name,
             formulation,
             validation_program,
