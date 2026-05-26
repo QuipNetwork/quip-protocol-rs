@@ -1,4 +1,4 @@
-use crate::{mock::*, Event};
+use crate::{mock::*, Error, Event};
 use frame_support::{assert_noop, assert_ok};
 use sp_runtime::DispatchError;
 
@@ -34,5 +34,17 @@ fn non_root_cannot_mint() {
             FaucetOps::mint(RuntimeOrigin::signed(1), 2, 500),
             DispatchError::BadOrigin
         );
+    });
+}
+
+#[test]
+fn mint_rejects_zero_amount() {
+    new_test_ext().execute_with(|| {
+        assert_noop!(
+            FaucetOps::mint(RuntimeOrigin::root(), 2, 0),
+            Error::<Test>::ZeroAmount
+        );
+        // No Minted event should have been emitted; the account stays empty.
+        assert_eq!(Balances::free_balance(2), 0);
     });
 }

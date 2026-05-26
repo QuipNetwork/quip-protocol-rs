@@ -28,33 +28,62 @@ type BalanceOf<T> =
 
 type NodesOf<T> = frame_support::pallet_prelude::BoundedVec<u32, <T as Config>::MaxNodes>;
 type EdgesOf<T> = frame_support::pallet_prelude::BoundedVec<(u32, u32), <T as Config>::MaxEdges>;
-type FieldsOf<T> = frame_support::pallet_prelude::BoundedVec<i32, <T as Config>::MaxNodes>;
-type SolutionsOf<T> = frame_support::pallet_prelude::BoundedVec<
-    frame_support::pallet_prelude::BoundedVec<i8, <T as Config>::MaxNodes>,
-    <T as Config>::MaxSolutions,
+type AllowedValueSetOf<T> = frame_support::pallet_prelude::BoundedVec<
+    quantum_validation::MilliValue,
+    <T as Config>::MaxAllowedValues,
 >;
-type QuantumProofOf<T> = types::QuantumProof<NodesOf<T>, EdgesOf<T>, SolutionsOf<T>, FieldsOf<T>>;
-type TopologyMetaOf<T> = types::TopologyMeta<NodesOf<T>, EdgesOf<T>, BlockNumberOf<T>>;
+type PackedSpinBytesOf<T> = frame_support::pallet_prelude::BoundedVec<u8, <T as Config>::MaxNodes>;
+type PackedSolutionsOf<T> =
+    frame_support::pallet_prelude::BoundedVec<PackedSpinBytesOf<T>, <T as Config>::MaxSolutions>;
+type QuantumProofOf<T> = types::QuantumProof<PackedSolutionsOf<T>>;
+type TopologyMetaOf<T> =
+    types::TopologyMeta<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>, BlockNumberOf<T>>;
 type MinerInfoOf<T> = types::MinerInfo<BalanceOf<T>, BlockNumberOf<T>>;
 type ProofRecordOf<T> = types::ProofRecord<AccountIdOf<T>, BlockNumberOf<T>>;
-type MiningSnapshotOf<T> = types::MiningSnapshot<
-    BlockNumberOf<T>,
-    <T as frame_system::Config>::Hash,
-    NodesOf<T>,
-    EdgesOf<T>,
->;
+type MiningSnapshotOf<T> = types::MiningSnapshot<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>>;
+type WinningSolutionOf<T> = types::WinningSolution<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
+type WinningSolutionWithNonceOf<T> =
+    types::WinningSolutionWithNonce<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 
 sp_api::decl_runtime_apis! {
-    pub trait QuantumPowApi<BlockNumber, Hash, Nodes, Edges>
+    pub trait QuantumPowApi<BlockNumber, AccountId, Balance, Nodes, Edges, AllowedValues>
     where
         BlockNumber: codec::Codec,
-        Hash: codec::Codec,
+        AccountId: codec::Codec,
+        Balance: codec::Codec,
         Nodes: codec::Codec,
         Edges: codec::Codec,
+        AllowedValues: codec::Codec,
     {
         fn mining_snapshot(topology_hash: Option<sp_core::H256>) -> Option<
-            crate::types::MiningSnapshot<BlockNumber, Hash, Nodes, Edges>
+            crate::types::MiningSnapshot<Nodes, Edges, AllowedValues>
         >;
+
+        /// Look up a registered topology by hash (nodes, edges, allowed value
+        /// sets). Returns `None` if the hash has never been registered.
+        fn topology_meta(hash: sp_core::H256) -> Option<
+            crate::types::TopologyMeta<Nodes, Edges, AllowedValues, BlockNumber>
+        >;
+
+        /// Winning solution for `block_number`, augmented with its derived
+        /// nonce. The nonce is reconstructed from the persisted
+        /// `last_proof_block_hash`, miner, and salt — no `frame_system::block_hash`
+        /// lookup needed, so this stays correct even for blocks pruned beyond
+        /// `BlockHashCount`. Returns `None` if the block had no accepted
+        /// proof (e.g. genesis, or any block where no `submit_proof` cleared
+        /// difficulty).
+        fn winning_solution(block_number: BlockNumber) -> Option<
+            crate::types::WinningSolutionWithNonce<AccountId, Balance, BlockNumber>
+        >;
+
+        /// Live difficulty threshold a miner has to clear *right now*.
+        ///
+        /// Differs from `api.query.quantumPow.difficulty()` (the raw storage
+        /// value): that one is the post-last-adjust baseline and does *not*
+        /// reflect decay applied since the last winning proof. This API
+        /// returns the decayed value, matching what `submit_proof` validation
+        /// will actually require.
+        fn current_difficulty() -> crate::types::DifficultyConfig;
     }
 }
 
@@ -67,11 +96,13 @@ pub mod pallet {
     use frame_support::{pallet_prelude::*, traits::ReservableCurrency};
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
-        calculate_diversity, derive_nonce, energy_of_solution, expected_gse, generate_ising_model,
-        select_diverse, validate_spins, validate_topology_consistency,
+        calculate_diversity, derive_nonce, energy_of_solution, generate_ising_model,
+        packed::{packed_solution_byte_len, unpack_solution},
+        select_diverse, validate_spins, validate_topology_consistency, AllowedValueSpec,
+        MilliValue,
     };
     use sp_core::H256;
-    use sp_runtime::traits::{SaturatedConversion, Saturating, Zero};
+    use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
 
     #[pallet::pallet]
     pub struct Pallet<T>(_);
@@ -91,6 +122,12 @@ pub mod pallet {
         type MaxSolutions: Get<u32>;
         #[pallet::constant]
         type MinNodes: Get<u32>;
+        /// Upper bound on |allowed_h_values|, |allowed_j_values|, and
+        /// |allowed_spin_values| per topology. Small (e.g., 32) is plenty —
+        /// these are discrete sets like `{-1, +1}` or `{-6, 0, 6}`, not
+        /// per-node arrays.
+        #[pallet::constant]
+        type MaxAllowedValues: Get<u32>;
         #[pallet::constant]
         type EpochLength: Get<BlockNumberFor<Self>>;
         #[pallet::constant]
@@ -99,6 +136,22 @@ pub mod pallet {
         type BlockReward: Get<BalanceOf<Self>>;
         #[pallet::constant]
         type MaxProofsPerBlock: Get<u32>;
+
+        /// Per-mille `c` value for the easiest (least-negative) end of the
+        /// energy curve. The difficulty curve is calibrated against the
+        /// default topology's `(num_nodes, num_edges)` and these three c
+        /// values; see `crate::difficulty::EnergyCurve`.
+        #[pallet::constant]
+        type CurveCEasyMilli: Get<u32>;
+        /// Per-mille `c` value for the curve's knee (where motion is most
+        /// aggressive). Conventionally the canonical `c = 0.75` used by
+        /// `quantum_validation::expected_gse`.
+        #[pallet::constant]
+        type CurveCKneeMilli: Get<u32>;
+        /// Per-mille `c` value for the hardest (most-negative) end of the
+        /// energy curve.
+        #[pallet::constant]
+        type CurveCHardMilli: Get<u32>;
 
         type WeightInfo: WeightInfo;
     }
@@ -128,8 +181,33 @@ pub mod pallet {
     /// mixing wall-clock moments with block numbers.
     pub type LastProofBlock<T: Config> = StorageValue<_, BlockNumberFor<T>, ValueQuery>;
 
+    /// Hash of the block recorded in `LastProofBlock`. Captured lazily in
+    /// `on_initialize` of the *next* block (when `parent_hash()` first equals
+    /// `block_hash(LastProofBlock)`) and held in storage thereafter. Reading
+    /// from this storage value — instead of calling
+    /// `frame_system::block_hash(LastProofBlock)` directly — keeps the nonce
+    /// seed stable across the entire mining round, even if no proof clears
+    /// difficulty for longer than `BlockHashCount` (~25 minutes at 6s
+    /// blocks). Without this cache the seed would silently flip to the
+    /// zero hash once the ring buffer aged past the proof block.
+    #[pallet::storage]
+    pub type LastProofBlockHash<T: Config> = StorageValue<_, H256, ValueQuery>;
+
     #[pallet::storage]
     pub type BlockProofCount<T: Config> = StorageValue<_, u32, ValueQuery>;
+
+    /// Persisted record of each block's winning proof, written in
+    /// `on_finalize` alongside the `BlockWinner` event.
+    ///
+    /// Consumers derive the winning nonce by hashing
+    /// `(last_proof_block_hash, miner, salt)` with BLAKE3, or call the
+    /// `QuantumPowApi::winning_solution` runtime API which does it
+    /// server-side. `last_proof_block_hash` for each entry is the value the
+    /// round used at submission time, persisted in the `WinningSolution`
+    /// itself so re-derivation needs no chain-state lookup.
+    #[pallet::storage]
+    pub type WinningSolutions<T: Config> =
+        StorageMap<_, Blake2_128Concat, BlockNumberFor<T>, WinningSolutionOf<T>>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -154,7 +232,6 @@ pub mod pallet {
             energy_milli: i64,
             diversity_milli: u32,
             valid_solution_count: u32,
-            quality_milli: u32,
         },
         BlockWinner {
             miner: T::AccountId,
@@ -180,14 +257,51 @@ pub mod pallet {
         InsufficientEnergy,
         InsufficientDiversity,
         InsufficientSolutions,
-        QualityTooLow,
         ArithmeticOverflow,
+        /// One of the allowed value specs is empty or has inverted bounds.
+        EmptyAllowedValues,
+        /// An allowed value spec requires more bits per value than the
+        /// protocol supports (max 8 for indexed encodings).
+        EncodingTooWide,
+        /// A submitted packed solution did not have the byte length implied
+        /// by the topology's allowed_spin_values spec and node count.
+        PackedSolutionLengthMismatch,
+        /// A submitted packed solution contained a bit pattern that does not
+        /// map to any value in the allowed_spin_values spec.
+        InvalidEncodedSpin,
+        /// The topology's allowed_spin_values spec and node count combine to
+        /// require more packed-solution bytes than the runtime's MaxNodes
+        /// bound permits. Most often hit when a ContinuousRange spin spec
+        /// (32 bits per spin) is paired with more than `MaxNodes / 4` nodes,
+        /// which would leave the topology accepted but unmineable.
+        PackedSolutionTooLarge,
     }
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {
-        fn on_initialize(_n: BlockNumberFor<T>) -> Weight {
+        fn on_initialize(n: BlockNumberFor<T>) -> Weight {
             BlockProofCount::<T>::put(0);
+
+            // Capture `block_hash(LastProofBlock)` permanently as soon as it
+            // becomes available. The only place this hash is freshly known
+            // without depending on `frame_system::block_hash` (which ages
+            // out after `BlockHashCount` blocks) is `parent_hash()` of the
+            // very next block after the winning proof was finalized.
+            //
+            // Trigger conditions:
+            //   - `n > 0` and `LastProofBlock == n - 1`: this is the block
+            //     right after a fresh winning proof; `parent_hash()` is
+            //     exactly `block_hash(LastProofBlock)`.
+            //   - On the first block of any chain we also seed the cache
+            //     with the genesis hash so pre-proof nonce derivation
+            //     remains stable.
+            let last_proof_block = LastProofBlock::<T>::get();
+            let one: BlockNumberFor<T> = One::one();
+            if n == one || (n > one && last_proof_block.saturating_add(one) == n) {
+                let parent = frame_system::Pallet::<T>::parent_hash();
+                LastProofBlockHash::<T>::put(H256::from(Self::hash_to_bytes_32(parent)));
+            }
+
             <T as Config>::WeightInfo::register_miner()
         }
 
@@ -206,6 +320,15 @@ pub mod pallet {
             }
 
             let previous_proof_block = LastProofBlock::<T>::get();
+            // Capture the hash the just-won round actually used in its
+            // `derive_nonce` input. Read from the `LastProofBlockHash` cache
+            // (populated lazily in `on_initialize`) rather than calling
+            // `frame_system::block_hash(previous_proof_block)` directly: if
+            // the round ran longer than `BlockHashCount`, the live lookup
+            // would return the zero hash instead of the value miners
+            // actually used to derive their nonce.
+            let last_proof_block_hash = LastProofBlockHash::<T>::get();
+
             let mining_time_blocks = if previous_proof_block.is_zero() || n <= previous_proof_block
             {
                 T::EpochLength::get().saturated_into::<u64>()
@@ -214,13 +337,41 @@ pub mod pallet {
                     .saturated_into::<u64>()
             };
 
-            let next = crate::difficulty::adjust_on_proof(
-                Self::current_difficulty(n),
-                mining_time_blocks,
-                &(frame_system::Pallet::<T>::parent_hash(), &record.miner, n).encode(),
-            );
+            // Snapshot the live (decay-applied) threshold this proof had to
+            // clear before adjust_on_proof rewrites it. WinningSolutions stores
+            // this so explorers and miners can answer "what difficulty did
+            // block N actually clear?" without replaying decay client-side.
+            let active = Self::current_difficulty(n);
+            // Curve calibration MUST come from chain state (DefaultTopology),
+            // not from the winning proof. See `current_energy_curve` docs and
+            // GitLab issue #5 for the invariant rationale.
+            let next = match Self::current_energy_curve() {
+                Some(curve) => crate::difficulty::adjust_on_proof(
+                    active,
+                    mining_time_blocks,
+                    curve,
+                    &(frame_system::Pallet::<T>::parent_hash(), &record.miner, n).encode(),
+                ),
+                // Unreachable in normal operation: a proof would not have
+                // been submitted without a registered topology, and the
+                // first registration also seeds `DefaultTopology`.
+                None => active,
+            };
             Difficulty::<T>::put(next);
             LastProofBlock::<T>::put(n);
+
+            WinningSolutions::<T>::insert(
+                n,
+                types::WinningSolution {
+                    miner: record.miner.clone(),
+                    salt: record.salt,
+                    energy_milli: record.energy_milli,
+                    reward,
+                    submitted_at: record.submitted_at,
+                    difficulty: active,
+                    last_proof_block_hash,
+                },
+            );
 
             Self::deposit_event(Event::DifficultyUpdated { difficulty: next });
             Self::deposit_event(Event::BlockWinner {
@@ -280,12 +431,46 @@ pub mod pallet {
             origin: OriginFor<T>,
             nodes: NodesOf<T>,
             edges: EdgesOf<T>,
+            allowed_h_values: AllowedValueSpec<AllowedValueSetOf<T>>,
+            allowed_j_values: AllowedValueSpec<AllowedValueSetOf<T>>,
+            allowed_spin_values: AllowedValueSpec<AllowedValueSetOf<T>>,
         ) -> DispatchResult {
             ensure_root(origin)?;
 
             ensure!(
                 nodes.len() >= T::MinNodes::get() as usize,
                 Error::<T>::GraphTooSmall
+            );
+
+            // Validate each spec is non-empty and fits the protocol's bit-width
+            // cap. `bits_per_value` returns the per-variant errors that the
+            // pallet maps to dispatch errors.
+            Self::check_spec(&allowed_h_values)?;
+            Self::check_spec(&allowed_j_values)?;
+            Self::check_spec(&allowed_spin_values)?;
+
+            // Canonicalize Set ordering so the stored representation matches
+            // the order-independent topology hash. Without this, registering
+            // [a, b, c] and [b, a, c] in different orders hash to the same
+            // value but produce different deterministic puzzles from the same
+            // nonce.
+            let allowed_h_values = Self::canonicalize_spec(allowed_h_values)?;
+            let allowed_j_values = Self::canonicalize_spec(allowed_j_values)?;
+            let allowed_spin_values = Self::canonicalize_spec(allowed_spin_values)?;
+
+            // A submitted solution is a `BoundedVec<u8, MaxNodes>` per the
+            // PackedSpinBytesOf type alias. Indexed spin specs (Set,
+            // IntegerRange) pack <= 8 bits per spin so num_nodes spins always
+            // fit, but ContinuousRange uses 32 bits per spin (4 bytes), making
+            // any topology with num_nodes > MaxNodes/4 unmineable. Reject at
+            // registration so the operator gets a clear error instead of
+            // silently shipping a dead topology.
+            let packed_bytes =
+                packed_solution_byte_len(nodes.len(), &allowed_spin_values.as_slice())
+                    .map_err(|_| Error::<T>::InvalidTopology)?;
+            ensure!(
+                packed_bytes <= T::MaxNodes::get() as usize,
+                Error::<T>::PackedSolutionTooLarge
             );
 
             ensure!(
@@ -301,7 +486,13 @@ pub mod pallet {
                 Error::<T>::InvalidTopology
             );
 
-            let topology_hash = crate::topology::hash_topology(&nodes, &edges);
+            let topology_hash = crate::topology::hash_topology(
+                &nodes,
+                &edges,
+                &allowed_h_values.as_slice(),
+                &allowed_j_values.as_slice(),
+                &allowed_spin_values.as_slice(),
+            );
             ensure!(
                 !RegisteredTopologies::<T>::contains_key(topology_hash),
                 Error::<T>::TopologyAlreadyRegistered
@@ -312,6 +503,9 @@ pub mod pallet {
                 TopologyMetaOf::<T> {
                     nodes: nodes.clone(),
                     edges: edges.clone(),
+                    allowed_h_values,
+                    allowed_j_values,
+                    allowed_spin_values,
                     registered_at: frame_system::Pallet::<T>::block_number(),
                 },
             );
@@ -356,42 +550,45 @@ pub mod pallet {
                 !proof.solutions.is_empty(),
                 Error::<T>::NoSolutionsSubmitted
             );
+
+            // Topology lookup is the source of truth for nodes, edges, and the
+            // allowed value sets. The proof's `topology_hash` is the only
+            // identity claim; there are no `proof.nodes`/`proof.edges` to
+            // cross-check.
+            let topology = RegisteredTopologies::<T>::get(proof.topology_hash)
+                .ok_or(Error::<T>::TopologyNotRegistered)?;
             ensure!(
-                proof.nodes.len() >= T::MinNodes::get() as usize,
+                topology.nodes.len() >= T::MinNodes::get() as usize,
                 Error::<T>::GraphTooSmall
             );
-            ensure!(
-                RegisteredTopologies::<T>::contains_key(proof.topology_hash),
-                Error::<T>::TopologyNotRegistered
-            );
-            ensure!(
-                crate::topology::verify_topology_hash(
-                    proof.nodes.as_slice(),
-                    proof.edges.as_slice(),
-                    proof.topology_hash,
-                ),
-                Error::<T>::InvalidTopology
-            );
 
-            let block_number = frame_system::Pallet::<T>::block_number().saturated_into::<u32>();
-            let expected_nonce = derive_nonce(
-                &frame_system::Pallet::<T>::parent_hash().encode(),
-                &who.encode(),
-                block_number,
-                proof.salt.as_slice(),
-            );
+            // Nonce is bound to `block_hash(LastProofBlock)`, not to the
+            // executing block's number or parent hash. That value only
+            // changes when a new proof wins, so a miner's submission stays
+            // valid for as long as the current round runs — no txpool-delay
+            // race (the original bug). Read from the `LastProofBlockHash`
+            // cache rather than `frame_system::block_hash`, which falls off
+            // the ring buffer after `BlockHashCount` (~25 min) and would
+            // otherwise silently flip the nonce seed to zero for any round
+            // that runs longer than that window.
+            let last_proof_block_hash_bytes = LastProofBlockHash::<T>::get().0;
+            let miner_bytes = Self::account_to_bytes(&who);
+
+            let expected_nonce =
+                derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &proof.salt);
             ensure!(proof.nonce == expected_nonce, Error::<T>::InvalidNonce);
 
             let (h, j) = generate_ising_model(
                 proof.nonce,
-                proof.nodes.as_slice(),
-                proof.edges.as_slice(),
-                proof.h_values.as_slice(),
+                topology.nodes.as_slice(),
+                topology.edges.as_slice(),
+                &topology.allowed_h_values.as_slice(),
+                &topology.allowed_j_values.as_slice(),
             )
             .map_err(|_| Error::<T>::InvalidTopology)?;
 
             let current = Self::current_difficulty(frame_system::Pallet::<T>::block_number());
-            let validation = Self::validate_proof(&proof, &h, &j, &current)?;
+            let validation = Self::validate_proof(&proof, &topology, &h, &j, &current)?;
 
             ensure!(
                 validation.best_energy_milli < current.max_energy_milli,
@@ -405,10 +602,6 @@ pub mod pallet {
                 validation.diversity_milli >= current.min_diversity_milli,
                 Error::<T>::InsufficientDiversity
             );
-            ensure!(
-                validation.quality_milli >= current.min_quality_milli,
-                Error::<T>::QualityTooLow
-            );
 
             let mut miner = Miners::<T>::get(&who).ok_or(Error::<T>::MinerNotRegistered)?;
             miner.proofs_submitted = miner.proofs_submitted.saturating_add(1);
@@ -418,6 +611,7 @@ pub mod pallet {
                 miner: who.clone(),
                 submitted_at: frame_system::Pallet::<T>::block_number(),
                 energy_milli: validation.best_energy_milli,
+                salt: proof.salt,
             };
 
             let should_replace = match BlockBestProof::<T>::get() {
@@ -437,7 +631,6 @@ pub mod pallet {
                 energy_milli: validation.best_energy_milli,
                 diversity_milli: validation.diversity_milli,
                 valid_solution_count: validation.valid_solution_count,
-                quality_milli: validation.quality_milli,
             });
 
             Ok(())
@@ -467,63 +660,184 @@ pub mod pallet {
             Self::current_difficulty(block_number)
         }
 
-        pub fn mining_snapshot(
-            block_number: BlockNumberFor<T>,
-            parent_hash: <T as frame_system::Config>::Hash,
-            topology_hash: Option<H256>,
-        ) -> Option<MiningSnapshotOf<T>> {
+        pub fn mining_snapshot(topology_hash: Option<H256>) -> Option<MiningSnapshotOf<T>> {
             let (topology_hash, topology) = match topology_hash {
                 Some(hash) => (hash, Self::topology_meta(hash)?),
                 None => Self::default_topology_meta()?,
             };
 
+            // Difficulty still tracks the current block (decay is block-based)
+            // even though the nonce input no longer is. Read the nonce seed
+            // from the `LastProofBlockHash` cache so the snapshot remains
+            // stable across the full mining round, even after the underlying
+            // proof block ages out of `frame_system::block_hash`.
+            let block_number = frame_system::Pallet::<T>::block_number();
+            let last_proof_block_hash = LastProofBlockHash::<T>::get();
+
             Some(types::MiningSnapshot {
-                block_number,
-                parent_hash,
+                last_proof_block_hash,
                 difficulty: Self::current_difficulty_for(block_number),
                 topology_hash,
                 nodes: topology.nodes,
                 edges: topology.edges,
+                allowed_h_values: topology.allowed_h_values,
+                allowed_j_values: topology.allowed_j_values,
+                allowed_spin_values: topology.allowed_spin_values,
             })
         }
 
-        fn current_difficulty(block_number: BlockNumberFor<T>) -> types::DifficultyConfig {
-            let current = Difficulty::<T>::get();
-            let last_proof_block = LastProofBlock::<T>::get();
-            if last_proof_block.is_zero() || T::EpochLength::get().is_zero() {
-                return current;
-            }
+        /// 32-byte representation of an account, suitable for use as a fixed-size
+        /// input to `derive_nonce`. Hashes the SCALE-encoded `AccountId` so any
+        /// underlying encoding width (8-byte `u64`, 32-byte `AccountId32`, etc.)
+        /// produces a deterministic 32-byte digest.
+        pub fn account_to_bytes(account: &T::AccountId) -> [u8; 32] {
+            sp_io::hashing::blake2_256(&account.encode())
+        }
 
-            let elapsed_blocks = block_number
-                .saturating_sub(last_proof_block)
-                .saturated_into::<u32>();
-            let steps = elapsed_blocks / T::EpochLength::get().saturated_into::<u32>();
+        /// Look up a persisted winning solution and re-derive its nonce.
+        ///
+        /// Returns `None` if the block had no accepted proof (e.g. genesis
+        /// where no `submit_proof` ever ran). Re-derivation reads the
+        /// `last_proof_block_hash` stored alongside the solution, so this stays
+        /// correct even when `block_number` is older than `BlockHashCount`
+        /// (no `frame_system::block_hash` lookup is involved).
+        pub fn winning_solution_with_nonce(
+            block_number: BlockNumberFor<T>,
+        ) -> Option<WinningSolutionWithNonceOf<T>> {
+            let solution = WinningSolutions::<T>::get(block_number)?;
+            let last_proof_block_hash_bytes = solution.last_proof_block_hash.0;
+            let miner_bytes = Self::account_to_bytes(&solution.miner);
+            let nonce = derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &solution.salt);
+            Some(types::WinningSolutionWithNonce { solution, nonce })
+        }
 
-            if steps == 0 {
-                current
+        /// 32-byte representation of a block hash, suitable for use as a
+        /// fixed-size input to `derive_nonce`. Works for any `T::Hash`
+        /// whose SCALE encoding is exactly 32 bytes (the substrate default
+        /// `BlakeTwo256` `H256`). Falls back to `blake2_256` of the encoded
+        /// form so non-32-byte `T::Hash` configurations are also covered.
+        pub fn hash_to_bytes_32(hash: <T as frame_system::Config>::Hash) -> [u8; 32] {
+            let encoded = hash.encode();
+            if let Ok(arr) = <[u8; 32]>::try_from(encoded.as_slice()) {
+                arr
             } else {
-                crate::difficulty::apply_decay(current, steps)
+                sp_io::hashing::blake2_256(&encoded)
             }
+        }
+
+        fn check_spec(spec: &AllowedValueSpec<AllowedValueSetOf<T>>) -> DispatchResult {
+            match spec.as_slice().bits_per_value() {
+                Ok(_) => Ok(()),
+                Err(quantum_validation::ValidationError::EmptyAllowedValues) => {
+                    Err(Error::<T>::EmptyAllowedValues.into())
+                }
+                Err(quantum_validation::ValidationError::EncodingTooWide { .. }) => {
+                    Err(Error::<T>::EncodingTooWide.into())
+                }
+                Err(_) => Err(Error::<T>::InvalidTopology.into()),
+            }
+        }
+
+        /// Sort the inner Set values so the stored spec matches the
+        /// order-independent layout used by `canonical_bytes` / `hash_topology`.
+        /// `IntegerRange` and `ContinuousRange` carry no order to canonicalize.
+        fn canonicalize_spec(
+            spec: AllowedValueSpec<AllowedValueSetOf<T>>,
+        ) -> Result<AllowedValueSpec<AllowedValueSetOf<T>>, DispatchError> {
+            match spec {
+                AllowedValueSpec::Set(values) => {
+                    let mut inner: alloc::vec::Vec<MilliValue> = values.into_inner();
+                    inner.sort_unstable();
+                    let sorted = AllowedValueSetOf::<T>::try_from(inner)
+                        .map_err(|_| Error::<T>::InvalidTopology)?;
+                    Ok(AllowedValueSpec::Set(sorted))
+                }
+                other => Ok(other),
+            }
+        }
+
+        /// Build the energy curve used by `adjust_on_proof` and
+        /// `apply_decay`.
+        ///
+        /// CRITICAL INVARIANT (see GitLab issue #5 and the topology-registry
+        /// fix that addressed `h_values`-in-proof): the curve depends only
+        /// on chain state. It must never be derived from any field of a
+        /// submitted proof.
+        ///
+        /// Specifically: even though `submit_proof` accepts proofs against
+        /// any hash in `RegisteredTopologies`, the curve is calibrated
+        /// against `DefaultTopology::<T>::get()`. Miners cannot shift
+        /// difficulty by choosing a different registered topology to mine
+        /// against.
+        ///
+        /// Returns `None` when `DefaultTopology` is unset (no topology has
+        /// been registered yet). Callers treat that as a defensive no-op —
+        /// in practice the case is unreachable during mining because
+        /// `submit_proof` requires the proof's topology to be registered
+        /// first, and the first registration also seeds `DefaultTopology`.
+        fn current_energy_curve() -> Option<crate::difficulty::EnergyCurve> {
+            let (_, topology) = Self::default_topology_meta()?;
+            Some(crate::difficulty::EnergyCurve::new(
+                topology.nodes.len() as u32,
+                topology.edges.len() as u32,
+                T::CurveCEasyMilli::get(),
+                T::CurveCKneeMilli::get(),
+                T::CurveCHardMilli::get(),
+            ))
+        }
+
+        fn current_difficulty(block_number: BlockNumberFor<T>) -> types::DifficultyConfig {
+            crate::difficulty::current_difficulty(
+                block_number.saturated_into::<u32>(),
+                Difficulty::<T>::get(),
+                LastProofBlock::<T>::get().saturated_into::<u32>(),
+                T::EpochLength::get().saturated_into::<u32>(),
+                Self::current_energy_curve(),
+            )
         }
 
         fn validate_proof(
             proof: &QuantumProofOf<T>,
-            h: &[i32],
-            j: &[i32],
+            topology: &TopologyMetaOf<T>,
+            h: &[MilliValue],
+            j: &[MilliValue],
             difficulty: &types::DifficultyConfig,
         ) -> Result<types::ProofValidation, DispatchError> {
-            let mut energies = Vec::with_capacity(proof.solutions.len());
-            for solution in proof.solutions.iter() {
-                ensure!(
-                    validate_spins(solution.as_slice()),
-                    Error::<T>::InvalidSpinValues
-                );
+            let spin_spec = topology.allowed_spin_values.as_slice();
+            let num_spins = topology.nodes.len();
+            let mut decoded: Vec<Vec<i8>> = Vec::with_capacity(proof.solutions.len());
+
+            for packed in proof.solutions.iter() {
+                let milli =
+                    unpack_solution(packed.as_slice(), num_spins, &spin_spec).map_err(|err| {
+                        match err {
+                            quantum_validation::ValidationError::PackedSolutionLengthMismatch {
+                                ..
+                            } => DispatchError::from(Error::<T>::PackedSolutionLengthMismatch),
+                            quantum_validation::ValidationError::InvalidEncodedValue { .. } => {
+                                DispatchError::from(Error::<T>::InvalidEncodedSpin)
+                            }
+                            _ => DispatchError::from(Error::<T>::InvalidTopology),
+                        }
+                    })?;
+                let mut spins = Vec::with_capacity(milli.len());
+                for value in milli {
+                    let sign = value.signum();
+                    ensure!(sign == -1 || sign == 1, Error::<T>::InvalidSpinValues);
+                    spins.push(sign as i8);
+                }
+                ensure!(validate_spins(&spins), Error::<T>::InvalidSpinValues);
+                decoded.push(spins);
+            }
+
+            let mut energies = Vec::with_capacity(decoded.len());
+            for spins in decoded.iter() {
                 let energy = energy_of_solution(
-                    solution.as_slice(),
+                    spins,
                     h,
-                    proof.edges.as_slice(),
+                    topology.edges.as_slice(),
                     j,
-                    proof.nodes.as_slice(),
+                    topology.nodes.as_slice(),
                 )
                 .map_err(|err| match err {
                     quantum_validation::ValidationError::SolutionLengthMismatch { .. } => {
@@ -551,7 +865,7 @@ pub mod pallet {
 
             let energy_valid_solutions: Vec<&[i8]> = energy_valid_indices
                 .iter()
-                .map(|&index| proof.solutions[index].as_slice())
+                .map(|&index| decoded[index].as_slice())
                 .collect();
 
             let target_count = energy_valid_solutions
@@ -577,26 +891,7 @@ pub mod pallet {
                 best_energy_milli,
                 diversity_milli,
                 valid_solution_count: energy_valid_solutions.len() as u32,
-                quality_milli: Self::quality_milli(
-                    best_energy_milli,
-                    proof.nodes.len() as u32,
-                    proof.edges.len() as u32,
-                ),
             })
-        }
-
-        fn quality_milli(energy_milli: i64, num_nodes: u32, num_edges: u32) -> u32 {
-            let expected = expected_gse(num_nodes, num_edges);
-            if expected == 0 {
-                return 0;
-            }
-
-            let numerator = (energy_milli as i128).abs().saturating_mul(1000);
-            let denominator = (expected as i128).abs();
-            if denominator == 0 {
-                return 0;
-            }
-            numerator.saturating_div(denominator).min(u32::MAX as i128) as u32
         }
     }
 }

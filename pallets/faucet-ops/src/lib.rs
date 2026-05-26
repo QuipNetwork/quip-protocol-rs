@@ -27,8 +27,12 @@ pub use weights::*;
 #[frame_support::pallet]
 pub mod pallet {
     use super::*;
-    use frame_support::{pallet_prelude::*, traits::Currency};
+    use frame_support::{
+        pallet_prelude::*,
+        traits::{Currency, Imbalance},
+    };
     use frame_system::pallet_prelude::*;
+    use sp_runtime::traits::Zero;
 
     type BalanceOf<T> =
         <<T as Config>::Currency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
@@ -64,6 +68,16 @@ pub mod pallet {
         },
     }
 
+    /// Errors raised by the faucet operations pallet.
+    #[pallet::error]
+    pub enum Error<T> {
+        /// Mint amount must be greater than zero.
+        ZeroAmount,
+        /// The currency implementation refused the deposit (e.g. the recipient
+        /// is locked or below the existential deposit).
+        DepositFailed,
+    }
+
     /// Dispatchables for root-controlled faucet operations.
     #[pallet::call]
     impl<T: Config> Pallet<T> {
@@ -82,8 +96,15 @@ pub mod pallet {
             amount: BalanceOf<T>,
         ) -> DispatchResult {
             ensure_root(origin)?;
+            ensure!(!amount.is_zero(), Error::<T>::ZeroAmount);
 
-            let _ = T::Currency::deposit_creating(&who, amount);
+            // `deposit_creating` returns a `PositiveImbalance`; the imbalance's
+            // Drop impl increments `TotalIssuance`. Capture the imbalance so we
+            // can verify the deposit was non-zero before emitting the event.
+            let imbalance = T::Currency::deposit_creating(&who, amount);
+            ensure!(!imbalance.peek().is_zero(), Error::<T>::DepositFailed);
+            drop(imbalance);
+
             Self::deposit_event(Event::Minted { who, amount });
 
             Ok(())

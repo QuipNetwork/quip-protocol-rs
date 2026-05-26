@@ -71,10 +71,17 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // Bumped to 101 (and `transaction_version` to 2) when the signed-extrinsic
     // wire format switched from `MultiSignature` to the hybrid envelope. Without
     // these bumps, peers/clients could treat the new format as the old one.
-    spec_version: 101,
+    // Bumped to 102 for v0.2.0: adds `pallet_faucet_ops` (idx 11) and
+    // `pallet_session` (idx 12). New dispatchables, events, and storage entries
+    // change the runtime metadata; the signed-extrinsic wire format is
+    // unchanged, so `transaction_version` stays at 2.
+    // Bumped to 103 for QUI-567: adds the canonical default plain Ising job
+    // spec, root-gates `QuantumComputeMempool::register_job_spec`, and changes
+    // that call's argument encoding, so `transaction_version` moves to 3.
+    spec_version: 103,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
-    transaction_version: 2,
+    transaction_version: 3,
     system_version: 1,
 };
 
@@ -249,6 +256,20 @@ mod tests {
         });
     }
 
+    /// Confirms the runtime's `CanonicalDefaultIsingSpecId` resolves to the
+    /// same hash that the pallet's mock test pins. SDKs and downstream docs
+    /// embed this hash; a mock-vs-runtime divergence would silently break
+    /// every client that hardcodes it.
+    #[test]
+    fn default_ising_spec_id_matches_pinned_hash() {
+        use frame_support::traits::Get as _;
+        let id = <Runtime as pallet_quantum_compute_mempool::Config>::DefaultIsingSpecId::get();
+        assert_eq!(
+            format!("{id:?}"),
+            "0x8f46f3a31321d1d093314fc769c42cbe7a83d71a0b69e6571a0f68e2a04067f0",
+        );
+    }
+
     #[test]
     fn hybrid_signed_extrinsic_rejects_wrong_account() {
         let mut ext =
@@ -332,4 +353,7 @@ mod runtime {
 
     #[runtime::pallet_index(11)]
     pub type FaucetOps = pallet_faucet_ops;
+
+    #[runtime::pallet_index(12)]
+    pub type Session = pallet_session;
 }

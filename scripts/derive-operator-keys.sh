@@ -73,7 +73,14 @@ nodekey_path=${operator_dir}/nodekey
 # substrate/client/cli/src/commands/generate_node_key.rs:62). Using --file
 # alone writes the secret to that path; the peer-id is emitted on stderr,
 # but we recover it via inspect-node-key below for a robust capture.
-"$node_bin" key generate-node-key --file "$nodekey_path" >/dev/null 2>&1
+#
+# Capture stderr so a real failure (segfault, missing libc, unwritable path)
+# is surfaced with diagnostic detail instead of a bare nonzero exit.
+nodekey_err=$("$node_bin" key generate-node-key --file "$nodekey_path" 2>&1 >/dev/null) || {
+	echo "node-key generation failed:" >&2
+	printf '%s\n' "$nodekey_err" >&2
+	exit 70
+}
 chmod 600 "$nodekey_path"
 
 peer_id=$("$node_bin" key inspect-node-key --file "$nodekey_path" |
@@ -85,10 +92,19 @@ if [[ -z "$peer_id" ]]; then
 fi
 
 echo "[3/3] deriving hybrid BABE/GRANDPA/TX public material..."
-derive_output=$(cd "${repo_root}/crates/transaction-crypto" &&
+# Capture cargo output AND its exit status: command substitution masks the
+# inner failure (the subshell exits with the substitution's status, but the
+# parent script then proceeds to awk-parse an empty/garbage `derive_output`
+# and prints the misleading "failed to parse" error instead of the real
+# cargo/build error).
+if ! derive_output=$(cd "${repo_root}/crates/transaction-crypto" &&
 	cargo run --release --quiet \
 		--example derive_genesis_keys --features std \
-		-- "$mnemonic" 2>&1)
+		-- "$mnemonic" 2>&1); then
+	echo "derive_genesis_keys failed:" >&2
+	printf '%s\n' "$derive_output" >&2
+	exit 70
+fi
 babe_pub=$(printf '%s\n' "$derive_output" |
 	awk -F'= *' '/^babe_pub /{print $2}')
 grandpa_pub=$(printf '%s\n' "$derive_output" |
