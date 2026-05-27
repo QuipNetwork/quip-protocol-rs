@@ -42,13 +42,18 @@ use sp_version::RuntimeVersion;
 
 // Local module imports
 use super::{
-    AccountId, Babe, Balance, Block, BlockNumber, Executive, Grandpa, Hash, InherentDataExt, Nonce,
+    AccountId, Babe, Balance, Block, BlockNumber, Executive, Grandpa, InherentDataExt, Nonce,
     QuantumPow, Runtime, RuntimeCall, RuntimeGenesisConfig, SessionKeys, System,
     TransactionPayment, BABE_GENESIS_EPOCH_CONFIG, VERSION,
 };
+use pallet_quantum_pow::RegisteredTopologies;
 
 type QuantumPowNodes = frame_support::BoundedVec<u32, super::configs::QuantumPowMaxNodes>;
 type QuantumPowEdges = frame_support::BoundedVec<(u32, u32), super::configs::QuantumPowMaxEdges>;
+type QuantumPowAllowedValues = frame_support::BoundedVec<
+    quantum_validation::MilliValue,
+    super::configs::QuantumPowMaxAllowedValues,
+>;
 
 impl_runtime_apis! {
     impl sp_api::Core<Block> for Runtime {
@@ -205,15 +210,27 @@ impl_runtime_apis! {
         }
     }
 
-    impl pallet_quantum_pow::QuantumPowApi<Block, BlockNumber, Hash, QuantumPowNodes, QuantumPowEdges> for Runtime {
+    impl pallet_quantum_pow::QuantumPowApi<Block, BlockNumber, AccountId, Balance, QuantumPowNodes, QuantumPowEdges, QuantumPowAllowedValues> for Runtime {
         fn mining_snapshot(
             topology_hash: Option<sp_core::H256>,
-        ) -> Option<pallet_quantum_pow::types::MiningSnapshot<BlockNumber, Hash, QuantumPowNodes, QuantumPowEdges>> {
-            QuantumPow::mining_snapshot(
-                System::block_number(),
-                System::parent_hash(),
-                topology_hash,
-            )
+        ) -> Option<pallet_quantum_pow::types::MiningSnapshot<QuantumPowNodes, QuantumPowEdges, QuantumPowAllowedValues>> {
+            QuantumPow::mining_snapshot(topology_hash)
+        }
+
+        fn topology_meta(
+            hash: sp_core::H256,
+        ) -> Option<pallet_quantum_pow::types::TopologyMeta<QuantumPowNodes, QuantumPowEdges, QuantumPowAllowedValues, BlockNumber>> {
+            RegisteredTopologies::<Runtime>::get(hash)
+        }
+
+        fn winning_solution(
+            block_number: BlockNumber,
+        ) -> Option<pallet_quantum_pow::types::WinningSolutionWithNonce<AccountId, Balance, BlockNumber>> {
+            QuantumPow::winning_solution_with_nonce(block_number)
+        }
+
+        fn current_difficulty() -> pallet_quantum_pow::types::DifficultyConfig {
+            QuantumPow::current_difficulty_for(System::block_number())
         }
     }
 

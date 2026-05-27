@@ -43,6 +43,9 @@ impl SubstrateCli for Cli {
             "local3" | "local-3" | "local_three_validator" => {
                 Box::new(chain_spec::local_three_validator_chain_spec()?)
             }
+            "quip-testnet" | "quip_testnet" | "testnet" => {
+                Box::new(chain_spec::quip_testnet_chain_spec()?)
+            }
             path => Box::new(chain_spec::ChainSpec::from_json_file(
                 std::path::PathBuf::from(path),
             )?),
@@ -56,6 +59,7 @@ pub fn run() -> sc_cli::Result<()> {
 
     match &cli.subcommand {
         Some(Subcommand::Key(cmd)) => cmd.run(&cli),
+        Some(Subcommand::InsertHybridKey(cmd)) => cmd.run(&cli),
         #[allow(deprecated)]
         Some(Subcommand::BuildSpec(cmd)) => {
             let runner = cli.create_runner(cmd)?;

@@ -5,6 +5,7 @@ mod benchmarking;
 mod chain_spec;
 mod cli;
 mod command;
+mod insert_hybrid_key;
 mod rpc;
 mod service;
 

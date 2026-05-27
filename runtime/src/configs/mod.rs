@@ -26,7 +26,7 @@
 // Substrate and Polkadot dependencies
 use frame_support::{
     derive_impl, parameter_types,
-    traits::{ConstU128, ConstU32, ConstU64, ConstU8, VariantCountOf},
+    traits::{ConstU128, ConstU32, ConstU64, ConstU8, Get, VariantCountOf},
     weights::{
         constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
         IdentityFee, Weight,
@@ -34,7 +34,11 @@ use frame_support::{
 };
 use frame_system::limits::{BlockLength, BlockWeights};
 use pallet_transaction_payment::{ConstFeeMultiplier, FungibleAdapter, Multiplier};
-use sp_runtime::{traits::One, Perbill};
+use sp_core::crypto::Ss58Codec;
+use sp_runtime::{
+    traits::{ConvertInto, One, OpaqueKeys},
+    Perbill,
+};
 use sp_version::RuntimeVersion;
 
 use pallet_xqvm::WeightInfo as _;
@@ -43,7 +47,7 @@ use pallet_xqvm::WeightInfo as _;
 use super::{
     AccountId, Babe, Balance, Balances, Block, BlockNumber, Hash, Nonce, PalletInfo, Runtime,
     RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask,
-    System, EXISTENTIAL_DEPOSIT, SLOT_DURATION, UNIT, VERSION,
+    SessionKeys, System, EXISTENTIAL_DEPOSIT, SLOT_DURATION, UNIT, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -57,7 +61,15 @@ parameter_types! {
         Weight::from_parts(2u64 * WEIGHT_REF_TIME_PER_SECOND, u64::MAX),
         NORMAL_DISPATCH_RATIO,
     );
-    pub RuntimeBlockLength: BlockLength = BlockLength::max_with_normal_ratio(5 * 1024 * 1024, NORMAL_DISPATCH_RATIO);
+    // Replacement for the now-deprecated `BlockLength::max_with_normal_ratio` —
+    // reconstruct the same shape via the builder: max = 5 MiB for all dispatch
+    // classes, but the Normal class is scaled down by `NORMAL_DISPATCH_RATIO`.
+    pub RuntimeBlockLength: BlockLength = BlockLength::builder()
+        .max_length(5 * 1024 * 1024)
+        .modify_max_length_for_class(frame_support::dispatch::DispatchClass::Normal, |len| {
+            *len = NORMAL_DISPATCH_RATIO * (5u32 * 1024 * 1024);
+        })
+        .build();
     pub const SS58Prefix: u8 = 42;
 }
 
@@ -128,6 +140,27 @@ impl pallet_grandpa::Config for Runtime {
     type EquivocationReportSystem = ();
 }
 
+/// Session keys (BABE + GRANDPA) are registered at genesis and never rotated by
+/// the runtime — `SessionManager = ()` returns `None` on `new_session`, so the
+/// pallet retains the genesis validator set forever. The session API exists so
+/// that explorers and the polkadot.js client can surface
+/// `api.query.session.validators` and so that hybrid session keys can be
+/// rotated via the standard `author_rotateKeys` RPC flow once that work lands.
+impl pallet_session::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type ValidatorId = <Self as frame_system::Config>::AccountId;
+    type ValidatorIdOf = ConvertInto;
+    type ShouldEndSession = Babe;
+    type NextSessionRotation = Babe;
+    type SessionManager = ();
+    type SessionHandler = <SessionKeys as OpaqueKeys>::KeyTypeIdProviders;
+    type Keys = SessionKeys;
+    type DisablingStrategy = ();
+    type WeightInfo = pallet_session::weights::SubstrateWeight<Runtime>;
+    type Currency = Balances;
+    type KeyDeposit = ();
+}
+
 impl pallet_timestamp::Config for Runtime {
     /// A timestamp: milliseconds since the unix epoch.
     type Moment = u64;
@@ -179,6 +212,12 @@ impl pallet_sudo::Config for Runtime {
 impl pallet_template::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type WeightInfo = pallet_template::weights::SubstrateWeight<Runtime>;
+}
+
+impl pallet_faucet_ops::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type WeightInfo = pallet_faucet_ops::weights::SubstrateWeight<Runtime>;
 }
 
 parameter_types! {
@@ -234,6 +273,36 @@ parameter_types! {
     pub const QuantumPowMinerDeposit: Balance = UNIT;
     pub const QuantumPowBlockReward: Balance = UNIT;
     pub const QuantumPowMaxProofsPerBlock: u32 = 8;
+    /// Upper bound on the cardinality of `allowed_h_values`, `allowed_j_values`,
+    /// and `allowed_spin_values` per registered topology. Set well above the
+    /// expected real-world maximum (Advantage2_system1 uses 3 for h, 2 for j,
+    /// 2 for spin) so future hardware-spec changes don't force a runtime
+    /// upgrade.
+    pub const QuantumPowMaxAllowedValues: u32 = 32;
+    /// Energy-curve calibration: per-mille `c` values that define the
+    /// `(max_energy, knee_energy, min_energy)` triple via `expected_gse_with_c`
+    /// on the default topology. Defaults `(0.700, 0.750, 0.800)` centre the
+    /// curve's knee on the canonical `c = 0.75` used elsewhere in validation.
+    pub const QuantumPowCurveCEasyMilli: u32 = 700;
+    pub const QuantumPowCurveCKneeMilli: u32 = 750;
+    pub const QuantumPowCurveCHardMilli: u32 = 800;
+}
+
+/// Account attributed as the builder for migration-inserted default job specs.
+///
+/// Genesis presets can record each preset's actual root account directly, but
+/// runtime migrations need one chain-independent account baked into the
+/// runtime. Operator 1 is the current quip-testnet sudo holder.
+pub const QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58: &str =
+    "5GZMoWFMoNGLZKT1tduLMQQQC7dBQo4MHkYqriCdDATXqaYi";
+
+pub struct QuantumDefaultJobSpecBuilder;
+
+impl Get<AccountId> for QuantumDefaultJobSpecBuilder {
+    fn get() -> AccountId {
+        AccountId::from_ss58check(QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58)
+            .expect("default job spec builder SS58 address is valid")
+    }
 }
 
 impl pallet_quantum_compute_mempool::Config for Runtime {
@@ -248,6 +317,8 @@ impl pallet_quantum_compute_mempool::Config for Runtime {
     type MaxBlockWait = QuantumMaxBlockWait;
     type MinReward = QuantumMinReward;
     type ResultTtlBlocks = QuantumResultTtlBlocks;
+    type DefaultIsingSpecId = pallet_quantum_compute_mempool::CanonicalDefaultIsingSpecId<Runtime>;
+    type DefaultJobSpecBuilder = QuantumDefaultJobSpecBuilder;
     type VM = pallet_quantum_compute_mempool::xqvm::NoOpVm;
     type WeightInfo = pallet_quantum_compute_mempool::weights::SubstrateWeight<Runtime>;
 }
@@ -263,5 +334,24 @@ impl pallet_quantum_pow::Config for Runtime {
     type MinerDeposit = QuantumPowMinerDeposit;
     type BlockReward = QuantumPowBlockReward;
     type MaxProofsPerBlock = QuantumPowMaxProofsPerBlock;
+    type MaxAllowedValues = QuantumPowMaxAllowedValues;
+    type CurveCEasyMilli = QuantumPowCurveCEasyMilli;
+    type CurveCKneeMilli = QuantumPowCurveCKneeMilli;
+    type CurveCHardMilli = QuantumPowCurveCHardMilli;
     type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Catches typos and silent address drift in the hardcoded SS58 string.
+    /// Without this, a malformed constant would only surface as a panic inside
+    /// `on_runtime_upgrade` on a live chain — a chain-bricking failure mode.
+    #[test]
+    fn default_job_spec_builder_ss58_decodes() {
+        let parsed = AccountId::from_ss58check(QUANTUM_DEFAULT_JOB_SPEC_BUILDER_SS58)
+            .expect("hardcoded SS58 must decode");
+        assert_eq!(parsed, QuantumDefaultJobSpecBuilder::get());
+    }
 }

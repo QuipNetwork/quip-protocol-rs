@@ -4,77 +4,79 @@ use alloc::vec::Vec;
 
 use blake3::Hasher;
 use rand_chacha::ChaCha8Rng;
-use rand_core::{RngCore, SeedableRng};
+use rand_core::SeedableRng;
+use sp_core::U256;
 
 use crate::errors::ValidationError;
-use crate::fixed::{MilliValue, MILLI_SCALE};
+use crate::fixed::MilliValue;
+use crate::puzzle_spec::AllowedValueSpec;
 use crate::validation::ensure_valid_topology;
 
-/// Derive a deterministic nonce for future PoW-style Ising generation.
+/// Derive the deterministic puzzle nonce for a `submit_proof` call.
 ///
-/// The current project decision is to use BLAKE3 here.
-/// Cross-language parity is validated against the shared Python `ChaCha8` test
-/// vectors once those are imported into the local Rust fixture set.
+/// Inputs are three fixed-size 32-byte buffers so the PoW search space is
+/// statically known and identical across every call:
 ///
-/// The nonce is derived from the concatenation:
+/// - `last_proof_block_hash` — `block_hash(LastProofBlock)`, i.e. the header
+///   hash of the most recent winning block. Stable across the entire round
+///   (only changes on the next win), so miners can submit proofs without
+///   racing the txpool / executing-block-number.
+/// - `miner` — 32-byte representation of the submitting account (the pallet
+///   derives this by hashing the SCALE-encoded `AccountId`, so the input is
+///   always 32 bytes regardless of the underlying `AccountId` width)
+/// - `salt` — the only freely-chosen miner input, 32 bytes
 ///
-/// - `parent_hash`
-/// - `miner`
-/// - `block_number.to_be_bytes()`
-/// - `salt`
-///
-/// using BLAKE3, then truncating the first eight bytes as a big-endian `u64`.
-pub fn derive_nonce(parent_hash: &[u8], miner: &[u8], block_number: u32, salt: &[u8]) -> u64 {
+/// Returns the full 256-bit BLAKE3 digest as a `U256` so all 256 bits seed
+/// downstream RNG state (no truncation).
+pub fn derive_nonce(last_proof_block_hash: &[u8; 32], miner: &[u8; 32], salt: &[u8; 32]) -> U256 {
     let mut hasher = Hasher::new();
-    hasher.update(parent_hash);
+    hasher.update(last_proof_block_hash);
     hasher.update(miner);
-    hasher.update(&block_number.to_be_bytes());
     hasher.update(salt);
-    let digest = hasher.finalize();
-    let mut bytes = [0_u8; 8];
-    bytes.copy_from_slice(digest.as_bytes().get(..8).expect("blake3 digest length"));
-    u64::from_be_bytes(bytes)
+    U256::from_big_endian(hasher.finalize().as_bytes())
 }
 
 /// Generate deterministic fixed-point Ising parameters from a nonce.
 ///
-/// This intentionally follows the Notion spec's Rust direction:
-/// - `ChaCha8Rng`
-/// - milli-precision integer outputs
+/// The full 256-bit nonce seeds [`ChaCha8Rng`] via [`SeedableRng::from_seed`];
+/// the prior implementation truncated to `u64` and discarded 192 bits.
 ///
-/// Cross-language parity for this module is checked against the shared Python
-/// `ChaCha8` vectors. The Rust surface still returns milli-precision integer
-/// arrays, so vector fixtures are normalized before comparison.
-///
-/// `allowed_h_values` is sampled uniformly for each node. Couplings are
-/// currently generated as `±MILLI_SCALE`.
+/// Per-node h fields are sampled from `allowed_h`; per-edge j couplings are
+/// sampled from `allowed_j`. Both specs follow [`AllowedValueSpec`]'s
+/// per-variant sampling rules.
 pub fn generate_ising_model(
-    nonce: u64,
+    nonce: U256,
     nodes: &[u32],
     edges: &[(u32, u32)],
-    allowed_h_values: &[MilliValue],
+    allowed_h: &AllowedValueSpec<&[MilliValue]>,
+    allowed_j: &AllowedValueSpec<&[MilliValue]>,
 ) -> Result<(Vec<MilliValue>, Vec<MilliValue>), ValidationError> {
     if nodes.is_empty() {
         return Err(ValidationError::EmptyNodes);
     }
-    if allowed_h_values.is_empty() {
-        return Err(ValidationError::EmptyFieldValues);
+    // Surface empty-set errors with the legacy variant names so existing
+    // callers still match on EmptyFieldValues for h and a distinct error for j.
+    if let Err(err) = allowed_h.bits_per_value() {
+        return Err(match err {
+            ValidationError::EmptyAllowedValues => ValidationError::EmptyFieldValues,
+            other => other,
+        });
     }
+    let _ = allowed_j.bits_per_value()?;
 
     ensure_valid_topology(nodes, edges)?;
 
-    let mut rng = ChaCha8Rng::seed_from_u64(nonce);
+    let seed: [u8; 32] = nonce.to_big_endian();
+    let mut rng = ChaCha8Rng::from_seed(seed);
 
     let mut h = Vec::with_capacity(nodes.len());
     for _ in nodes {
-        let index = (rng.next_u32() as usize) % allowed_h_values.len();
-        h.push(allowed_h_values[index]);
+        h.push(allowed_h.sample(&mut rng)?);
     }
 
     let mut j = Vec::with_capacity(edges.len());
     for _ in edges {
-        let sign = if (rng.next_u32() & 1) == 0 { -1 } else { 1 };
-        j.push((MILLI_SCALE as i32) * sign);
+        j.push(allowed_j.sample(&mut rng)?);
     }
 
     Ok((h, j))
@@ -83,34 +85,53 @@ pub fn generate_ising_model(
 #[cfg(test)]
 mod tests {
     use super::{derive_nonce, generate_ising_model};
+    use crate::puzzle_spec::AllowedValueSpec;
+
+    const ALICE_BYTES: [u8; 32] = [0xA1; 32];
+    const BOB_BYTES: [u8; 32] = [0xB0; 32];
+    const SALT_A: [u8; 32] = [0x01; 32];
+    const SALT_B: [u8; 32] = [0x02; 32];
 
     #[test]
     fn nonce_derivation_is_deterministic() {
-        let first = derive_nonce(&[1; 32], b"miner-a", 42, b"salt");
-        let second = derive_nonce(&[1; 32], b"miner-a", 42, b"salt");
-
+        let first = derive_nonce(&[1; 32], &ALICE_BYTES, &SALT_A);
+        let second = derive_nonce(&[1; 32], &ALICE_BYTES, &SALT_A);
         assert_eq!(first, second);
     }
 
     #[test]
     fn nonce_derivation_changes_with_input_parts() {
-        let baseline = derive_nonce(&[1; 32], b"miner-a", 42, b"salt");
-
-        assert_ne!(baseline, derive_nonce(&[2; 32], b"miner-a", 42, b"salt"));
-        assert_ne!(baseline, derive_nonce(&[1; 32], b"miner-b", 42, b"salt"));
-        assert_ne!(baseline, derive_nonce(&[1; 32], b"miner-a", 43, b"salt"));
-        assert_ne!(baseline, derive_nonce(&[1; 32], b"miner-a", 42, b"salt-2"));
+        let baseline = derive_nonce(&[1; 32], &ALICE_BYTES, &SALT_A);
+        assert_ne!(baseline, derive_nonce(&[2; 32], &ALICE_BYTES, &SALT_A));
+        assert_ne!(baseline, derive_nonce(&[1; 32], &BOB_BYTES, &SALT_A));
+        assert_ne!(baseline, derive_nonce(&[1; 32], &ALICE_BYTES, &SALT_B));
     }
 
     #[test]
     fn generated_model_has_expected_lengths() {
         let nodes = [0, 1, 2];
         let edges = [(0, 1), (1, 2)];
-        let allowed_h = [-1_000, 0, 1_000];
+        let allowed_h: &[i32] = &[-1_000, 0, 1_000];
+        let allowed_j: &[i32] = &[-1_000, 1_000];
 
-        let (h, j) = generate_ising_model(42, &nodes, &edges, &allowed_h).unwrap();
+        let nonce = derive_nonce(&[1; 32], &ALICE_BYTES, &SALT_A);
+        let (h, j) = generate_ising_model(
+            nonce,
+            &nodes,
+            &edges,
+            &AllowedValueSpec::Set(allowed_h),
+            &AllowedValueSpec::Set(allowed_j),
+        )
+        .unwrap();
 
         assert_eq!(h.len(), nodes.len());
         assert_eq!(j.len(), edges.len());
+        // Every sampled h is drawn from the allowed set.
+        for value in h {
+            assert!(allowed_h.contains(&value));
+        }
+        for value in j {
+            assert!(allowed_j.contains(&value));
+        }
     }
 }

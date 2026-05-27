@@ -32,13 +32,17 @@ pub mod energy;
 pub mod errors;
 pub mod fixed;
 pub mod ising;
+pub mod packed;
+pub mod puzzle_spec;
 pub mod validation;
 
 pub use crate::diversity::{calculate_diversity, select_diverse, symmetric_hamming};
-pub use crate::energy::{energy_of_solution, expected_gse};
+pub use crate::energy::{energy_of_solution, expected_gse, expected_gse_with_c};
 pub use crate::errors::ValidationError;
 pub use crate::fixed::{MilliDiversity, MilliEnergy, MilliValue, MILLI_SCALE};
 pub use crate::ising::{derive_nonce, generate_ising_model};
+pub use crate::packed::{packed_solution_byte_len, unpack_solution};
+pub use crate::puzzle_spec::{AllowedValueSpec, MAX_INDEXED_BITS};
 pub use crate::validation::{
     validate_solution, validate_solution_set, validate_spins, validate_topology_consistency,
     SolutionValidation,

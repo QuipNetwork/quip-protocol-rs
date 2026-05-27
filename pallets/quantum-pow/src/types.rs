@@ -1,32 +1,41 @@
 use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
+use quantum_validation::AllowedValueSpec;
 use scale_info::TypeInfo;
-use sp_core::H256;
+use sp_core::{H256, U256};
 
+/// A submitted proof-of-work payload.
+///
+/// The proof carries only the strictly-non-derivable inputs to validation:
+///
+/// - `topology_hash` identifies the registered puzzle definition. The
+///   pallet looks up nodes, edges, and the allowed value sets from
+///   `RegisteredTopologies`.
+/// - `nonce` is the full 256-bit BLAKE3 digest of
+///   `(last_proof_block_hash, miner, salt)`, where `last_proof_block_hash =
+///   block_hash(LastProofBlock)` is the header hash of the most recent
+///   winning block (stable across an entire round). The verifier
+///   re-derives it for free; carrying it in the proof lets `submit_proof`
+///   reject mismatched salts before doing any topology work.
+/// - `salt` is the only freely-chosen miner input. Fixed at 32 bytes so the
+///   PoW search space is statically known and identical across every call.
+/// - `solutions` is a list of bit-packed spin vectors. Each entry is decoded
+///   under the registered topology's `allowed_spin_values` spec, so the
+///   wire-format width per spin matches the on-chain spec (e.g., 1 bit per
+///   spin for the default binary Ising topology).
 #[derive(
     Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
 )]
-pub struct QuantumProof<Nodes, Edges, Solutions, Fields> {
-    /// Claimed topology identity for the submitted graph.
-    ///
-    /// The spec does not currently include this field; the pallet can always
-    /// recompute it from `nodes` and `edges`. It is kept for now as a cheap
-    /// lookup/comparison seam against the registered topology set during
-    /// `submit_proof`, but can be dropped later if the extra redundancy is not
-    /// worth the proof-size cost.
+pub struct QuantumProof<PackedSolutions> {
     pub topology_hash: H256,
-    pub nonce: u64,
-    pub salt: frame_support::pallet_prelude::BoundedVec<u8, frame_support::traits::ConstU32<32>>,
-    pub nodes: Nodes,
-    pub edges: Edges,
-    pub solutions: Solutions,
-    pub h_values: Fields,
+    pub nonce: U256,
+    pub salt: [u8; 32],
+    pub solutions: PackedSolutions,
 }
 
 #[derive(
     Clone,
     Copy,
     Debug,
-    Default,
     Encode,
     Decode,
     DecodeWithMemTracking,
@@ -39,15 +48,39 @@ pub struct DifficultyConfig {
     pub min_solutions: u32,
     pub max_energy_milli: i64,
     pub min_diversity_milli: u32,
-    pub min_quality_milli: u32,
 }
 
+impl Default for DifficultyConfig {
+    fn default() -> Self {
+        Self {
+            min_solutions: 5,
+            max_energy_milli: -1_200_000,
+            min_diversity_milli: 200,
+        }
+    }
+}
+
+/// On-chain record of a registered topology.
+///
+/// A `topology_hash` uniquely identifies the full puzzle definition: graph
+/// structure plus the allowed h, j, and spin value sets. The hash is computed
+/// by [`crate::topology::hash_topology`] over all five inputs so two
+/// topologies that differ only in their allowed value sets get distinct hashes.
 #[derive(
     Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
 )]
-pub struct TopologyMeta<Nodes, Edges, BlockNumber> {
+pub struct TopologyMeta<Nodes, Edges, AllowedValues, BlockNumber> {
     pub nodes: Nodes,
     pub edges: Edges,
+    /// How the nonce-seeded RNG selects per-node h field values.
+    pub allowed_h_values: AllowedValueSpec<AllowedValues>,
+    /// How the nonce-seeded RNG selects per-edge j coupling values.
+    /// Replaces the historical hardcoded `±MILLI_SCALE` magnitude.
+    pub allowed_j_values: AllowedValueSpec<AllowedValues>,
+    /// Which milli values a spin in a submitted solution may take. The
+    /// variant also implies the bit-width used to encode each spin in the
+    /// `QuantumProof::solutions` payload.
+    pub allowed_spin_values: AllowedValueSpec<AllowedValues>,
     pub registered_at: BlockNumber,
 }
 
@@ -78,6 +111,10 @@ pub struct ProofRecord<AccountId, BlockNumber> {
     /// the "best among submitted solutions" interpretation explicit in the
     /// record documentation rather than in the field name.
     pub energy_milli: i64,
+    /// Salt of the submitted proof. Copied here so `on_finalize` can persist
+    /// it into `WinningSolutions` without re-reading the (PQ-signed)
+    /// extrinsic body.
+    pub salt: [u8; 32],
 }
 
 #[derive(
@@ -97,17 +134,64 @@ pub struct ProofValidation {
     pub best_energy_milli: i64,
     pub diversity_milli: u32,
     pub valid_solution_count: u32,
-    pub quality_milli: u32,
 }
 
 #[derive(
     Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
 )]
-pub struct MiningSnapshot<BlockNumber, Hash, Nodes, Edges> {
-    pub block_number: BlockNumber,
-    pub parent_hash: Hash,
+pub struct MiningSnapshot<Nodes, Edges, AllowedValues> {
+    /// `block_hash(LastProofBlock)` — the header hash of the most recent
+    /// winning block. The only "time" input the miner needs: it's stable
+    /// for the whole round and feeds straight into `derive_nonce`. Both
+    /// `block_number` and `parent_hash` were dropped from this snapshot
+    /// because each existed only to feed the old block-number-bound nonce
+    /// derivation; the new contract has neither in its input set.
+    pub last_proof_block_hash: H256,
     pub difficulty: DifficultyConfig,
     pub topology_hash: H256,
     pub nodes: Nodes,
     pub edges: Edges,
+    /// Same value sets as the registered topology; miners need these to know
+    /// what h/j the verifier will reconstruct and what spin encoding to use.
+    pub allowed_h_values: AllowedValueSpec<AllowedValues>,
+    pub allowed_j_values: AllowedValueSpec<AllowedValues>,
+    pub allowed_spin_values: AllowedValueSpec<AllowedValues>,
+}
+
+/// Persisted record of each block's winning proof, written in `on_finalize`
+/// alongside the `BlockWinner` event. The nonce is not stored directly —
+/// consumers derive it from `(last_proof_block_hash, miner, salt)`, or call the
+/// `winning_solution` runtime API which does it server-side.
+///
+/// `last_proof_block_hash` is the value the proof actually used at submission
+/// time (i.e. `block_hash(previous winning block)`). Storing it makes
+/// `winning_solution_with_nonce` self-contained — no `frame_system::block_hash`
+/// lookup is needed at re-derivation time, and re-derivation stays correct
+/// even after the original block is pruned beyond `BlockHashCount`.
+///
+/// `difficulty` captures the *active* threshold the proof actually had to
+/// clear (i.e. decay applied, but before the post-win adjustment). The next
+/// block's threshold is whatever `Difficulty<T>` storage now holds, which is
+/// `adjust_on_proof(difficulty, ...)` — that value is *not* duplicated here.
+#[derive(
+    Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
+)]
+pub struct WinningSolution<AccountId, Balance, BlockNumber> {
+    pub miner: AccountId,
+    pub salt: [u8; 32],
+    pub energy_milli: i64,
+    pub reward: Balance,
+    pub submitted_at: BlockNumber,
+    pub difficulty: DifficultyConfig,
+    pub last_proof_block_hash: H256,
+}
+
+/// Runtime-API view augmenting [`WinningSolution`] with the derived nonce.
+/// Saves consumers from running BLAKE3 client-side.
+#[derive(
+    Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
+)]
+pub struct WinningSolutionWithNonce<AccountId, Balance, BlockNumber> {
+    pub solution: WinningSolution<AccountId, Balance, BlockNumber>,
+    pub nonce: U256,
 }

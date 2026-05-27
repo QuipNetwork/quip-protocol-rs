@@ -14,6 +14,28 @@ pub enum ValidationError {
     /// The caller supplied no candidate `h` values for model generation.
     #[cfg_attr(feature = "std", error("allowed h-values must not be empty"))]
     EmptyFieldValues,
+    /// An `AllowedValueSpec` is empty or has inverted bounds (`max < min`).
+    #[cfg_attr(feature = "std", error("allowed value spec is empty or inverted"))]
+    EmptyAllowedValues,
+    /// The encoded value falls outside the spec's representable range.
+    #[cfg_attr(
+        feature = "std",
+        error("encoded value {raw} is not a valid representation under this spec")
+    )]
+    InvalidEncodedValue { raw: u32 },
+    /// The spec requires more bits per value than the protocol supports.
+    #[cfg_attr(
+        feature = "std",
+        error("encoding requires {bits} bits per value, exceeds protocol maximum")
+    )]
+    EncodingTooWide { bits: u8 },
+    /// A packed solution payload's byte count does not match the bit-width
+    /// implied by the spec and the expected spin count.
+    #[cfg_attr(
+        feature = "std",
+        error("packed solution length mismatch: expected {expected} bytes, got {actual}")
+    )]
+    PackedSolutionLengthMismatch { expected: usize, actual: usize },
     /// A solution length does not match the expected number of spins.
     #[cfg_attr(
         feature = "std",
@@ -52,6 +74,21 @@ impl fmt::Display for ValidationError {
         match self {
             Self::EmptyNodes => write!(f, "node set must not be empty"),
             Self::EmptyFieldValues => write!(f, "allowed h-values must not be empty"),
+            Self::EmptyAllowedValues => write!(f, "allowed value spec is empty or inverted"),
+            Self::InvalidEncodedValue { raw } => {
+                write!(
+                    f,
+                    "encoded value {raw} is not a valid representation under this spec"
+                )
+            }
+            Self::EncodingTooWide { bits } => write!(
+                f,
+                "encoding requires {bits} bits per value, exceeds protocol maximum"
+            ),
+            Self::PackedSolutionLengthMismatch { expected, actual } => write!(
+                f,
+                "packed solution length mismatch: expected {expected} bytes, got {actual}"
+            ),
             Self::SolutionLengthMismatch { expected, actual } => {
                 write!(
                     f,
