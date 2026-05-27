@@ -14,6 +14,12 @@ pub enum Subcommand {
     #[command(subcommand)]
     Key(sc_cli::KeySubcommand),
 
+    /// Insert a hybrid post-quantum BABE or GRANDPA session key into the
+    /// keystore. Derives the standard key-type id (`babe` / `gran`) from the
+    /// chosen scheme; the equivalent stock command is
+    /// `key insert --scheme hybrid-(babe|grandpa)-h(344|144) --key-type ...`.
+    InsertHybridKey(crate::insert_hybrid_key::InsertHybridKeyCmd),
+
     /// Build a chain specification.
     /// DEPRECATED: `build-spec` command will be removed after 1/04/2026. Use `export-chain-spec`
     /// command instead.

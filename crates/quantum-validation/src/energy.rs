@@ -62,7 +62,32 @@ pub fn energy_of_solution(
     Ok(energy)
 }
 
-/// Estimate the expected ground-state energy for a random Ising problem.
+/// Estimate the expected ground-state energy at a chosen empirical `c`.
+///
+/// Mirrors `shared.energy_utils.expected_solution_energy(c=…)` from the
+/// v0.1 Python reference. The `c` factor encodes SA efficiency at a given
+/// computational effort — lower values (e.g. 0.7) correspond to less
+/// effort and a higher (less-negative) energy, higher values (e.g. 0.8)
+/// to more effort and a lower (more-negative) energy. The result is
+/// returned in milli precision.
+pub fn expected_gse_with_c(num_nodes: u32, num_edges: u32, c: f64) -> MilliEnergy {
+    if num_nodes == 0 || num_edges == 0 {
+        return 0;
+    }
+
+    let n = f64::from(num_nodes);
+    let m = f64::from(num_edges);
+    let avg_degree = (2.0 * m) / n;
+
+    let sqrt_avg_degree = libm::sqrt(avg_degree);
+    let j_contribution = -c * sqrt_avg_degree * n;
+    let h_contribution = -c * DEFAULT_H_ALPHA * DEFAULT_H_NONZERO_FRACTION * n / sqrt_avg_degree;
+
+    libm::round((j_contribution + h_contribution) * (MILLI_SCALE as f64)) as MilliEnergy
+}
+
+/// Estimate the expected ground-state energy for a random Ising problem
+/// at the canonical `c = 0.75`.
 ///
 /// This mirrors the current Python reference model in
 /// `shared.energy_utils.expected_solution_energy()` using its default
@@ -73,20 +98,7 @@ pub fn energy_of_solution(
 ///
 /// The result is returned in milli precision.
 pub fn expected_gse(num_nodes: u32, num_edges: u32) -> MilliEnergy {
-    if num_nodes == 0 || num_edges == 0 {
-        return 0;
-    }
-
-    let n = f64::from(num_nodes);
-    let m = f64::from(num_edges);
-    let avg_degree = (2.0 * m) / n;
-
-    let sqrt_avg_degree = libm::sqrt(avg_degree);
-    let j_contribution = -DEFAULT_GSE_C * sqrt_avg_degree * n;
-    let h_contribution =
-        -DEFAULT_GSE_C * DEFAULT_H_ALPHA * DEFAULT_H_NONZERO_FRACTION * n / sqrt_avg_degree;
-
-    libm::round((j_contribution + h_contribution) * (MILLI_SCALE as f64)) as MilliEnergy
+    expected_gse_with_c(num_nodes, num_edges, DEFAULT_GSE_C)
 }
 
 fn validate_shape(
@@ -132,7 +144,7 @@ fn position_of_node(nodes: &[u32], target: u32) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{energy_of_solution, expected_gse};
+    use super::{energy_of_solution, expected_gse, expected_gse_with_c};
     use crate::errors::ValidationError;
 
     #[test]
@@ -181,5 +193,23 @@ mod tests {
     fn expected_gse_is_zero_for_empty_topology() {
         assert_eq!(expected_gse(0, 100), 0);
         assert_eq!(expected_gse(100, 0), 0);
+    }
+
+    #[test]
+    fn expected_gse_with_c_matches_default_at_canonical_c() {
+        assert_eq!(
+            expected_gse(1024, 2048),
+            expected_gse_with_c(1024, 2048, 0.75),
+        );
+    }
+
+    #[test]
+    fn expected_gse_with_c_is_more_negative_for_larger_c() {
+        let easy = expected_gse_with_c(1024, 2048, 0.70);
+        let hard = expected_gse_with_c(1024, 2048, 0.80);
+        assert!(
+            hard < easy,
+            "hard (c=0.80) must be more negative than easy (c=0.70): hard={hard}, easy={easy}",
+        );
     }
 }

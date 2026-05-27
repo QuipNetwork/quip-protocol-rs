@@ -79,7 +79,10 @@ pub const ACCOUNT_ID_DOMAIN: &[u8] = b"quip-account-v1";
 /// from `quip-crypto-primitives`) or a streaming hasher (would force a
 /// host-hashing-module change tracked separately).
 pub fn account_id_from_public(public: &HybridPublic) -> DerivedAccountId {
-    let pub_bytes = public.as_ref();
+    // After upstream commit `d125cbde` (polkadot-sdk v0.2), `Public` now
+    // implements both `AsRef<[u8]>` and `AsRef<InnerPublic>`, so the bare
+    // `public.as_ref()` is ambiguous; we explicitly select the byte slice.
+    let pub_bytes: &[u8] = public.as_ref();
     let mut input = Vec::with_capacity(ACCOUNT_ID_DOMAIN.len() + pub_bytes.len());
     input.extend_from_slice(ACCOUNT_ID_DOMAIN);
     input.extend_from_slice(pub_bytes);

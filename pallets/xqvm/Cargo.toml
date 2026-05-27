@@ -1,7 +1,7 @@
 [package]
 name = "pallet-xqvm"
 description = "FRAME pallet for on-chain XQVM bytecode execution."
-version = "0.1.0"
+version = "0.2.0"
 license = "Unlicense"
 authors.workspace = true
 homepage.workspace = true
@@ -24,8 +24,8 @@ scale-info = { features = ["derive"], workspace = true }
 sp-runtime.workspace = true
 
 # XQVM crates (no_std compatible)
-aglais-xqvm-vm = { git = "ssh://git@gitlab.com/quip.network/xq-rs.git", rev = "3cf0b07", default-features = false }
-aglais-xqvm-bytecode = { git = "ssh://git@gitlab.com/quip.network/xq-rs.git", rev = "3cf0b07", default-features = false }
+aglais-xqvm-vm = { git = "https://gitlab.com/quip.network/xquad.git", rev = "3cf0b07", default-features = false }
+aglais-xqvm-bytecode = { git = "https://gitlab.com/quip.network/xquad.git", rev = "3cf0b07", default-features = false }
 
 [dev-dependencies]
 sp-core = { default-features = true, workspace = true }

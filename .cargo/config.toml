@@ -1,0 +1,21 @@
+# macOS-only fix for librocksdb-sys + bindgen build:
+#
+# `librocksdb-sys` uses bindgen, which transitively links against
+# `libclang.dylib`. On macOS the only libclang.dylib available system-wide
+# (Xcode toolchain and CommandLineTools) ships with `install_name
+# @rpath/libclang.dylib`, but `clang-sys`'s build script emits only a link
+# search path — not an rpath — so the bindgen build script binary fails at
+# dyld load time with `Library not loaded: @rpath/libclang.dylib`.
+#
+# These rustflags add both standard libclang locations as runtime rpaths on
+# every rustc invocation (including build-script binaries). dyld walks
+# LC_RPATH entries in order, so either Xcode or CommandLineTools is enough.
+#
+# The `cfg(target_os = "macos")` gate keeps Linux and Windows untouched.
+[target.'cfg(target_os = "macos")']
+rustflags = [
+    "-C",
+    "link-arg=-Wl,-rpath,/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib",
+    "-C",
+    "link-arg=-Wl,-rpath,/Library/Developer/CommandLineTools/usr/lib",
+]

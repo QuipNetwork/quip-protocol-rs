@@ -67,6 +67,7 @@ parameter_types! {
     pub const MinerDeposit: Balance = 100;
     pub const BlockReward: Balance = 50;
     pub const MaxProofsPerBlock: u32 = 8;
+    pub const MaxAllowedValues: u32 = 32;
 }
 
 impl pallet_quantum_pow::Config for Test {
@@ -80,6 +81,10 @@ impl pallet_quantum_pow::Config for Test {
     type MinerDeposit = MinerDeposit;
     type BlockReward = BlockReward;
     type MaxProofsPerBlock = MaxProofsPerBlock;
+    type MaxAllowedValues = MaxAllowedValues;
+    type CurveCEasyMilli = ConstU32<700>;
+    type CurveCKneeMilli = ConstU32<750>;
+    type CurveCHardMilli = ConstU32<800>;
     type WeightInfo = ();
 }
 
@@ -98,6 +103,13 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
     let mut ext: sp_io::TestExternalities = storage.into();
     ext.execute_with(|| {
         System::set_block_number(1);
+        // Mirror production: on_initialize at block 1 captures
+        // parent_hash() (== block_hash(0)) into LastProofBlockHash so
+        // nonce derivation has a stable seed before any proof has won.
+        // Without this, tests would see LastProofBlockHash == zero while
+        // production sees block_hash(0).
+        use frame_support::traits::Hooks;
+        QuantumPow::on_initialize(1);
     });
     ext
 }

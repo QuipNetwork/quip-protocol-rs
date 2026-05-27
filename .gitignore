@@ -31,3 +31,8 @@ polkadot-sdk
 
 # Python
 __pycache__
+
+# Per-operator key material produced by scripts/derive-operator-keys.sh.
+# The script also writes a `*` .gitignore inside the directory; this entry
+# is the outer guardrail in case the directory is moved or recreated.
+/quip-testnet-keys/

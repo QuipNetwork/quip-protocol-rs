@@ -243,42 +243,52 @@
   ],
   "derive_nonce_cases": [
     {
-      "name": "test-miner/blk38",
-      "parent_hash_hex": "abababababababababababababababababababababababababababababababab",
-      "miner": "test-miner",
-      "block_number": 38,
-      "salt_hex": "0000000000000000000000000000000000000000000000000000000000000000",
-      "expected_nonce": 17070874985308480773
+      "name": "alice_seedA_saltA",
+      "last_proof_block_hash_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "miner_hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "salt_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "expected_nonce_hex": "7a9df8a921f5a8970e35d459f20cf899545b14bb2c1ff5ac0223a634a826158d"
     },
     {
-      "name": "miner/blk0",
-      "parent_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
-      "miner": "miner",
-      "block_number": 0,
-      "salt_hex": "0000000000000000000000000000000000000000000000000000000000000000",
-      "expected_nonce": 18016675733000508198
+      "name": "alice_seedA_saltB",
+      "last_proof_block_hash_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "miner_hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "salt_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "expected_nonce_hex": "f1843f53ac7d823ad5c7c4e800bff2fe56565a32e772425f96531890b3acdb79"
     },
     {
-      "name": "alice/blk100",
-      "parent_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
-      "miner": "alice",
-      "block_number": 100,
+      "name": "bob_seedA_saltA",
+      "last_proof_block_hash_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "miner_hex": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+      "salt_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "expected_nonce_hex": "7959f45a2689156b1ff64ea87de6229bb599bf360313ebfc87c3d62b22a7bdf2"
+    },
+    {
+      "name": "alice_seedB_saltA",
+      "last_proof_block_hash_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+      "miner_hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "salt_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "expected_nonce_hex": "e89544dd7115f4ddfdd51f295cb7aa752db8fef993b149c78f75b58aba229ecd"
+    },
+    {
+      "name": "alice_zeros",
+      "last_proof_block_hash_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "miner_hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "salt_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_nonce_hex": "f02d9adf91497abf71b6cf0e473495ad12709ba2a387deba3c627ed85bb46a42"
+    },
+    {
+      "name": "alice_max",
+      "last_proof_block_hash_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "miner_hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
       "salt_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-      "expected_nonce": 6748957195065950297
-    },
-    {
-      "name": "node-7/blk1000000",
-      "parent_hash_hex": "0102030000000000000000000000000000000000000000000000000000000000",
-      "miner": "node-7",
-      "block_number": 1000000,
-      "salt_hex": "dead000000000000000000000000000000000000000000000000000000000000",
-      "expected_nonce": 10529145757978549224
+      "expected_nonce_hex": "befea9c2fba1888dab0bf12d98b3c1d30bdc47ff87acdc3603fbf914c6520880"
     }
   ],
   "ising_model_cases": [
     {
-      "name": "nonce=42/n3e2",
-      "nonce": 42,
+      "name": "ternary_h_binary_j_small",
+      "nonce_hex": "0000000000000000000000000000000000000000000000000000000000000001",
       "nodes": [
         0,
         1,
@@ -294,30 +304,39 @@
           2
         ]
       ],
-      "allowed_h_values": [
+      "allowed_h": {
+        "Set": [
+          -1000,
+          0,
+          1000
+        ]
+      },
+      "allowed_j": {
+        "Set": [
+          -1000,
+          1000
+        ]
+      },
+      "expected_h_milli": [
         -1000,
-        0,
+        -1000,
         1000
       ],
-      "expected_h": [
-        -1000,
-        -1000,
-        0
-      ],
-      "expected_j": [
-        -1000,
-        -1000
+      "expected_j_milli": [
+        1000,
+        1000
       ]
     },
     {
-      "name": "nonce=42/n5e4",
-      "nonce": 42,
+      "name": "ternary_h_binary_j_medium",
+      "nonce_hex": "000000000000000000000000000000000000000000000000000000000000002a",
       "nodes": [
         0,
         1,
         2,
         3,
-        4
+        4,
+        5
       ],
       "edges": [
         [
@@ -335,169 +354,56 @@
         [
           3,
           4
+        ],
+        [
+          4,
+          5
+        ],
+        [
+          0,
+          5
         ]
       ],
-      "allowed_h_values": [
-        -1000,
-        0,
-        1000
-      ],
-      "expected_h": [
-        -1000,
-        -1000,
-        0,
-        -1000,
-        1000
-      ],
-      "expected_j": [
-        -1000,
+      "allowed_h": {
+        "Set": [
+          -1000,
+          0,
+          1000
+        ]
+      },
+      "allowed_j": {
+        "Set": [
+          -1000,
+          1000
+        ]
+      },
+      "expected_h_milli": [
         -1000,
         1000,
-        -1000
-      ]
-    },
-    {
-      "name": "nonce=42/n4e6",
-      "nonce": 42,
-      "nodes": [
         0,
-        1,
-        2,
-        3
-      ],
-      "edges": [
-        [
-          0,
-          1
-        ],
-        [
-          0,
-          2
-        ],
-        [
-          0,
-          3
-        ],
-        [
-          1,
-          2
-        ],
-        [
-          1,
-          3
-        ],
-        [
-          2,
-          3
-        ]
-      ],
-      "allowed_h_values": [
-        -1000,
-        0,
-        1000
-      ],
-      "expected_h": [
-        -1000,
-        -1000,
-        0,
-        -1000
-      ],
-      "expected_j": [
-        -1000,
-        -1000,
-        -1000,
-        1000,
-        -1000,
-        -1000
-      ]
-    },
-    {
-      "name": "nonce=42/n4e4",
-      "nonce": 42,
-      "nodes": [
-        5,
-        10,
-        15,
-        20
-      ],
-      "edges": [
-        [
-          5,
-          10
-        ],
-        [
-          10,
-          15
-        ],
-        [
-          15,
-          20
-        ],
-        [
-          5,
-          20
-        ]
-      ],
-      "allowed_h_values": [
-        -1000,
-        0,
-        1000
-      ],
-      "expected_h": [
-        -1000,
-        -1000,
-        0,
-        -1000
-      ],
-      "expected_j": [
-        -1000,
-        -1000,
-        -1000,
-        1000
-      ]
-    },
-    {
-      "name": "nonce=0/n3e2",
-      "nonce": 0,
-      "nodes": [
-        0,
-        1,
-        2
-      ],
-      "edges": [
-        [
-          0,
-          1
-        ],
-        [
-          1,
-          2
-        ]
-      ],
-      "allowed_h_values": [
-        -1000,
-        0,
-        1000
-      ],
-      "expected_h": [
         1000,
         0,
         0
       ],
-      "expected_j": [
+      "expected_j_milli": [
+        -1000,
         1000,
-        -1000
+        1000,
+        1000,
+        1000,
+        1000
       ]
     },
     {
-      "name": "nonce=0/n5e4",
-      "nonce": 0,
+      "name": "integer_range_h_set_j",
+      "nonce_hex": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
       "nodes": [
         0,
         1,
         2,
         3,
-        4
+        4,
+        5
       ],
       "edges": [
         [
@@ -515,130 +421,48 @@
         [
           3,
           4
-        ]
-      ],
-      "allowed_h_values": [
-        -1000,
-        0,
-        1000
-      ],
-      "expected_h": [
-        1000,
-        0,
-        0,
-        1000,
-        0
-      ],
-      "expected_j": [
-        -1000,
-        -1000,
-        -1000,
-        1000
-      ]
-    },
-    {
-      "name": "nonce=0/n4e6",
-      "nonce": 0,
-      "nodes": [
-        0,
-        1,
-        2,
-        3
-      ],
-      "edges": [
+        ],
         [
-          0,
-          1
+          4,
+          5
         ],
         [
           0,
-          2
-        ],
-        [
-          0,
-          3
-        ],
-        [
-          1,
-          2
-        ],
-        [
-          1,
-          3
-        ],
-        [
-          2,
-          3
+          5
         ]
       ],
-      "allowed_h_values": [
+      "allowed_h": {
+        "IntegerRange": {
+          "min": -3,
+          "max": 3
+        }
+      },
+      "allowed_j": {
+        "Set": [
+          -2000,
+          2000
+        ]
+      },
+      "expected_h_milli": [
+        3000,
+        3000,
+        -2000,
         -1000,
         0,
-        1000
+        2000
       ],
-      "expected_h": [
-        1000,
-        0,
-        0,
-        1000
-      ],
-      "expected_j": [
-        -1000,
-        -1000,
-        -1000,
-        -1000,
-        1000,
-        1000
+      "expected_j_milli": [
+        -2000,
+        2000,
+        -2000,
+        -2000,
+        -2000,
+        -2000
       ]
     },
     {
-      "name": "nonce=0/n4e4",
-      "nonce": 0,
-      "nodes": [
-        5,
-        10,
-        15,
-        20
-      ],
-      "edges": [
-        [
-          5,
-          10
-        ],
-        [
-          10,
-          15
-        ],
-        [
-          15,
-          20
-        ],
-        [
-          5,
-          20
-        ]
-      ],
-      "allowed_h_values": [
-        -1000,
-        0,
-        1000
-      ],
-      "expected_h": [
-        1000,
-        0,
-        0,
-        1000
-      ],
-      "expected_j": [
-        -1000,
-        -1000,
-        -1000,
-        -1000
-      ]
-    },
-    {
-      "name": "nonce=12345/n3e2",
-      "nonce": 12345,
+      "name": "continuous_range_h_binary_j",
+      "nonce_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       "nodes": [
         0,
         1,
@@ -654,346 +478,26 @@
           2
         ]
       ],
-      "allowed_h_values": [
-        -1000,
-        0,
-        1000
-      ],
-      "expected_h": [
-        1000,
-        1000,
-        1000
-      ],
-      "expected_j": [
-        -1000,
-        1000
-      ]
-    },
-    {
-      "name": "nonce=12345/n5e4",
-      "nonce": 12345,
-      "nodes": [
-        0,
-        1,
-        2,
-        3,
-        4
-      ],
-      "edges": [
-        [
-          0,
-          1
-        ],
-        [
-          1,
-          2
-        ],
-        [
-          2,
-          3
-        ],
-        [
-          3,
-          4
+      "allowed_h": {
+        "ContinuousRange": {
+          "min": -1000,
+          "max": 1000
+        }
+      },
+      "allowed_j": {
+        "Set": [
+          -1000,
+          1000
         ]
+      },
+      "expected_h_milli": [
+        566,
+        -24,
+        -657
       ],
-      "allowed_h_values": [
-        -1000,
-        0,
-        1000
-      ],
-      "expected_h": [
-        1000,
-        1000,
-        1000,
-        0,
-        -1000
-      ],
-      "expected_j": [
-        1000,
-        -1000,
+      "expected_j_milli": [
         1000,
         -1000
-      ]
-    },
-    {
-      "name": "nonce=12345/n4e6",
-      "nonce": 12345,
-      "nodes": [
-        0,
-        1,
-        2,
-        3
-      ],
-      "edges": [
-        [
-          0,
-          1
-        ],
-        [
-          0,
-          2
-        ],
-        [
-          0,
-          3
-        ],
-        [
-          1,
-          2
-        ],
-        [
-          1,
-          3
-        ],
-        [
-          2,
-          3
-        ]
-      ],
-      "allowed_h_values": [
-        -1000,
-        0,
-        1000
-      ],
-      "expected_h": [
-        1000,
-        1000,
-        1000,
-        0
-      ],
-      "expected_j": [
-        1000,
-        1000,
-        -1000,
-        1000,
-        -1000,
-        1000
-      ]
-    },
-    {
-      "name": "nonce=12345/n4e4",
-      "nonce": 12345,
-      "nodes": [
-        5,
-        10,
-        15,
-        20
-      ],
-      "edges": [
-        [
-          5,
-          10
-        ],
-        [
-          10,
-          15
-        ],
-        [
-          15,
-          20
-        ],
-        [
-          5,
-          20
-        ]
-      ],
-      "allowed_h_values": [
-        -1000,
-        0,
-        1000
-      ],
-      "expected_h": [
-        1000,
-        1000,
-        1000,
-        0
-      ],
-      "expected_j": [
-        1000,
-        1000,
-        -1000,
-        1000
-      ]
-    },
-    {
-      "name": "nonce=17070874985308480773/n3e2",
-      "nonce": 17070874985308480773,
-      "nodes": [
-        0,
-        1,
-        2
-      ],
-      "edges": [
-        [
-          0,
-          1
-        ],
-        [
-          1,
-          2
-        ]
-      ],
-      "allowed_h_values": [
-        -1000,
-        0,
-        1000
-      ],
-      "expected_h": [
-        1000,
-        0,
-        1000
-      ],
-      "expected_j": [
-        1000,
-        1000
-      ]
-    },
-    {
-      "name": "nonce=17070874985308480773/n5e4",
-      "nonce": 17070874985308480773,
-      "nodes": [
-        0,
-        1,
-        2,
-        3,
-        4
-      ],
-      "edges": [
-        [
-          0,
-          1
-        ],
-        [
-          1,
-          2
-        ],
-        [
-          2,
-          3
-        ],
-        [
-          3,
-          4
-        ]
-      ],
-      "allowed_h_values": [
-        -1000,
-        0,
-        1000
-      ],
-      "expected_h": [
-        1000,
-        0,
-        1000,
-        0,
-        0
-      ],
-      "expected_j": [
-        -1000,
-        1000,
-        1000,
-        -1000
-      ]
-    },
-    {
-      "name": "nonce=17070874985308480773/n4e6",
-      "nonce": 17070874985308480773,
-      "nodes": [
-        0,
-        1,
-        2,
-        3
-      ],
-      "edges": [
-        [
-          0,
-          1
-        ],
-        [
-          0,
-          2
-        ],
-        [
-          0,
-          3
-        ],
-        [
-          1,
-          2
-        ],
-        [
-          1,
-          3
-        ],
-        [
-          2,
-          3
-        ]
-      ],
-      "allowed_h_values": [
-        -1000,
-        0,
-        1000
-      ],
-      "expected_h": [
-        1000,
-        0,
-        1000,
-        0
-      ],
-      "expected_j": [
-        1000,
-        -1000,
-        1000,
-        1000,
-        -1000,
-        1000
-      ]
-    },
-    {
-      "name": "nonce=17070874985308480773/n4e4",
-      "nonce": 17070874985308480773,
-      "nodes": [
-        5,
-        10,
-        15,
-        20
-      ],
-      "edges": [
-        [
-          5,
-          10
-        ],
-        [
-          10,
-          15
-        ],
-        [
-          15,
-          20
-        ],
-        [
-          5,
-          20
-        ]
-      ],
-      "allowed_h_values": [
-        -1000,
-        0,
-        1000
-      ],
-      "expected_h": [
-        1000,
-        0,
-        1000,
-        0
-      ],
-      "expected_j": [
-        1000,
-        -1000,
-        1000,
-        1000
       ]
     }
   ],
