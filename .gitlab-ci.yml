@@ -10,7 +10,7 @@
 #   - merge_request_event  →  test
 #   - push to main         →  test + build (:latest)
 #   - push to v0.2         →  test + build (:v0.2-preview)
-#   - git tag              →  test + build (:<tag>)
+#   - git tag              →  test + build (:<tag> + floating :<vMAJOR.MINOR>)
 #
 # Toolchain image: docker.io/carback1/rust-substrate-builder:latest
 # (built manually from .gitlab/ci-toolchain.Dockerfile and pushed to Docker
@@ -95,12 +95,22 @@ kaniko-build-push:
         "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')" \
         > /kaniko/.docker/config.json
   script:
+    # On tag pipelines, also publish a floating minor-series tag derived from the
+    # release tag (e.g. v0.2.0rc1 → :v0.2) so deployments can pin a series and
+    # pick up the latest release in it. Branch pipelines get PRIMARY_TAG + sha
+    # only. kaniko's debug image ships busybox sh/grep, which supports -oE.
     - |
+      SERIES_DEST=""
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        SERIES_TAG=$(printf '%s' "$CI_COMMIT_TAG" | grep -oE '^v[0-9]+\.[0-9]+' || true)
+        [ -n "$SERIES_TAG" ] && SERIES_DEST="--destination=$IMAGE:$SERIES_TAG"
+      fi
       /kaniko/executor \
         --context "$CI_PROJECT_DIR" \
         --dockerfile "$CI_PROJECT_DIR/Dockerfile" \
         --destination "$IMAGE:$PRIMARY_TAG" \
         --destination "$IMAGE:sha-$CI_COMMIT_SHORT_SHA" \
+        $SERIES_DEST \
         --build-arg "SUBSTRATE_CLI_GIT_COMMIT_HASH=$CI_COMMIT_SHORT_SHA" \
         --cache=true \
         --cache-repo "$CACHE_IMAGE"
