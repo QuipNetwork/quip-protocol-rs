@@ -1,5 +1,9 @@
 # syntax=docker/dockerfile:1.7
-ARG RUST_VERSION=1
+# Pin Rust deliberately: the runtime↔host ABI (sp-io ext_* host functions) is
+# toolchain-sensitive. Rust 1.96.0 regressed the wasm32v1-none runtime link
+# ("undefined symbol: ext_*"). Keep this in lockstep with the CI toolchain
+# image (.gitlab/ci-toolchain.Dockerfile); bump both together after verifying.
+ARG RUST_VERSION=1.95.0
 ARG DEBIAN_VERSION=bookworm
 
 FROM rust:${RUST_VERSION}-${DEBIAN_VERSION} AS builder
