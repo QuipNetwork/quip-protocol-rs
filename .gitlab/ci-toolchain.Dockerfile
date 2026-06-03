@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 #
-# CI toolchain image: rust:1-bookworm + the system deps needed to build the
+# CI toolchain image: rust:1.95.0-bookworm + the system deps needed to build the
 # quip runtime (clang/libclang for bindgen, protobuf-compiler, libssl, cmake)
 # plus the wasm32v1-none target and rust-src component required by
 # substrate-wasm-builder.
@@ -17,7 +17,10 @@
 #     --push \
 #     .gitlab/
 
-ARG RUST_VERSION=1
+# Pin Rust in lockstep with the production Dockerfile. Rust 1.96.0 regressed
+# the wasm32v1-none runtime link ("undefined symbol: ext_*"); 1.95.0 is the
+# last known-good. Bump both Dockerfiles together after verifying a build.
+ARG RUST_VERSION=1.95.0
 ARG DEBIAN_VERSION=bookworm
 
 FROM rust:${RUST_VERSION}-${DEBIAN_VERSION}
