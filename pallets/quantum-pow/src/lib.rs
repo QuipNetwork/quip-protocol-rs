@@ -227,6 +227,11 @@ pub mod pallet {
         DifficultyUpdated {
             difficulty: types::DifficultyConfig,
         },
+        /// `DefaultTopology` was repointed by root. The difficulty energy
+        /// curve is calibrated against this topology from now on.
+        DefaultTopologySet {
+            topology_hash: H256,
+        },
         ProofAccepted {
             miner: T::AccountId,
             energy_milli: i64,
@@ -522,6 +527,28 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Repoint `DefaultTopology` to an already-registered topology.
+        ///
+        /// `register_topology` only seeds `DefaultTopology` on the very
+        /// first registration; this call is the operator path for upgrading
+        /// a live chain to a new topology (e.g. tracking a QPU's working
+        /// graph across calibrations). The difficulty energy curve follows
+        /// the default topology, so operators should re-baseline
+        /// `set_difficulty` after repointing when the curves differ
+        /// materially.
+        #[pallet::call_index(5)]
+        #[pallet::weight(<T as Config>::WeightInfo::set_default_topology())]
+        pub fn set_default_topology(origin: OriginFor<T>, topology_hash: H256) -> DispatchResult {
+            ensure_root(origin)?;
+            ensure!(
+                RegisteredTopologies::<T>::contains_key(topology_hash),
+                Error::<T>::TopologyNotRegistered
+            );
+            DefaultTopology::<T>::put(topology_hash);
+            Self::deposit_event(Event::DefaultTopologySet { topology_hash });
+            Ok(())
+        }
+
         #[pallet::call_index(3)]
         #[pallet::weight(<T as Config>::WeightInfo::set_difficulty())]
         pub fn set_difficulty(
@@ -777,13 +804,21 @@ pub mod pallet {
         /// first, and the first registration also seeds `DefaultTopology`.
         fn current_energy_curve() -> Option<crate::difficulty::EnergyCurve> {
             let (_, topology) = Self::default_topology_meta()?;
-            Some(crate::difficulty::EnergyCurve::new(
+            // `.ok()` is defensive only: registered topologies passed
+            // `check_spec`, so their specs are never empty/inverted and the
+            // curve construction cannot fail for chain state.
+            crate::difficulty::EnergyCurve::new(
                 topology.nodes.len() as u32,
                 topology.edges.len() as u32,
-                T::CurveCEasyMilli::get(),
-                T::CurveCKneeMilli::get(),
-                T::CurveCHardMilli::get(),
-            ))
+                crate::difficulty::CurveC {
+                    easy_milli: T::CurveCEasyMilli::get(),
+                    knee_milli: T::CurveCKneeMilli::get(),
+                    hard_milli: T::CurveCHardMilli::get(),
+                },
+                &topology.allowed_h_values.as_slice(),
+                &topology.allowed_j_values.as_slice(),
+            )
+            .ok()
         }
 
         fn current_difficulty(block_number: BlockNumberFor<T>) -> types::DifficultyConfig {

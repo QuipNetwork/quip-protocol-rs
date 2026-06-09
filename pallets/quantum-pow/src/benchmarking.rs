@@ -156,6 +156,19 @@ mod benchmarks {
     }
 
     #[benchmark]
+    fn set_default_topology() {
+        let (_nodes, _edges, topology_hash) = register_topology_for::<T>();
+        // Clear the first-registration seeding so the call exercises the
+        // repointing write, not a no-op.
+        DefaultTopology::<T>::kill();
+
+        #[extrinsic_call]
+        QuantumPow::set_default_topology(RawOrigin::Root, topology_hash);
+
+        assert_eq!(DefaultTopology::<T>::get(), Some(topology_hash));
+    }
+
+    #[benchmark]
     fn set_difficulty() {
         let difficulty = easy_difficulty();
 

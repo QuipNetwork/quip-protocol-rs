@@ -275,13 +275,15 @@ parameter_types! {
     pub const QuantumPowMaxProofsPerBlock: u32 = 8;
     /// Upper bound on the cardinality of `allowed_h_values`, `allowed_j_values`,
     /// and `allowed_spin_values` per registered topology. Set well above the
-    /// expected real-world maximum (Advantage2_system1 uses 3 for h, 2 for j,
+    /// expected real-world maximum (the legacy ternary spec uses 3 for h; the
+    /// Advantage2_system1 zero-field spin-glass spec uses 1 for h, 2 for j,
     /// 2 for spin) so future hardware-spec changes don't force a runtime
     /// upgrade.
     pub const QuantumPowMaxAllowedValues: u32 = 32;
     /// Energy-curve calibration: per-mille `c` values that define the
-    /// `(max_energy, knee_energy, min_energy)` triple via `expected_gse_with_c`
-    /// on the default topology. Defaults `(0.700, 0.750, 0.800)` centre the
+    /// `(max_energy, knee_energy, min_energy)` triple via
+    /// `expected_gse_for_specs` on the default topology and its h/J value
+    /// specs. Defaults `(0.700, 0.750, 0.800)` centre the
     /// curve's knee on the canonical `c = 0.75` used elsewhere in validation.
     pub const QuantumPowCurveCEasyMilli: u32 = 700;
     pub const QuantumPowCurveCKneeMilli: u32 = 750;

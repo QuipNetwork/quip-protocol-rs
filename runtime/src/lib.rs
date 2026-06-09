@@ -78,7 +78,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // Bumped to 103 for QUI-567: adds the canonical default plain Ising job
     // spec, root-gates `QuantumComputeMempool::register_job_spec`, and changes
     // that call's argument encoding, so `transaction_version` moves to 3.
-    spec_version: 103,
+    // Bumped to 104 for the topology-upgrade path: adds
+    // `QuantumPow::set_default_topology` (call_index 5) and makes the
+    // difficulty energy curve spec-aware (h/J magnitudes derived from the
+    // default topology's allowed-value specs instead of hardcoded ternary-h /
+    // binary-J). Existing call encodings are unchanged, so
+    // `transaction_version` stays at 3.
+    spec_version: 104,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 3,

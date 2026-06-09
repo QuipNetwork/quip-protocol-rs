@@ -1,4 +1,5 @@
 use codec::Encode;
+use quantum_validation::{AllowedValueSpec, MilliValue, ValidationError};
 
 use crate::types::DifficultyConfig;
 
@@ -44,15 +45,34 @@ pub enum Direction {
     Easier,
 }
 
+/// The three per-mille empirical `c` values that calibrate an
+/// [`EnergyCurve`].
+///
+/// SCALE-encoded `u32` per-mille because pallet constants must implement
+/// `Get<_>` and `f64` does not implement `Encode`. They are divided by 1000
+/// before being fed to `expected_gse_for_specs`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CurveC {
+    /// Easiest (least-negative) end of the curve.
+    pub easy_milli: u32,
+    /// Knee, where adjustment motion peaks.
+    pub knee_milli: u32,
+    /// Hardest (most-negative) end of the curve.
+    pub hard_milli: u32,
+}
+
 /// Topology-derived bounds for the difficulty energy curve.
 ///
 /// The curve is calibrated against a single topology's `(num_nodes,
-/// num_edges)` evaluated at three empirical `c` values:
+/// num_edges)` and its allowed h/J value specs, evaluated at three empirical
+/// `c` values:
 ///
-/// - `min_milli` = `expected_gse_with_c(.., c_hard)` — hardest, most negative.
-/// - `knee_milli` = `expected_gse_with_c(.., c_knee)` — where the curve
-///   compression peaks (motion most aggressive here).
-/// - `max_milli` = `expected_gse_with_c(.., c_easy)` — easiest, least negative.
+/// - `min_milli` = `expected_gse_for_specs(.., c_hard, ..)` — hardest, most
+///   negative.
+/// - `knee_milli` = `expected_gse_for_specs(.., c_knee, ..)` — where the
+///   curve compression peaks (motion most aggressive here).
+/// - `max_milli` = `expected_gse_for_specs(.., c_easy, ..)` — easiest, least
+///   negative.
 ///
 /// All three values are in milli precision. `min_milli < knee_milli <
 /// max_milli` (all negative).
@@ -64,27 +84,37 @@ pub struct EnergyCurve {
 }
 
 impl EnergyCurve {
-    /// Build a curve from topology size and three per-mille c values.
+    /// Build a curve from topology size, calibration `c` values, and the
+    /// topology's allowed h/J value specs.
     ///
-    /// The c values are SCALE-encoded `u32` because pallet constants must
-    /// implement `Get<_>` and `f64` does not implement `Encode`. They are
-    /// divided by 1000 internally before being fed to
-    /// `expected_gse_with_c`.
+    /// Deriving the field/coupling magnitudes from the specs keeps the curve
+    /// aligned with what puzzles actually sample — a zero-field topology
+    /// (`allowed_h = Set([0])`) gets a curve with no h contribution instead
+    /// of one that credits energy no puzzle can produce.
+    ///
+    /// Errors when either spec is empty or has inverted bounds (impossible
+    /// for topologies that passed `register_topology` validation).
     pub fn new(
         num_nodes: u32,
         num_edges: u32,
-        c_easy_milli: u32,
-        c_knee_milli: u32,
-        c_hard_milli: u32,
-    ) -> Self {
-        let c_easy = f64::from(c_easy_milli) / 1000.0;
-        let c_knee = f64::from(c_knee_milli) / 1000.0;
-        let c_hard = f64::from(c_hard_milli) / 1000.0;
-        Self {
-            min_milli: quantum_validation::expected_gse_with_c(num_nodes, num_edges, c_hard),
-            knee_milli: quantum_validation::expected_gse_with_c(num_nodes, num_edges, c_knee),
-            max_milli: quantum_validation::expected_gse_with_c(num_nodes, num_edges, c_easy),
-        }
+        c: CurveC,
+        allowed_h: &AllowedValueSpec<&[MilliValue]>,
+        allowed_j: &AllowedValueSpec<&[MilliValue]>,
+    ) -> Result<Self, ValidationError> {
+        let gse = |c_milli: u32| {
+            quantum_validation::expected_gse_for_specs(
+                num_nodes,
+                num_edges,
+                f64::from(c_milli) / 1000.0,
+                allowed_h,
+                allowed_j,
+            )
+        };
+        Ok(Self {
+            min_milli: gse(c.hard_milli)?,
+            knee_milli: gse(c.knee_milli)?,
+            max_milli: gse(c.easy_milli)?,
+        })
     }
 }
 

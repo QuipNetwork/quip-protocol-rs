@@ -41,12 +41,99 @@ fn easy_difficulty() -> DifficultyConfig {
     }
 }
 
-/// Energy curve calibrated against the same `(2, 1)` topology that
-/// `registered_topology()` registers. Tests that call `apply_decay` or
-/// `adjust_on_proof` directly need this so their behaviour matches what
-/// the pallet computes through `current_energy_curve()`.
+fn test_curve_c() -> crate::difficulty::CurveC {
+    crate::difficulty::CurveC {
+        easy_milli: 700,
+        knee_milli: 750,
+        hard_milli: 800,
+    }
+}
+
+/// Energy curve calibrated against the same `(2, 1)` topology and value
+/// specs that `registered_topology()` registers. Tests that call
+/// `apply_decay` or `adjust_on_proof` directly need this so their behaviour
+/// matches what the pallet computes through `current_energy_curve()`.
 fn test_curve() -> crate::difficulty::EnergyCurve {
-    crate::difficulty::EnergyCurve::new(2, 1, 700, 750, 800)
+    crate::difficulty::EnergyCurve::new(
+        2,
+        1,
+        test_curve_c(),
+        &allowed_h_spec().as_slice(),
+        &allowed_j_spec().as_slice(),
+    )
+    .expect("registered specs are non-empty")
+}
+
+#[test]
+fn energy_curve_matches_legacy_gse_for_registered_specs() {
+    // The registered ternary-h/binary-J specs are exactly the distributions
+    // the legacy formula hardcodes, so the spec-aware curve must reproduce
+    // expected_gse_with_c at all three calibration points.
+    let curve = test_curve();
+    assert_eq!(
+        curve.min_milli,
+        quantum_validation::expected_gse_with_c(2, 1, 0.800)
+    );
+    assert_eq!(
+        curve.knee_milli,
+        quantum_validation::expected_gse_with_c(2, 1, 0.750)
+    );
+    assert_eq!(
+        curve.max_milli,
+        quantum_validation::expected_gse_with_c(2, 1, 0.700)
+    );
+}
+
+#[test]
+fn energy_curve_zero_field_spec_drops_h_contribution() {
+    let zero_h: AllowedValueSpec<AllowedValueSetOf<Test>> =
+        AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![0]));
+    let curve = crate::difficulty::EnergyCurve::new(
+        2,
+        1,
+        test_curve_c(),
+        &zero_h.as_slice(),
+        &allowed_j_spec().as_slice(),
+    )
+    .expect("zero-field spec is valid");
+
+    // Every calibration point must equal the pure-J estimate…
+    for (actual, c) in [
+        (curve.min_milli, 0.800),
+        (curve.knee_milli, 0.750),
+        (curve.max_milli, 0.700),
+    ] {
+        let expected = quantum_validation::expected_gse_for_specs(
+            2,
+            1,
+            c,
+            &zero_h.as_slice(),
+            &allowed_j_spec().as_slice(),
+        )
+        .unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    // …and be strictly less negative than the ternary-h curve, which still
+    // includes a field contribution.
+    let legacy = test_curve();
+    assert!(curve.min_milli > legacy.min_milli);
+    assert!(curve.knee_milli > legacy.knee_milli);
+    assert!(curve.max_milli > legacy.max_milli);
+}
+
+#[test]
+fn energy_curve_rejects_empty_specs() {
+    let empty: AllowedValueSpec<AllowedValueSetOf<Test>> =
+        AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![]));
+    assert!(crate::difficulty::EnergyCurve::new(
+        2,
+        1,
+        test_curve_c(),
+        &empty.as_slice(),
+        &allowed_j_spec().as_slice(),
+    )
+    .is_err());
 }
 
 fn registered_topology() -> (
@@ -197,6 +284,103 @@ fn register_topology_rejects_small_graph() {
                 allowed_spin_spec(),
             ),
             crate::Error::<Test>::GraphTooSmall
+        );
+    });
+}
+
+/// Registers a second, zero-field topology (4 nodes, ring of 4 edges,
+/// h = {0}) alongside whatever is already registered. Returns its hash.
+fn registered_zero_field_topology() -> sp_core::H256 {
+    let nodes = bounded::<_, MaxNodes>(vec![0u32, 1, 2, 3]);
+    let edges = bounded::<_, MaxEdges>(vec![(0u32, 1), (1, 2), (2, 3), (0, 3)]);
+    let zero_h: AllowedValueSpec<AllowedValueSetOf<Test>> =
+        AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![0]));
+    let hash = topology::hash_topology(
+        &nodes,
+        &edges,
+        &zero_h.as_slice(),
+        &allowed_j_spec().as_slice(),
+        &allowed_spin_spec().as_slice(),
+    );
+    assert_ok!(QuantumPow::register_topology(
+        RuntimeOrigin::root(),
+        nodes,
+        edges,
+        zero_h,
+        allowed_j_spec(),
+        allowed_spin_spec(),
+    ));
+    hash
+}
+
+#[test]
+fn set_default_topology_requires_root() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        assert_noop!(
+            QuantumPow::set_default_topology(RuntimeOrigin::signed(1), hash),
+            sp_runtime::DispatchError::BadOrigin
+        );
+    });
+}
+
+#[test]
+fn set_default_topology_rejects_unregistered_hash() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology();
+        assert_noop!(
+            QuantumPow::set_default_topology(RuntimeOrigin::root(), sp_core::H256::repeat_byte(7)),
+            crate::Error::<Test>::TopologyNotRegistered
+        );
+    });
+}
+
+#[test]
+fn set_default_topology_repoints_default_and_curve() {
+    new_test_ext().execute_with(|| {
+        // Topology A becomes the default by first-registration.
+        let (_, _, hash_a) = registered_topology();
+        let hash_b = registered_zero_field_topology();
+        assert_eq!(DefaultTopology::<Test>::get(), Some(hash_a));
+
+        assert_ok!(QuantumPow::set_default_topology(
+            RuntimeOrigin::root(),
+            hash_b
+        ));
+        assert_eq!(DefaultTopology::<Test>::get(), Some(hash_b));
+
+        // The no-argument mining snapshot now serves topology B…
+        let snapshot = QuantumPow::mining_snapshot(None).expect("snapshot exists");
+        assert_eq!(snapshot.topology_hash, hash_b);
+
+        // …and difficulty decay is calibrated against B's zero-field curve,
+        // not A's ternary-field curve.
+        let initial = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: -10_000,
+            min_diversity_milli: 0,
+        };
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        LastProofBlock::<Test>::put(1);
+        System::set_block_number(101); // (101 - 1) / 20 = 5 decay steps
+
+        let zero_h: AllowedValueSpec<AllowedValueSetOf<Test>> =
+            AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![0]));
+        let curve_b = crate::difficulty::EnergyCurve::new(
+            4,
+            4,
+            test_curve_c(),
+            &zero_h.as_slice(),
+            &allowed_j_spec().as_slice(),
+        )
+        .expect("zero-field spec is valid");
+        let expected = difficulty::apply_decay(initial, 5, curve_b);
+        let decayed = QuantumPow::mining_snapshot(None).expect("snapshot exists");
+        assert_eq!(decayed.difficulty, expected);
+        assert_ne!(
+            expected,
+            difficulty::apply_decay(initial, 5, test_curve()),
+            "sanity: A's and B's curves must differ for this test to mean anything"
         );
     });
 }
@@ -967,17 +1151,20 @@ fn energy_curve_uses_default_topology_not_other_registered() {
             QuantumPow::mining_snapshot(None).expect("snapshot exists for default topology");
 
         // Expected decay using A's curve (the default).
-        let expected_default = difficulty::apply_decay(
-            initial,
-            5,
-            crate::difficulty::EnergyCurve::new(2, 1, 700, 750, 800),
-        );
+        let expected_default = difficulty::apply_decay(initial, 5, test_curve());
         // Decay using B's curve (the *non-default* topology — this is what
         // a miner-controlled curve would produce if the invariant were broken).
         let expected_other = difficulty::apply_decay(
             initial,
             5,
-            crate::difficulty::EnergyCurve::new(4, 4, 700, 750, 800),
+            crate::difficulty::EnergyCurve::new(
+                4,
+                4,
+                test_curve_c(),
+                &allowed_h_spec().as_slice(),
+                &allowed_j_spec().as_slice(),
+            )
+            .expect("registered specs are non-empty"),
         );
 
         assert_eq!(
@@ -1124,7 +1311,7 @@ fn difficulty_adjust_applies_min_delta_for_small_positive_floats() {
     // round(0.1) = 0 → without the fix, delta stays 0, function returns
     // current. With the fix, raw_delta_f > 0.0 triggers the floor.
     let current = -500_000i64;
-    let curve = crate::difficulty::EnergyCurve::new(2, 1, 700, 750, 800);
+    let curve = test_curve();
 
     let result = crate::difficulty::adjust_energy_along_curve(
         current,
