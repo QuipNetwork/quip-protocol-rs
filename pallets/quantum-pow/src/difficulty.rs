@@ -122,6 +122,11 @@ fn sample_adjustment_milli(mining_time_blocks: u64, harder: bool, seed: &[u8]) -
 /// `33a4837^`. When `current_milli` lies outside `[min_milli, max_milli]`,
 /// the curve degrades to a linear `total_range * rate` adjustment — same
 /// behaviour as v0.1.
+///
+/// Unlike v0.1, an in-range `current_milli` is clamped back into
+/// `[min_milli, max_milli]` after the adjustment: a max-roll fast win from
+/// the knee can otherwise overshoot past `min_milli`, recreating the
+/// impossible-threshold state the v1 storage migration exists to repair.
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn adjust_energy_along_curve(
     current_milli: i64,
@@ -174,9 +179,19 @@ pub(crate) fn adjust_energy_along_curve(
         return current_milli;
     }
 
-    match direction {
+    let adjusted = match direction {
         Direction::Harder => current_milli.saturating_sub(delta),
         Direction::Easier => current_milli.saturating_add(delta),
+    };
+    // In-range thresholds stay in range (see doc comment). Out-of-range
+    // inputs keep the unclamped linear fallback so root-set sentinel values
+    // converge gradually instead of snapping to a boundary. The early
+    // `total_range <= 0` return above guarantees `min < max` here, so
+    // `clamp` cannot panic.
+    if current_milli >= curve.min_milli && current_milli <= curve.max_milli {
+        adjusted.clamp(curve.min_milli, curve.max_milli)
+    } else {
+        adjusted
     }
 }
 

@@ -635,6 +635,12 @@ fn repeated_same_winner_forces_easing() {
 
         finalize_winner(1, 20);
         let after_second = Difficulty::<Test>::get();
+        // Streak count 2 is still below the threshold (3): fast wins must
+        // keep hardening. Pins the `>=` so easing cannot fire one win early.
+        assert!(
+            after_second.max_energy_milli < after_first.max_energy_milli,
+            "second consecutive win is below the easing threshold and must harden"
+        );
 
         finalize_winner(1, 30);
         let after_third = Difficulty::<Test>::get();
@@ -647,6 +653,143 @@ fn repeated_same_winner_forces_easing() {
             "third consecutive winner must force easing despite a fast proof"
         );
     });
+}
+
+#[test]
+fn runtime_upgrade_is_noop_once_versioned() {
+    new_test_ext().execute_with(|| {
+        registered_topology();
+        let curve = test_curve();
+        // Out-of-range difficulty that the v1 migration *would* clamp —
+        // but the on-chain version is already 1, so the version guard must
+        // keep the migration from re-running and yanking a legitimately
+        // hardened threshold back to the knee on every future upgrade.
+        let initial = DifficultyConfig {
+            min_solutions: 7,
+            max_energy_milli: curve.min_milli - 1,
+            min_diversity_milli: 300,
+        };
+        Difficulty::<Test>::put(initial);
+        StorageVersion::new(1).put::<QuantumPow>();
+
+        let weight = QuantumPow::on_runtime_upgrade();
+
+        assert_eq!(Difficulty::<Test>::get(), initial);
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(1));
+        assert_eq!(weight, test_db_weight().reads(1));
+    });
+}
+
+#[test]
+fn runtime_upgrade_without_topology_only_bumps_version() {
+    new_test_ext().execute_with(|| {
+        // No topology registered: the plan specifies a no-op repair (there
+        // is no curve to validate against), but the version must still be
+        // bumped so the migration does not re-run forever.
+        let initial = DifficultyConfig {
+            min_solutions: 7,
+            max_energy_milli: -1_000_000,
+            min_diversity_milli: 300,
+        };
+        Difficulty::<Test>::put(initial);
+        StorageVersion::new(0).put::<QuantumPow>();
+
+        let weight = QuantumPow::on_runtime_upgrade();
+
+        assert_eq!(Difficulty::<Test>::get(), initial);
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(1));
+        assert_eq!(weight, test_db_weight().reads_writes(3, 1));
+    });
+}
+
+#[test]
+fn runtime_upgrade_preserves_threshold_at_min_boundary() {
+    new_test_ext().execute_with(|| {
+        registered_topology();
+        let curve = test_curve();
+        // The clamp condition is strict `<`: a threshold sitting exactly on
+        // `min_milli` is still solvable and must be left alone.
+        let initial = DifficultyConfig {
+            min_solutions: 7,
+            max_energy_milli: curve.min_milli,
+            min_diversity_milli: 300,
+        };
+        Difficulty::<Test>::put(initial);
+        StorageVersion::new(0).put::<QuantumPow>();
+
+        QuantumPow::on_runtime_upgrade();
+
+        assert_eq!(Difficulty::<Test>::get(), initial);
+    });
+}
+
+#[test]
+fn zero_easing_threshold_disables_forced_easing() {
+    new_test_ext().execute_with(|| {
+        ConsecutiveWinnerEasingThreshold::set(0);
+        registered_topology();
+        let curve = test_curve();
+        let initial = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: curve.knee_milli,
+            min_diversity_milli: 0,
+        };
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        LastProofBlock::<Test>::put(1);
+
+        finalize_winner(1, 10);
+        finalize_winner(1, 20);
+        let after_second = Difficulty::<Test>::get();
+        finalize_winner(1, 30);
+        let after_third = Difficulty::<Test>::get();
+
+        // Without the `threshold > 0` guard, `count >= 0` would force
+        // easing on every single win. A threshold of 0 must mean
+        // "disabled": fast wins keep hardening (or hold at the clamp
+        // floor) — easing would raise the threshold and trip this.
+        assert!(
+            after_third.max_energy_milli <= after_second.max_energy_milli,
+            "threshold 0 disables streak easing; a fast win must never ease"
+        );
+        assert!(
+            after_third.max_energy_milli >= curve.min_milli,
+            "hardening must respect the curve floor"
+        );
+    });
+}
+
+#[test]
+fn adjustment_from_in_range_never_leaves_curve_range() {
+    let curve = test_curve();
+    // Regression for the convergence bug this MR fixes: a max-roll fast win
+    // from the knee could overshoot below `min_milli`, re-entering the
+    // impossible range the v1 migration repairs. Sweep many seeds and
+    // mining times; an in-range threshold must stay in range.
+    for seed_byte in 0_u8..64 {
+        for &mining_time in &[1_u64, 30, 59, 60, 61, 150, 200, 201, 500] {
+            for &start in &[curve.min_milli, curve.knee_milli, curve.max_milli] {
+                let adjusted = difficulty::adjust_on_proof(
+                    DifficultyConfig {
+                        min_solutions: 1,
+                        max_energy_milli: start,
+                        min_diversity_milli: 0,
+                    },
+                    mining_time,
+                    curve,
+                    &[seed_byte],
+                );
+                assert!(
+                    adjusted.max_energy_milli >= curve.min_milli
+                        && adjusted.max_energy_milli <= curve.max_milli,
+                    "seed {seed_byte}, time {mining_time}, start {start}: \
+                     adjusted threshold {} left [{}, {}]",
+                    adjusted.max_energy_milli,
+                    curve.min_milli,
+                    curve.max_milli,
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -672,9 +815,17 @@ fn winner_streak_resets_for_different_miner() {
 
         assert_eq!(streak.miner, 2);
         assert_eq!(streak.count, 1);
+        // Two fast wins from the knee can already pin the threshold at the
+        // clamp floor (`curve.min_milli`), so the reset win may have no room
+        // left to harden further. The regression this guards is the streak
+        // *not* resetting: count 3 would force easing, raising the threshold.
         assert!(
-            after_reset.max_energy_milli < before_reset.max_energy_milli,
-            "new winner below cutoff should use normal hardening"
+            after_reset.max_energy_milli <= before_reset.max_energy_milli,
+            "new winner below cutoff must use normal hardening, never easing"
+        );
+        assert!(
+            after_reset.max_energy_milli >= curve.min_milli,
+            "hardening must respect the curve floor"
         );
     });
 }

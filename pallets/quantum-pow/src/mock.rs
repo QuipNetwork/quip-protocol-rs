@@ -39,6 +39,10 @@ mod runtime {
 impl frame_system::Config for Test {
     type Block = Block;
     type AccountData = pallet_balances::AccountData<Balance>;
+    // TestDefaultConfig sets `DbWeight = ()`, making every read/write cost
+    // zero — weight assertions would compare `0 == 0` and pass regardless
+    // of the migration's accounting. Real per-op costs make them meaningful.
+    type DbWeight = frame_support::weights::constants::RocksDbWeight;
 }
 
 impl pallet_balances::Config for Test {
@@ -68,7 +72,9 @@ parameter_types! {
     pub const BlockReward: Balance = 50;
     pub const MaxProofsPerBlock: u32 = 8;
     pub const MaxAllowedValues: u32 = 32;
-    pub const ConsecutiveWinnerEasingThreshold: u32 = 3;
+    // `static` (not `const`) so tests can override it per-case, e.g. to
+    // verify that `0` disables dominant-winner easing.
+    pub static ConsecutiveWinnerEasingThreshold: u32 = 3;
 }
 
 impl pallet_quantum_pow::Config for Test {

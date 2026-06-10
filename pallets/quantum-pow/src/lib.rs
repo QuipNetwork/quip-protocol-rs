@@ -162,6 +162,7 @@ pub mod pallet {
 
         /// Consecutive wins by the same account at or above this threshold force
         /// the post-win difficulty adjustment to ease instead of harden.
+        /// Setting this to `0` disables dominant-winner easing entirely.
         #[pallet::constant]
         type ConsecutiveWinnerEasingThreshold: Get<u32>;
 
@@ -329,12 +330,17 @@ pub mod pallet {
             let mut reads = 1_u64;
             let mut writes = 1_u64;
 
+            reads = reads.saturating_add(2);
             if let Some(curve) = Self::current_energy_curve() {
-                reads = reads.saturating_add(2);
                 let mut difficulty = Difficulty::<T>::get();
                 reads = reads.saturating_add(1);
 
                 if difficulty.max_energy_milli < curve.min_milli {
+                    // Reset to the knee rather than the nearest boundary:
+                    // `min_milli` is the hardest solvable edge, so clamping
+                    // there would leave mining barely feasible. The knee
+                    // recentres the threshold where post-win adjustments
+                    // have symmetric headroom in both directions.
                     difficulty.max_energy_milli = curve.knee_milli;
                     Difficulty::<T>::put(difficulty);
                     writes = writes.saturating_add(1);
@@ -343,6 +349,35 @@ pub mod pallet {
 
             STORAGE_VERSION.put::<Pallet<T>>();
             T::DbWeight::get().reads_writes(reads, writes)
+        }
+
+        #[cfg(feature = "try-runtime")]
+        fn pre_upgrade() -> Result<Vec<u8>, sp_runtime::TryRuntimeError> {
+            Ok(Difficulty::<T>::get().encode())
+        }
+
+        #[cfg(feature = "try-runtime")]
+        fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
+            use codec::Decode;
+            let prior = crate::types::DifficultyConfig::decode(&mut &state[..])
+                .map_err(|_| sp_runtime::TryRuntimeError::Other("pre_upgrade state undecodable"))?;
+            ensure!(
+                Pallet::<T>::on_chain_storage_version() >= STORAGE_VERSION,
+                "storage version must be bumped by the migration"
+            );
+            let current = Difficulty::<T>::get();
+            ensure!(
+                current.min_solutions == prior.min_solutions
+                    && current.min_diversity_milli == prior.min_diversity_milli,
+                "migration must only touch max_energy_milli"
+            );
+            if let Some(curve) = Self::current_energy_curve() {
+                ensure!(
+                    current.max_energy_milli >= curve.min_milli,
+                    "post-migration threshold must not sit below curve.min_milli"
+                );
+            }
+            Ok(())
         }
 
         fn on_finalize(n: BlockNumberFor<T>) {
@@ -397,8 +432,15 @@ pub mod pallet {
                 ),
                 // Unreachable in normal operation: a proof would not have
                 // been submitted without a registered topology, and the
-                // first registration also seeds `DefaultTopology`.
-                None => active,
+                // first registration also seeds `DefaultTopology`. The
+                // defensive trips tests/try-runtime and logs in production
+                // so a frozen difficulty is diagnosable, not silent.
+                None => {
+                    frame_support::defensive!(
+                        "energy curve missing during on_finalize difficulty adjustment"
+                    );
+                    active
+                }
             };
             Difficulty::<T>::put(next);
             LastProofBlock::<T>::put(n);
@@ -841,7 +883,7 @@ pub mod pallet {
 
         fn update_winner_streak(miner: &T::AccountId) -> WinnerStreakOf<T> {
             let next = match WinnerStreak::<T>::get() {
-                Some(mut streak) if streak.miner == miner.clone() => {
+                Some(mut streak) if streak.miner == *miner => {
                     streak.count = streak.count.saturating_add(1);
                     streak
                 }
@@ -850,7 +892,7 @@ pub mod pallet {
                     count: 1,
                 },
             };
-            WinnerStreak::<T>::put(next.clone());
+            WinnerStreak::<T>::put(&next);
             next
         }
 
