@@ -281,11 +281,13 @@ parameter_types! {
     pub const QuantumPowMaxAllowedValues: u32 = 32;
     /// Energy-curve calibration: per-mille `c` values that define the
     /// `(max_energy, knee_energy, min_energy)` triple via `expected_gse_with_c`
-    /// on the default topology. Defaults `(0.700, 0.750, 0.800)` centre the
-    /// curve's knee on the canonical `c = 0.75` used elsewhere in validation.
+    /// on the default topology. Defaults `(0.700, 0.725, 0.750)` keep the hard
+    /// edge difficult without pushing the threshold into the known-impossible
+    /// range.
     pub const QuantumPowCurveCEasyMilli: u32 = 700;
-    pub const QuantumPowCurveCKneeMilli: u32 = 750;
-    pub const QuantumPowCurveCHardMilli: u32 = 800;
+    pub const QuantumPowCurveCKneeMilli: u32 = 725;
+    pub const QuantumPowCurveCHardMilli: u32 = 750;
+    pub const QuantumPowConsecutiveWinnerEasingThreshold: u32 = 3;
 }
 
 /// Account attributed as the builder for migration-inserted default job specs.
@@ -338,6 +340,7 @@ impl pallet_quantum_pow::Config for Runtime {
     type CurveCEasyMilli = QuantumPowCurveCEasyMilli;
     type CurveCKneeMilli = QuantumPowCurveCKneeMilli;
     type CurveCHardMilli = QuantumPowCurveCHardMilli;
+    type ConsecutiveWinnerEasingThreshold = QuantumPowConsecutiveWinnerEasingThreshold;
     type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
 }
 

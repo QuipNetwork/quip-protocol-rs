@@ -68,6 +68,7 @@ parameter_types! {
     pub const BlockReward: Balance = 50;
     pub const MaxProofsPerBlock: u32 = 8;
     pub const MaxAllowedValues: u32 = 32;
+    pub const ConsecutiveWinnerEasingThreshold: u32 = 3;
 }
 
 impl pallet_quantum_pow::Config for Test {
@@ -83,8 +84,9 @@ impl pallet_quantum_pow::Config for Test {
     type MaxProofsPerBlock = MaxProofsPerBlock;
     type MaxAllowedValues = MaxAllowedValues;
     type CurveCEasyMilli = ConstU32<700>;
-    type CurveCKneeMilli = ConstU32<750>;
-    type CurveCHardMilli = ConstU32<800>;
+    type CurveCKneeMilli = ConstU32<725>;
+    type CurveCHardMilli = ConstU32<750>;
+    type ConsecutiveWinnerEasingThreshold = ConsecutiveWinnerEasingThreshold;
     type WeightInfo = ();
 }
 

@@ -40,6 +40,7 @@ type TopologyMetaOf<T> =
     types::TopologyMeta<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>, BlockNumberOf<T>>;
 type MinerInfoOf<T> = types::MinerInfo<BalanceOf<T>, BlockNumberOf<T>>;
 type ProofRecordOf<T> = types::ProofRecord<AccountIdOf<T>, BlockNumberOf<T>>;
+type WinnerStreakOf<T> = types::WinnerStreak<AccountIdOf<T>>;
 type MiningSnapshotOf<T> = types::MiningSnapshot<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>>;
 type WinningSolutionOf<T> = types::WinningSolution<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 type WinningSolutionWithNonceOf<T> =
@@ -93,7 +94,10 @@ pub mod pallet {
     use alloc::vec;
     use alloc::vec::Vec;
     use codec::Encode;
-    use frame_support::{pallet_prelude::*, traits::ReservableCurrency};
+    use frame_support::{
+        pallet_prelude::*,
+        traits::{ReservableCurrency, StorageVersion},
+    };
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
         calculate_diversity, derive_nonce, energy_of_solution, generate_ising_model,
@@ -104,7 +108,10 @@ pub mod pallet {
     use sp_core::H256;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
 
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
     #[pallet::pallet]
+    #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
 
     #[pallet::config]
@@ -153,6 +160,11 @@ pub mod pallet {
         #[pallet::constant]
         type CurveCHardMilli: Get<u32>;
 
+        /// Consecutive wins by the same account at or above this threshold force
+        /// the post-win difficulty adjustment to ease instead of harden.
+        #[pallet::constant]
+        type ConsecutiveWinnerEasingThreshold: Get<u32>;
+
         type WeightInfo: WeightInfo;
     }
 
@@ -171,6 +183,9 @@ pub mod pallet {
 
     #[pallet::storage]
     pub type BlockBestProof<T: Config> = StorageValue<_, ProofRecordOf<T>>;
+
+    #[pallet::storage]
+    pub type WinnerStreak<T: Config> = StorageValue<_, WinnerStreakOf<T>, OptionQuery>;
 
     #[pallet::storage]
     /// Block number of the last finalized winning proof.
@@ -305,6 +320,31 @@ pub mod pallet {
             <T as Config>::WeightInfo::register_miner()
         }
 
+        fn on_runtime_upgrade() -> Weight {
+            let on_chain = Pallet::<T>::on_chain_storage_version();
+            if on_chain >= STORAGE_VERSION {
+                return T::DbWeight::get().reads(1);
+            }
+
+            let mut reads = 1_u64;
+            let mut writes = 1_u64;
+
+            if let Some(curve) = Self::current_energy_curve() {
+                reads = reads.saturating_add(2);
+                let mut difficulty = Difficulty::<T>::get();
+                reads = reads.saturating_add(1);
+
+                if difficulty.max_energy_milli < curve.min_milli {
+                    difficulty.max_energy_milli = curve.knee_milli;
+                    Difficulty::<T>::put(difficulty);
+                    writes = writes.saturating_add(1);
+                }
+            }
+
+            STORAGE_VERSION.put::<Pallet<T>>();
+            T::DbWeight::get().reads_writes(reads, writes)
+        }
+
         fn on_finalize(n: BlockNumberFor<T>) {
             let Some(record) = BlockBestProof::<T>::take() else {
                 return;
@@ -342,15 +382,18 @@ pub mod pallet {
             // this so explorers and miners can answer "what difficulty did
             // block N actually clear?" without replaying decay client-side.
             let active = Self::current_difficulty(n);
+            let winner_streak = Self::update_winner_streak(&record.miner);
+            let force_easier = Self::should_force_easier_for_streak(&winner_streak);
             // Curve calibration MUST come from chain state (DefaultTopology),
             // not from the winning proof. See `current_energy_curve` docs and
             // GitLab issue #5 for the invariant rationale.
             let next = match Self::current_energy_curve() {
-                Some(curve) => crate::difficulty::adjust_on_proof(
+                Some(curve) => crate::difficulty::adjust_on_proof_with_easing_override(
                     active,
                     mining_time_blocks,
                     curve,
                     &(frame_system::Pallet::<T>::parent_hash(), &record.miner, n).encode(),
+                    force_easier,
                 ),
                 // Unreachable in normal operation: a proof would not have
                 // been submitted without a registered topology, and the
@@ -794,6 +837,26 @@ pub mod pallet {
                 T::EpochLength::get().saturated_into::<u32>(),
                 Self::current_energy_curve(),
             )
+        }
+
+        fn update_winner_streak(miner: &T::AccountId) -> WinnerStreakOf<T> {
+            let next = match WinnerStreak::<T>::get() {
+                Some(mut streak) if streak.miner == miner.clone() => {
+                    streak.count = streak.count.saturating_add(1);
+                    streak
+                }
+                _ => WinnerStreakOf::<T> {
+                    miner: miner.clone(),
+                    count: 1,
+                },
+            };
+            WinnerStreak::<T>::put(next.clone());
+            next
+        }
+
+        fn should_force_easier_for_streak(streak: &WinnerStreakOf<T>) -> bool {
+            let threshold = T::ConsecutiveWinnerEasingThreshold::get();
+            threshold > 0 && streak.count >= threshold
         }
 
         fn validate_proof(

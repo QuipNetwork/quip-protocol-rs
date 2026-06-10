@@ -14,16 +14,15 @@ use crate::types::DifficultyConfig;
 //
 // These constants are the block-native thresholds the current policy uses.
 // They correspond to the earlier 6-second-block translation:
-// 360s -> 60 blocks, 600s -> 100 blocks, 1200s -> 200 blocks.
-const FAST_PROOF_BLOCKS: u64 = 60;
-const TARGET_PROOF_BLOCKS: u64 = 100;
+// 360s -> 60 blocks, 1200s -> 200 blocks.
+const HARDEN_CUTOFF_BLOCKS: u64 = 60;
 const SLOW_PROOF_BLOCKS: u64 = 200;
 
-/// Hardening enforces a 5-milli floor on the energy delta so very small
+/// Proof adjustment enforces a 5-milli floor on the energy delta so very small
 /// curve outputs still move the threshold by a perceptible amount.
 /// Mirrors v0.1 `apply_min_adjustment(min_adj=5.0)` for non-decay
 /// adjustments.
-const MIN_HARDENING_DELTA_MILLI: i64 = 5;
+const MIN_PROOF_ADJUSTMENT_DELTA_MILLI: i64 = 5;
 
 /// Decay enforces a 3-milli floor — matches v0.1
 /// `apply_min_adjustment(min_adj=3.0)` for decay easing.
@@ -90,25 +89,14 @@ impl EnergyCurve {
 
 fn sample_adjustment_milli(mining_time_blocks: u64, harder: bool, seed: &[u8]) -> u32 {
     let (base, variance) = if harder {
-        if mining_time_blocks < FAST_PROOF_BLOCKS {
-            (350_u32, 300_u32)
-        } else if mining_time_blocks > TARGET_PROOF_BLOCKS {
-            (50_u32, 40_u32)
-        } else {
-            let progress = ((mining_time_blocks - FAST_PROOF_BLOCKS) * 1000
-                / (TARGET_PROOF_BLOCKS - FAST_PROOF_BLOCKS)) as u32;
-            (
-                350 - ((350 - 50) * progress / 1000),
-                300 - ((300 - 40) * progress / 1000),
-            )
-        }
+        (350_u32, 300_u32)
     } else if mining_time_blocks > SLOW_PROOF_BLOCKS {
         (150_u32, 140_u32)
-    } else if mining_time_blocks < TARGET_PROOF_BLOCKS {
+    } else if mining_time_blocks <= HARDEN_CUTOFF_BLOCKS {
         (25_u32, 20_u32)
     } else {
-        let progress = ((mining_time_blocks - TARGET_PROOF_BLOCKS) * 1000
-            / (SLOW_PROOF_BLOCKS - TARGET_PROOF_BLOCKS)) as u32;
+        let progress = ((mining_time_blocks - HARDEN_CUTOFF_BLOCKS) * 1000
+            / (SLOW_PROOF_BLOCKS - HARDEN_CUTOFF_BLOCKS)) as u32;
         (
             25 + ((150 - 25) * progress / 1000),
             20 + ((140 - 20) * progress / 1000),
@@ -218,7 +206,21 @@ pub fn adjust_on_proof(
     curve: EnergyCurve,
     randomness_seed: &[u8],
 ) -> DifficultyConfig {
-    let harder = mining_time_blocks < TARGET_PROOF_BLOCKS;
+    adjust_on_proof_with_easing_override(current, mining_time_blocks, curve, randomness_seed, false)
+}
+
+/// Adjust difficulty after a winning proof, optionally forcing an easing
+/// direction. The override is used when the same miner dominates consecutive
+/// wins: a fast proof would normally harden, but dominance should reduce
+/// difficulty pressure instead.
+pub fn adjust_on_proof_with_easing_override(
+    current: DifficultyConfig,
+    mining_time_blocks: u64,
+    curve: EnergyCurve,
+    randomness_seed: &[u8],
+    force_easier: bool,
+) -> DifficultyConfig {
+    let harder = !force_easier && mining_time_blocks < HARDEN_CUTOFF_BLOCKS;
     let rate_milli = sample_adjustment_milli(mining_time_blocks, harder, randomness_seed);
     let direction = if harder {
         Direction::Harder
@@ -230,7 +232,7 @@ pub fn adjust_on_proof(
         rate_milli,
         direction,
         curve,
-        MIN_HARDENING_DELTA_MILLI,
+        MIN_PROOF_ADJUSTMENT_DELTA_MILLI,
     );
     DifficultyConfig {
         max_energy_milli: new_max_energy_milli,
