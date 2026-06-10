@@ -55,25 +55,26 @@ Update all mock/test curve construction from `EnergyCurve::new(..., 700, 750,
 
 Keep `QuantumPowEpochLength = 100` as the decay interval.
 
-In `pallets/quantum-pow/src/difficulty.rs`, replace the current target proof
-threshold behavior with explicit policy names:
+In `pallets/quantum-pow/src/difficulty.rs`, keep the v0.1 block-native
+thresholds:
 
 ```rust
-const HARDEN_CUTOFF_BLOCKS: u64 = 60;
+const FAST_PROOF_BLOCKS: u64 = 60;
+const TARGET_PROOF_BLOCKS: u64 = 100;
 const SLOW_PROOF_BLOCKS: u64 = 200;
 ```
 
-The current `TARGET_PROOF_BLOCKS = 100` should not continue to decide whether a
-win hardens or eases difficulty. A win before 60 blocks hardens. A win at or
-after 60 blocks eases.
+Direction follows the v0.1 `compute_next_block_requirements` policy:
 
-Important implementation detail:
+- A win before 60 blocks (360s) always hardens, even for a dominant winner.
+- A win at or after 60 blocks hardens gently (graduated 35%→5% band) unless
+  the winner is dominant (see Section 3), in which case it eases.
 
-- Do not simply set the existing `TARGET_PROOF_BLOCKS` to 60 while leaving
-  `FAST_PROOF_BLOCKS = 60`.
-- That would collapse the interpolation range in `sample_adjustment_milli`.
-- Rework the sampling function so the hardening and easing ranges are explicit
-  and cannot divide by zero.
+`TARGET_PROOF_BLOCKS = 100` no longer decides direction — only the rate
+bands: hardening interpolates 35%±30% → 5%±4% across 60–100 blocks, easing
+interpolates 2.5%±2% → 15%±14% across 100–200 blocks, exactly as v0.1 did
+across 360–600s and 600–1200s. The decay interval (`EpochLength = 100`)
+remains a separate concept.
 
 ### 3. Add Dominant-Winner Easing
 
@@ -114,9 +115,16 @@ Policy:
 - If the current winner is the same account as the stored streak miner,
   increment the streak count.
 - If the current winner differs, reset the streak to `{ miner, count: 1 }`.
-- If the resulting streak count is greater than or equal to the threshold,
-  force the post-win adjustment direction to `Easier`.
-- Otherwise, use normal time-based difficulty adjustment.
+- A winner with streak count at or above the threshold is *dominant*: its
+  slow wins (at or past 60 blocks) ease difficulty instead of hardening.
+- Fast wins (under 60 blocks) always harden, dominant or not — matching
+  v0.1, where the under-360s harden rule took precedence over repeat-winner
+  easing.
+- Non-dominant slow wins harden gently. v0.1 eased any repeat winner (a
+  streak of 2, keyed on miner type); we instead require the configured
+  threshold (3) by account, so a winner must demonstrate sustained dominance
+  before difficulty pressure reverses.
+- A threshold of `0` disables dominant-winner easing.
 
 This restores the spirit of miner-type/QPU awareness without adding node
 descriptors or changing miner registration.
@@ -155,9 +163,10 @@ Add or update tests for:
 
 - New curve constants: `700 / 725 / 750`.
 - Curve ordering remains `min_milli < knee_milli < max_milli`.
-- Fast proof before 60 blocks hardens for a non-dominant winner.
-- Proof at or after 60 blocks eases.
-- Consecutive same-miner wins at the threshold ease instead of harden.
+- Fast proof before 60 blocks hardens, including for a dominant winner.
+- Slow proof at or after 60 blocks hardens gently for a non-dominant winner
+  (including a different winner — the restored v0.1 rule).
+- Consecutive same-miner slow wins at the threshold ease instead of harden.
 - Winner streak resets when a different miner wins.
 - Migration clamps an out-of-range `Difficulty.max_energy_milli` to the new
   knee.

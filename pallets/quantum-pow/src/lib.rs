@@ -160,8 +160,10 @@ pub mod pallet {
         #[pallet::constant]
         type CurveCHardMilli: Get<u32>;
 
-        /// Consecutive wins by the same account at or above this threshold force
-        /// the post-win difficulty adjustment to ease instead of harden.
+        /// Consecutive wins by the same account at or above this threshold
+        /// mark the winner as dominant: slow wins (at or past the fast-proof
+        /// cutoff) then ease difficulty instead of hardening it. Fast wins
+        /// always harden regardless of dominance (v0.1 policy).
         /// Setting this to `0` disables dominant-winner easing entirely.
         #[pallet::constant]
         type ConsecutiveWinnerEasingThreshold: Get<u32>;
@@ -418,17 +420,17 @@ pub mod pallet {
             // block N actually clear?" without replaying decay client-side.
             let active = Self::current_difficulty(n);
             let winner_streak = Self::update_winner_streak(&record.miner);
-            let force_easier = Self::should_force_easier_for_streak(&winner_streak);
+            let dominant_winner = Self::is_dominant_streak(&winner_streak);
             // Curve calibration MUST come from chain state (DefaultTopology),
             // not from the winning proof. See `current_energy_curve` docs and
             // GitLab issue #5 for the invariant rationale.
             let next = match Self::current_energy_curve() {
-                Some(curve) => crate::difficulty::adjust_on_proof_with_easing_override(
+                Some(curve) => crate::difficulty::adjust_on_proof_with_dominance(
                     active,
                     mining_time_blocks,
                     curve,
                     &(frame_system::Pallet::<T>::parent_hash(), &record.miner, n).encode(),
-                    force_easier,
+                    dominant_winner,
                 ),
                 // Unreachable in normal operation: a proof would not have
                 // been submitted without a registered topology, and the
@@ -896,7 +898,11 @@ pub mod pallet {
             next
         }
 
-        fn should_force_easier_for_streak(streak: &WinnerStreakOf<T>) -> bool {
+        /// A winner is dominant when the same account has won at least
+        /// `ConsecutiveWinnerEasingThreshold` consecutive blocks. Dominance
+        /// flips slow-win adjustments to easing (fast wins always harden —
+        /// see `difficulty::adjust_on_proof_with_dominance`).
+        fn is_dominant_streak(streak: &WinnerStreakOf<T>) -> bool {
             let threshold = T::ConsecutiveWinnerEasingThreshold::get();
             threshold > 0 && streak.count >= threshold
         }
