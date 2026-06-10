@@ -225,8 +225,8 @@ impl_runtime_apis! {
 
         fn winning_solution(
             block_number: BlockNumber,
-        ) -> Option<pallet_quantum_pow::types::WinningSolutionWithNonce<AccountId, Balance, BlockNumber>> {
-            QuantumPow::winning_solution_with_nonce(block_number)
+        ) -> Option<pallet_quantum_pow::types::QBlockWithNonce<AccountId, Balance, BlockNumber>> {
+            QuantumPow::qblock_with_nonce(block_number)
         }
 
         fn current_difficulty() -> pallet_quantum_pow::types::DifficultyConfig {
