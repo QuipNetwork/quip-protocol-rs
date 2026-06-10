@@ -40,10 +40,10 @@ type TopologyMetaOf<T> =
     types::TopologyMeta<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>, BlockNumberOf<T>>;
 type MinerInfoOf<T> = types::MinerInfo<BalanceOf<T>, BlockNumberOf<T>>;
 type ProofRecordOf<T> = types::ProofRecord<AccountIdOf<T>, BlockNumberOf<T>>;
+type WinnerStreakOf<T> = types::WinnerStreak<AccountIdOf<T>>;
 type MiningSnapshotOf<T> = types::MiningSnapshot<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>>;
-type WinningSolutionOf<T> = types::WinningSolution<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
-type WinningSolutionWithNonceOf<T> =
-    types::WinningSolutionWithNonce<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
+type QBlockOf<T> = types::QBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
+type QBlockWithNonceOf<T> = types::QBlockWithNonce<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 
 sp_api::decl_runtime_apis! {
     pub trait QuantumPowApi<BlockNumber, AccountId, Balance, Nodes, Edges, AllowedValues>
@@ -73,7 +73,7 @@ sp_api::decl_runtime_apis! {
         /// proof (e.g. genesis, or any block where no `submit_proof` cleared
         /// difficulty).
         fn winning_solution(block_number: BlockNumber) -> Option<
-            crate::types::WinningSolutionWithNonce<AccountId, Balance, BlockNumber>
+            crate::types::QBlockWithNonce<AccountId, Balance, BlockNumber>
         >;
 
         /// Live difficulty threshold a miner has to clear *right now*.
@@ -93,7 +93,10 @@ pub mod pallet {
     use alloc::vec;
     use alloc::vec::Vec;
     use codec::Encode;
-    use frame_support::{pallet_prelude::*, traits::ReservableCurrency};
+    use frame_support::{
+        pallet_prelude::*,
+        traits::{ReservableCurrency, StorageVersion},
+    };
     use frame_system::pallet_prelude::*;
     use quantum_validation::{
         calculate_diversity, derive_nonce, energy_of_solution, generate_ising_model,
@@ -104,7 +107,10 @@ pub mod pallet {
     use sp_core::H256;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
 
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+
     #[pallet::pallet]
+    #[pallet::storage_version(STORAGE_VERSION)]
     pub struct Pallet<T>(_);
 
     #[pallet::config]
@@ -153,6 +159,15 @@ pub mod pallet {
         #[pallet::constant]
         type CurveCHardMilli: Get<u32>;
 
+        /// Consecutive qblocks won by the same account at or above this
+        /// threshold mark the winner as dominant: slow qblocks (at or past
+        /// the fast-proof cutoff) then ease difficulty instead of hardening
+        /// it. Fast qblocks always harden regardless of dominance (v0.1
+        /// policy). Setting this to `0` disables dominant-winner easing
+        /// entirely.
+        #[pallet::constant]
+        type ConsecutiveWinnerEasingThreshold: Get<u32>;
+
         type WeightInfo: WeightInfo;
     }
 
@@ -171,6 +186,9 @@ pub mod pallet {
 
     #[pallet::storage]
     pub type BlockBestProof<T: Config> = StorageValue<_, ProofRecordOf<T>>;
+
+    #[pallet::storage]
+    pub type WinnerStreak<T: Config> = StorageValue<_, WinnerStreakOf<T>, OptionQuery>;
 
     #[pallet::storage]
     /// Block number of the last finalized winning proof.
@@ -196,18 +214,23 @@ pub mod pallet {
     #[pallet::storage]
     pub type BlockProofCount<T: Config> = StorageValue<_, u32, ValueQuery>;
 
-    /// Persisted record of each block's winning proof, written in
+    /// Persisted record of each qblock (PoW-won block), written in
     /// `on_finalize` alongside the `BlockWinner` event.
     ///
     /// Consumers derive the winning nonce by hashing
     /// `(last_proof_block_hash, miner, salt)` with BLAKE3, or call the
     /// `QuantumPowApi::winning_solution` runtime API which does it
     /// server-side. `last_proof_block_hash` for each entry is the value the
-    /// round used at submission time, persisted in the `WinningSolution`
-    /// itself so re-derivation needs no chain-state lookup.
+    /// round used at submission time, persisted in the `QBlock` itself so
+    /// re-derivation needs no chain-state lookup.
+    ///
+    /// The storage prefix keeps the legacy `WinningSolutions` name so
+    /// existing chain state and `quantumPow.winningSolutions` queries stay
+    /// valid until the API-rename ticket lands; only the Rust identifier
+    /// uses the qblock terminology.
     #[pallet::storage]
-    pub type WinningSolutions<T: Config> =
-        StorageMap<_, Blake2_128Concat, BlockNumberFor<T>, WinningSolutionOf<T>>;
+    #[pallet::storage_prefix = "WinningSolutions"]
+    pub type QBlocks<T: Config> = StorageMap<_, Blake2_128Concat, BlockNumberFor<T>, QBlockOf<T>>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -305,6 +328,65 @@ pub mod pallet {
             <T as Config>::WeightInfo::register_miner()
         }
 
+        fn on_runtime_upgrade() -> Weight {
+            let on_chain = Pallet::<T>::on_chain_storage_version();
+            if on_chain >= STORAGE_VERSION {
+                return T::DbWeight::get().reads(1);
+            }
+
+            let mut reads = 1_u64;
+            let mut writes = 1_u64;
+
+            reads = reads.saturating_add(2);
+            if let Some(curve) = Self::current_energy_curve() {
+                let mut difficulty = Difficulty::<T>::get();
+                reads = reads.saturating_add(1);
+
+                if difficulty.max_energy_milli < curve.min_milli {
+                    // Reset to the knee rather than the nearest boundary:
+                    // `min_milli` is the hardest solvable edge, so clamping
+                    // there would leave mining barely feasible. The knee
+                    // recentres the threshold where post-win adjustments
+                    // have symmetric headroom in both directions.
+                    difficulty.max_energy_milli = curve.knee_milli;
+                    Difficulty::<T>::put(difficulty);
+                    writes = writes.saturating_add(1);
+                }
+            }
+
+            STORAGE_VERSION.put::<Pallet<T>>();
+            T::DbWeight::get().reads_writes(reads, writes)
+        }
+
+        #[cfg(feature = "try-runtime")]
+        fn pre_upgrade() -> Result<Vec<u8>, sp_runtime::TryRuntimeError> {
+            Ok(Difficulty::<T>::get().encode())
+        }
+
+        #[cfg(feature = "try-runtime")]
+        fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
+            use codec::Decode;
+            let prior = crate::types::DifficultyConfig::decode(&mut &state[..])
+                .map_err(|_| sp_runtime::TryRuntimeError::Other("pre_upgrade state undecodable"))?;
+            ensure!(
+                Pallet::<T>::on_chain_storage_version() >= STORAGE_VERSION,
+                "storage version must be bumped by the migration"
+            );
+            let current = Difficulty::<T>::get();
+            ensure!(
+                current.min_solutions == prior.min_solutions
+                    && current.min_diversity_milli == prior.min_diversity_milli,
+                "migration must only touch max_energy_milli"
+            );
+            if let Some(curve) = Self::current_energy_curve() {
+                ensure!(
+                    current.max_energy_milli >= curve.min_milli,
+                    "post-migration threshold must not sit below curve.min_milli"
+                );
+            }
+            Ok(())
+        }
+
         fn on_finalize(n: BlockNumberFor<T>) {
             let Some(record) = BlockBestProof::<T>::take() else {
                 return;
@@ -338,31 +420,41 @@ pub mod pallet {
             };
 
             // Snapshot the live (decay-applied) threshold this proof had to
-            // clear before adjust_on_proof rewrites it. WinningSolutions stores
+            // clear before adjust_on_proof rewrites it. QBlocks stores
             // this so explorers and miners can answer "what difficulty did
             // block N actually clear?" without replaying decay client-side.
             let active = Self::current_difficulty(n);
+            let winner_streak = Self::update_winner_streak(&record.miner);
+            let dominant_winner = Self::is_dominant_streak(&winner_streak);
             // Curve calibration MUST come from chain state (DefaultTopology),
             // not from the winning proof. See `current_energy_curve` docs and
             // GitLab issue #5 for the invariant rationale.
             let next = match Self::current_energy_curve() {
-                Some(curve) => crate::difficulty::adjust_on_proof(
+                Some(curve) => crate::difficulty::adjust_on_proof_with_dominance(
                     active,
                     mining_time_blocks,
                     curve,
                     &(frame_system::Pallet::<T>::parent_hash(), &record.miner, n).encode(),
+                    dominant_winner,
                 ),
                 // Unreachable in normal operation: a proof would not have
                 // been submitted without a registered topology, and the
-                // first registration also seeds `DefaultTopology`.
-                None => active,
+                // first registration also seeds `DefaultTopology`. The
+                // defensive trips tests/try-runtime and logs in production
+                // so a frozen difficulty is diagnosable, not silent.
+                None => {
+                    frame_support::defensive!(
+                        "energy curve missing during on_finalize difficulty adjustment"
+                    );
+                    active
+                }
             };
             Difficulty::<T>::put(next);
             LastProofBlock::<T>::put(n);
 
-            WinningSolutions::<T>::insert(
+            QBlocks::<T>::insert(
                 n,
-                types::WinningSolution {
+                types::QBlock {
                     miner: record.miner.clone(),
                     salt: record.salt,
                     energy_milli: record.energy_milli,
@@ -694,21 +786,19 @@ pub mod pallet {
             sp_io::hashing::blake2_256(&account.encode())
         }
 
-        /// Look up a persisted winning solution and re-derive its nonce.
+        /// Look up a persisted qblock and re-derive its nonce.
         ///
         /// Returns `None` if the block had no accepted proof (e.g. genesis
         /// where no `submit_proof` ever ran). Re-derivation reads the
-        /// `last_proof_block_hash` stored alongside the solution, so this stays
+        /// `last_proof_block_hash` stored alongside the qblock, so this stays
         /// correct even when `block_number` is older than `BlockHashCount`
         /// (no `frame_system::block_hash` lookup is involved).
-        pub fn winning_solution_with_nonce(
-            block_number: BlockNumberFor<T>,
-        ) -> Option<WinningSolutionWithNonceOf<T>> {
-            let solution = WinningSolutions::<T>::get(block_number)?;
+        pub fn qblock_with_nonce(block_number: BlockNumberFor<T>) -> Option<QBlockWithNonceOf<T>> {
+            let solution = QBlocks::<T>::get(block_number)?;
             let last_proof_block_hash_bytes = solution.last_proof_block_hash.0;
             let miner_bytes = Self::account_to_bytes(&solution.miner);
             let nonce = derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &solution.salt);
-            Some(types::WinningSolutionWithNonce { solution, nonce })
+            Some(types::QBlockWithNonce { solution, nonce })
         }
 
         /// 32-byte representation of a block hash, suitable for use as a
@@ -794,6 +884,30 @@ pub mod pallet {
                 T::EpochLength::get().saturated_into::<u32>(),
                 Self::current_energy_curve(),
             )
+        }
+
+        fn update_winner_streak(miner: &T::AccountId) -> WinnerStreakOf<T> {
+            let next = match WinnerStreak::<T>::get() {
+                Some(mut streak) if streak.miner == *miner => {
+                    streak.count = streak.count.saturating_add(1);
+                    streak
+                }
+                _ => WinnerStreakOf::<T> {
+                    miner: miner.clone(),
+                    count: 1,
+                },
+            };
+            WinnerStreak::<T>::put(&next);
+            next
+        }
+
+        /// A winner is dominant when the same account has won at least
+        /// `ConsecutiveWinnerEasingThreshold` consecutive qblocks. Dominance
+        /// flips slow-qblock adjustments to easing (fast qblocks always
+        /// harden — see `difficulty::adjust_on_proof_with_dominance`).
+        fn is_dominant_streak(streak: &WinnerStreakOf<T>) -> bool {
+            let threshold = T::ConsecutiveWinnerEasingThreshold::get();
+            threshold > 0 && streak.count >= threshold
         }
 
         fn validate_proof(
