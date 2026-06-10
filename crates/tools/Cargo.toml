@@ -1,0 +1,44 @@
+[package]
+name = "quip-tools"
+version = "0.2.0"
+license.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { version = "1.0.100" }
+clap = { features = ["derive"], workspace = true }
+codec = { default-features = true, workspace = true }
+frame-metadata-hash-extension.default-features = true
+frame-metadata-hash-extension.workspace = true
+frame-system.default-features = true
+frame-system.workspace = true
+hex = { version = "0.4.3" }
+jsonrpsee = { features = ["client-core", "macros", "ws-client"], workspace = true }
+pallet-sudo.default-features = true
+pallet-sudo.workspace = true
+pallet-transaction-payment.default-features = true
+pallet-transaction-payment.workspace = true
+quip-protocol-runtime.workspace = true
+quip-transaction-crypto.workspace = true
+serde_json = { features = ["std"], workspace = true }
+sp-core = { default-features = true, features = ["serde"], workspace = true }
+sp-runtime = { default-features = true, features = ["serde"], workspace = true }
+tokio = { version = "1.51.1", features = ["macros", "rt-multi-thread", "time"] }
+
+[features]
+default = ["std"]
+std = [
+  "quip-protocol-runtime/std",
+  "quip-transaction-crypto/std",
+]
+
+[[bin]]
+name = "quip-network-upgrade"
+path = "src/bin/quip-network-upgrade.rs"

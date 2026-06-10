@@ -9,6 +9,7 @@ edition = "2021"
 members = [
   "crates/quantum-validation",
   "crates/transaction-crypto",
+  "crates/tools",
   "node",
   "pallets/faucet-ops",
   "pallets/quantum-compute-mempool",

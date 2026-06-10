@@ -8040,6 +8040,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "quip-tools"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "frame-metadata-hash-extension",
+ "frame-system",
+ "hex",
+ "jsonrpsee",
+ "pallet-sudo",
+ "pallet-transaction-payment",
+ "parity-scale-codec",
+ "quip-protocol-runtime",
+ "quip-transaction-crypto",
+ "serde_json",
+ "sp-core",
+ "sp-runtime",
+ "tokio",
+]
+
+[[package]]
 name = "quip-transaction-crypto"
 version = "0.2.0"
 dependencies = [
