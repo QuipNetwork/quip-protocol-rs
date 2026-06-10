@@ -61,7 +61,8 @@ Coefficients are fixed-point milli values. `h_values` and `j_values` are
 ```
 
 The same milli convention is used for `best_energy_milli`,
-`min_energy_milli`, `diversity_milli`, and `min_diversity_milli`. Keep any
+`min_energy_milli`, `diversity_milli`, and `min_diversity_milli`. Energy
+values are signed (`i64`); diversity values are unsigned (`u32`). Keep any
 constant offset introduced by a QUBO-to-Ising transform in the adapter, or
 adjust user-facing energy thresholds before submitting the job.
 
@@ -174,13 +175,24 @@ ResultReady
 
 `SolutionAccepted` is emitted when a solver submission is accepted and written
 to `OrderSolutions`. `ResultReady` is emitted when settlement produces a final
-winner payload for callback delivery modes.
+winner payload for callback delivery modes. Settlement also emits
+`RewardClaimed` for each winner payout, and `ResultPurged` is emitted when a
+stored poll payload is deleted after its TTL — `CallbackWithPoll` consumers
+must fetch results before the purge.
 
 `OrderExpired` is emitted lazily when an extrinsic touches an expired open
 order and the pallet updates the status. It is not emitted automatically at the
 exact expiry block, so SDKs that need exact deadline handling should also read
-`JobOrders` and compute the effective expiry from `created_at`,
-`first_solution_at`, `deadline_blocks`, and `block_wait`.
+`JobOrders` and compute the effective expiry as:
+
+```text
+min(created_at + timing.deadline_blocks, first_solution_at + timing.block_wait)
+```
+
+Before the first solution arrives, `first_solution_at` is null and the expiry
+is just `created_at + timing.deadline_blocks`. Note that `created_at` and
+`first_solution_at` are top-level `JobOrder` fields, while `deadline_blocks`
+and `block_wait` are nested inside the order's `timing` struct.
 
 ### Read events from a block with substrate-interface
 
@@ -200,14 +212,14 @@ EVENTS = {
 def mempool_events_at(block_hash=None):
     for event in substrate.get_events(block_hash=block_hash):
         if (
-            event.event_module.name == "QuantumComputeMempool"
-            and event.event.name in EVENTS
+            event.value["module_id"] == "QuantumComputeMempool"
+            and event.value["event_id"] in EVENTS
         ):
             yield event
 
 
 for event in mempool_events_at():
-    print(event.event.name, event.params)
+    print(event.value["event_id"], event.value["attributes"])
 ```
 
 ### Subscribe to event storage with substrate-interface
