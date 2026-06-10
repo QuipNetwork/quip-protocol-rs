@@ -269,6 +269,16 @@ parameter_types! {
     pub const QuantumPowMaxEdges: u32 = 50_000;
     pub const QuantumPowMaxSolutions: u32 = 32;
     pub const QuantumPowMinNodes: u32 = 16;
+    /// Decay interval: difficulty eases 2.5% per full epoch elapsed since
+    /// the last qblock (PoW-won block). 100 chain blocks is deliberately
+    /// co-located with `TARGET_PROOF_BLOCKS` (pallet-quantum-pow
+    /// `difficulty.rs`): the first decay step, the gentle-hardening plateau
+    /// (5%±4%), and the easing rate ramp all begin at the same 100-block
+    /// (600s) boundary, so a qblock round is either "sub-epoch, adjusts
+    /// from the stored difficulty" or "decayed, adjusts gently from the
+    /// decay-eased base" — never a mix. They are separate constants on
+    /// purpose (decay cadence vs rate-band anchor); retuning this value
+    /// does NOT move the rate bands, so revisit both together.
     pub const QuantumPowEpochLength: BlockNumber = 100;
     pub const QuantumPowMinerDeposit: Balance = UNIT;
     pub const QuantumPowBlockReward: Balance = UNIT;

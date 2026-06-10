@@ -160,11 +160,12 @@ pub mod pallet {
         #[pallet::constant]
         type CurveCHardMilli: Get<u32>;
 
-        /// Consecutive wins by the same account at or above this threshold
-        /// mark the winner as dominant: slow wins (at or past the fast-proof
-        /// cutoff) then ease difficulty instead of hardening it. Fast wins
-        /// always harden regardless of dominance (v0.1 policy).
-        /// Setting this to `0` disables dominant-winner easing entirely.
+        /// Consecutive qblocks won by the same account at or above this
+        /// threshold mark the winner as dominant: slow qblocks (at or past
+        /// the fast-proof cutoff) then ease difficulty instead of hardening
+        /// it. Fast qblocks always harden regardless of dominance (v0.1
+        /// policy). Setting this to `0` disables dominant-winner easing
+        /// entirely.
         #[pallet::constant]
         type ConsecutiveWinnerEasingThreshold: Get<u32>;
 
@@ -899,9 +900,9 @@ pub mod pallet {
         }
 
         /// A winner is dominant when the same account has won at least
-        /// `ConsecutiveWinnerEasingThreshold` consecutive blocks. Dominance
-        /// flips slow-win adjustments to easing (fast wins always harden —
-        /// see `difficulty::adjust_on_proof_with_dominance`).
+        /// `ConsecutiveWinnerEasingThreshold` consecutive qblocks. Dominance
+        /// flips slow-qblock adjustments to easing (fast qblocks always
+        /// harden — see `difficulty::adjust_on_proof_with_dominance`).
         fn is_dominant_streak(streak: &WinnerStreakOf<T>) -> bool {
             let threshold = T::ConsecutiveWinnerEasingThreshold::get();
             threshold > 0 && streak.count >= threshold

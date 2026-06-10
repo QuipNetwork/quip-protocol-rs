@@ -12,9 +12,20 @@ use crate::types::DifficultyConfig;
 // - proof adjustment and decay reason over the same time unit
 // - validation does not depend on timestamp availability or conversion
 //
-// These constants are the block-native thresholds the current policy uses.
-// They correspond to the earlier 6-second-block translation:
+// These constants are the block-native thresholds the current policy uses,
+// measuring elapsed chain blocks between consecutive qblocks (PoW-won
+// blocks — formerly referred to as "solution #"/"problem #"). They
+// correspond to the earlier 6-second-block translation:
 // 360s -> 60 blocks, 600s -> 100 blocks, 1200s -> 200 blocks.
+//
+// `TARGET_PROOF_BLOCKS` is deliberately co-located with the runtime's
+// `QuantumPowEpochLength` (= 100, the decay interval): the first decay
+// step, the hardening band's gentle plateau, and the easing rate ramp all
+// begin at the same 100-block boundary. A win round is therefore either
+// "sub-epoch" (adjusts from the stored difficulty) or "decayed" (adjusts
+// gently from the decay-eased base) — never a mix. The two remain separate
+// constants on purpose: this one anchors the rate bands, the runtime one
+// sets decay cadence. Retune them together.
 const FAST_PROOF_BLOCKS: u64 = 60;
 const TARGET_PROOF_BLOCKS: u64 = 100;
 const SLOW_PROOF_BLOCKS: u64 = 200;
@@ -94,8 +105,8 @@ impl EnergyCurve {
 //
 // Hardening: <360s (60 blocks) -> 35% ± 30%; >600s (100 blocks) -> 5% ± 4%;
 // linear interpolation in between. The graduated band matters because slow
-// wins by a non-dominant winner harden too — they need the gentle 5% rates,
-// not the fast-win 35% ones.
+// qblocks won by a non-dominant winner harden too — they need the gentle
+// 5% rates, not the fast-qblock 35% ones.
 //
 // Easing: <600s (100 blocks) -> 2.5% ± 2%; >1200s (200 blocks) -> 15% ± 14%;
 // linear interpolation in between.
@@ -248,14 +259,14 @@ pub fn adjust_on_proof(
     adjust_on_proof_with_dominance(current, mining_time_blocks, curve, randomness_seed, false)
 }
 
-/// Adjust difficulty after a winning proof, following the v0.1
+/// Adjust difficulty after a winning proof (a qblock), following the v0.1
 /// `compute_next_block_requirements` policy:
 ///
-/// - A fast win (under [`FAST_PROOF_BLOCKS`]) ALWAYS hardens — even for a
-///   dominant winner.
-/// - A slow win eases only when the winner dominates (`dominant_winner`,
+/// - A fast qblock (under [`FAST_PROOF_BLOCKS`] elapsed chain blocks)
+///   ALWAYS hardens — even for a dominant winner.
+/// - A slow qblock eases only when the winner dominates (`dominant_winner`,
 ///   i.e. the same account won at least `ConsecutiveWinnerEasingThreshold`
-///   consecutive blocks); otherwise it hardens gently via the graduated
+///   consecutive qblocks); otherwise it hardens gently via the graduated
 ///   rate band.
 ///
 /// v0.1 keyed dominance on the miner *type* repeating once (streak 2); we
