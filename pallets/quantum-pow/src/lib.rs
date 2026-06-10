@@ -42,9 +42,8 @@ type MinerInfoOf<T> = types::MinerInfo<BalanceOf<T>, BlockNumberOf<T>>;
 type ProofRecordOf<T> = types::ProofRecord<AccountIdOf<T>, BlockNumberOf<T>>;
 type WinnerStreakOf<T> = types::WinnerStreak<AccountIdOf<T>>;
 type MiningSnapshotOf<T> = types::MiningSnapshot<NodesOf<T>, EdgesOf<T>, AllowedValueSetOf<T>>;
-type WinningSolutionOf<T> = types::WinningSolution<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
-type WinningSolutionWithNonceOf<T> =
-    types::WinningSolutionWithNonce<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
+type QBlockOf<T> = types::QBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
+type QBlockWithNonceOf<T> = types::QBlockWithNonce<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 
 sp_api::decl_runtime_apis! {
     pub trait QuantumPowApi<BlockNumber, AccountId, Balance, Nodes, Edges, AllowedValues>
@@ -74,7 +73,7 @@ sp_api::decl_runtime_apis! {
         /// proof (e.g. genesis, or any block where no `submit_proof` cleared
         /// difficulty).
         fn winning_solution(block_number: BlockNumber) -> Option<
-            crate::types::WinningSolutionWithNonce<AccountId, Balance, BlockNumber>
+            crate::types::QBlockWithNonce<AccountId, Balance, BlockNumber>
         >;
 
         /// Live difficulty threshold a miner has to clear *right now*.
@@ -215,18 +214,23 @@ pub mod pallet {
     #[pallet::storage]
     pub type BlockProofCount<T: Config> = StorageValue<_, u32, ValueQuery>;
 
-    /// Persisted record of each block's winning proof, written in
+    /// Persisted record of each qblock (PoW-won block), written in
     /// `on_finalize` alongside the `BlockWinner` event.
     ///
     /// Consumers derive the winning nonce by hashing
     /// `(last_proof_block_hash, miner, salt)` with BLAKE3, or call the
     /// `QuantumPowApi::winning_solution` runtime API which does it
     /// server-side. `last_proof_block_hash` for each entry is the value the
-    /// round used at submission time, persisted in the `WinningSolution`
-    /// itself so re-derivation needs no chain-state lookup.
+    /// round used at submission time, persisted in the `QBlock` itself so
+    /// re-derivation needs no chain-state lookup.
+    ///
+    /// The storage prefix keeps the legacy `WinningSolutions` name so
+    /// existing chain state and `quantumPow.winningSolutions` queries stay
+    /// valid until the API-rename ticket lands; only the Rust identifier
+    /// uses the qblock terminology.
     #[pallet::storage]
-    pub type WinningSolutions<T: Config> =
-        StorageMap<_, Blake2_128Concat, BlockNumberFor<T>, WinningSolutionOf<T>>;
+    #[pallet::storage_prefix = "WinningSolutions"]
+    pub type QBlocks<T: Config> = StorageMap<_, Blake2_128Concat, BlockNumberFor<T>, QBlockOf<T>>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -416,7 +420,7 @@ pub mod pallet {
             };
 
             // Snapshot the live (decay-applied) threshold this proof had to
-            // clear before adjust_on_proof rewrites it. WinningSolutions stores
+            // clear before adjust_on_proof rewrites it. QBlocks stores
             // this so explorers and miners can answer "what difficulty did
             // block N actually clear?" without replaying decay client-side.
             let active = Self::current_difficulty(n);
@@ -448,9 +452,9 @@ pub mod pallet {
             Difficulty::<T>::put(next);
             LastProofBlock::<T>::put(n);
 
-            WinningSolutions::<T>::insert(
+            QBlocks::<T>::insert(
                 n,
-                types::WinningSolution {
+                types::QBlock {
                     miner: record.miner.clone(),
                     salt: record.salt,
                     energy_milli: record.energy_milli,
@@ -782,21 +786,19 @@ pub mod pallet {
             sp_io::hashing::blake2_256(&account.encode())
         }
 
-        /// Look up a persisted winning solution and re-derive its nonce.
+        /// Look up a persisted qblock and re-derive its nonce.
         ///
         /// Returns `None` if the block had no accepted proof (e.g. genesis
         /// where no `submit_proof` ever ran). Re-derivation reads the
-        /// `last_proof_block_hash` stored alongside the solution, so this stays
+        /// `last_proof_block_hash` stored alongside the qblock, so this stays
         /// correct even when `block_number` is older than `BlockHashCount`
         /// (no `frame_system::block_hash` lookup is involved).
-        pub fn winning_solution_with_nonce(
-            block_number: BlockNumberFor<T>,
-        ) -> Option<WinningSolutionWithNonceOf<T>> {
-            let solution = WinningSolutions::<T>::get(block_number)?;
+        pub fn qblock_with_nonce(block_number: BlockNumberFor<T>) -> Option<QBlockWithNonceOf<T>> {
+            let solution = QBlocks::<T>::get(block_number)?;
             let last_proof_block_hash_bytes = solution.last_proof_block_hash.0;
             let miner_bytes = Self::account_to_bytes(&solution.miner);
             let nonce = derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &solution.salt);
-            Some(types::WinningSolutionWithNonce { solution, nonce })
+            Some(types::QBlockWithNonce { solution, nonce })
         }
 
         /// 32-byte representation of a block hash, suitable for use as a

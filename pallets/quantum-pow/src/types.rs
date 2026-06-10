@@ -120,7 +120,7 @@ pub struct ProofRecord<AccountId, BlockNumber> {
     /// record documentation rather than in the field name.
     pub energy_milli: i64,
     /// Salt of the submitted proof. Copied here so `on_finalize` can persist
-    /// it into `WinningSolutions` without re-reading the (PQ-signed)
+    /// it into `QBlocks` without re-reading the (PQ-signed)
     /// extrinsic body.
     pub salt: [u8; 32],
 }
@@ -166,14 +166,17 @@ pub struct MiningSnapshot<Nodes, Edges, AllowedValues> {
     pub allowed_spin_values: AllowedValueSpec<AllowedValues>,
 }
 
-/// Persisted record of each block's winning proof, written in `on_finalize`
+/// Persisted record of a qblock — a chain block won by a quantum PoW proof
+/// (formerly "winning solution" / "solution #N"), written in `on_finalize`
 /// alongside the `BlockWinner` event. The nonce is not stored directly —
-/// consumers derive it from `(last_proof_block_hash, miner, salt)`, or call the
-/// `winning_solution` runtime API which does it server-side.
+/// consumers derive it from `(last_proof_block_hash, miner, salt)`, or call
+/// the `winning_solution` runtime API which does it server-side. (The
+/// chain-facing API name keeps the legacy term until the API-rename ticket
+/// lands.)
 ///
 /// `last_proof_block_hash` is the value the proof actually used at submission
-/// time (i.e. `block_hash(previous winning block)`). Storing it makes
-/// `winning_solution_with_nonce` self-contained — no `frame_system::block_hash`
+/// time (i.e. `block_hash(previous qblock)`). Storing it makes
+/// `qblock_with_nonce` self-contained — no `frame_system::block_hash`
 /// lookup is needed at re-derivation time, and re-derivation stays correct
 /// even after the original block is pruned beyond `BlockHashCount`.
 ///
@@ -184,7 +187,7 @@ pub struct MiningSnapshot<Nodes, Edges, AllowedValues> {
 #[derive(
     Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
 )]
-pub struct WinningSolution<AccountId, Balance, BlockNumber> {
+pub struct QBlock<AccountId, Balance, BlockNumber> {
     pub miner: AccountId,
     pub salt: [u8; 32],
     pub energy_milli: i64,
@@ -194,12 +197,14 @@ pub struct WinningSolution<AccountId, Balance, BlockNumber> {
     pub last_proof_block_hash: H256,
 }
 
-/// Runtime-API view augmenting [`WinningSolution`] with the derived nonce.
-/// Saves consumers from running BLAKE3 client-side.
+/// Runtime-API view augmenting [`QBlock`] with the derived nonce.
+/// Saves consumers from running BLAKE3 client-side. The `solution` field
+/// name is part of the decoded runtime-API shape — it keeps the legacy
+/// name until the API-rename ticket lands.
 #[derive(
     Clone, Debug, Encode, Decode, DecodeWithMemTracking, Eq, PartialEq, TypeInfo, MaxEncodedLen,
 )]
-pub struct WinningSolutionWithNonce<AccountId, Balance, BlockNumber> {
-    pub solution: WinningSolution<AccountId, Balance, BlockNumber>,
+pub struct QBlockWithNonce<AccountId, Balance, BlockNumber> {
+    pub solution: QBlock<AccountId, Balance, BlockNumber>,
     pub nonce: U256,
 }

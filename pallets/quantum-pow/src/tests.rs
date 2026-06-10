@@ -3,8 +3,8 @@ use crate::{
     difficulty, topology,
     types::{DifficultyConfig, ProofRecord, QuantumProof},
     AllowedValueSetOf, BlockBestProof, BlockProofCount, DefaultTopology, Difficulty,
-    LastProofBlock, LastProofBlockHash, Miners, PackedSpinBytesOf, RegisteredTopologies,
-    WinnerStreak, WinningSolutions,
+    LastProofBlock, LastProofBlockHash, Miners, PackedSpinBytesOf, QBlocks, RegisteredTopologies,
+    WinnerStreak,
 };
 use frame_support::{
     assert_noop, assert_ok,
@@ -904,7 +904,7 @@ fn winner_streak_resets_for_different_miner() {
 }
 
 #[test]
-fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
+fn on_finalize_persists_qblock_with_recoverable_nonce() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
         assert_ok!(QuantumPow::set_difficulty(
@@ -927,7 +927,7 @@ fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
         let block = System::block_number();
         QuantumPow::on_finalize(block);
 
-        let stored = WinningSolutions::<Test>::get(block).expect("winning solution persisted");
+        let stored = QBlocks::<Test>::get(block).expect("qblock persisted");
         assert_eq!(stored.miner, 1);
         assert_eq!(stored.salt, original_salt);
         assert_eq!(stored.reward, 50);
@@ -939,7 +939,7 @@ fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
         // Re-derive the nonce via the runtime helper and confirm it matches
         // the value that was on the submitted proof. This is the round-trip
         // that lets dashboards recover the nonce from on-chain state alone.
-        let view = crate::Pallet::<Test>::winning_solution_with_nonce(block)
+        let view = crate::Pallet::<Test>::qblock_with_nonce(block)
             .expect("nonce derivation succeeds for a real winner");
         assert_eq!(view.nonce, original_nonce);
         assert_eq!(view.solution.salt, original_salt);
@@ -952,13 +952,13 @@ fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
 }
 
 #[test]
-fn winning_solution_returns_none_for_genesis_block() {
+fn qblock_returns_none_for_genesis_block() {
     new_test_ext().execute_with(|| {
         // Genesis (block 0) never had a `submit_proof` call, so the storage
         // entry is absent and the helper short-circuits before any block-hash
         // arithmetic. Pins the contract that saturating subtraction on
         // `block_number - 1 == 0u32 - 1` never reaches the nonce derivation.
-        assert!(crate::Pallet::<Test>::winning_solution_with_nonce(0).is_none());
+        assert!(crate::Pallet::<Test>::qblock_with_nonce(0).is_none());
     });
 }
 
@@ -1019,9 +1019,9 @@ fn mining_snapshot_returns_default_and_selected_topology_views() {
 }
 
 #[test]
-fn winning_solution_records_active_difficulty_threshold() {
+fn qblock_records_active_difficulty_threshold() {
     new_test_ext().execute_with(|| {
-        // Pin the contract that WinningSolution stores the *active* threshold
+        // Pin the contract that the QBlock stores the *active* threshold
         // a proof had to clear (decay applied, pre-adjust) rather than the
         // post-adjustment value that lives in Difficulty<T> after on_finalize.
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
@@ -1040,7 +1040,7 @@ fn winning_solution_records_active_difficulty_threshold() {
         QuantumPow::on_finalize(System::block_number());
 
         let expected_active = difficulty::apply_decay(initial, 2, test_curve());
-        let stored = WinningSolutions::<Test>::get(45).expect("winner persisted");
+        let stored = QBlocks::<Test>::get(45).expect("winner persisted");
         assert_eq!(
             stored.difficulty, expected_active,
             "stored difficulty must be the decayed-but-pre-adjust threshold"
