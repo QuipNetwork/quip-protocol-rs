@@ -5,7 +5,8 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use codec::Encode;
+use codec::{Decode, Encode};
+use frame_system::{EventRecord, Phase};
 use jsonrpsee::{
     core::{client::ClientT, rpc_params},
     ws_client::{WsClient, WsClientBuilder},
@@ -23,6 +24,15 @@ use tokio::time::sleep;
 pub const DEFAULT_RPC_URL: &str = "ws://127.0.0.1:9944";
 pub const FINALIZATION_POLL_INTERVAL: Duration = Duration::from_secs(2);
 pub const FINALIZATION_MAX_POLLS: u32 = 150;
+
+// Runtime blobs are multiple MiB and roughly double in size once hex-encoded into
+// JSON-RPC, so jsonrpsee's 10 MiB defaults would reject both the submission and the
+// `chain_getBlock` response for the block containing the upgrade.
+const MAX_RPC_MESSAGE_SIZE: u32 = 64 * 1024 * 1024;
+
+const WASM_MAGIC: [u8; 4] = *b"\0asm";
+// `sp_maybe_compressed_blob::ZSTD_PREFIX`: marks a Substrate zstd-compressed runtime.
+const ZSTD_PREFIX: [u8; 8] = [82, 188, 83, 70, 70, 219, 142, 5];
 
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub struct SignerSources {
@@ -52,31 +62,21 @@ pub enum SubmissionMode {
     Submit,
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct FinalizedExtrinsic {
+    pub block_hash: Hash,
+    pub index: u32,
+}
+
 pub fn resolve_suri(sources: &SignerSources) -> Result<String> {
-    let source_count = [
-        sources.suri.is_some(),
-        sources.suri_file.is_some(),
-        sources.suri_env.is_some(),
-    ]
-    .into_iter()
-    .filter(|provided| *provided)
-    .count();
-
-    if source_count != 1 {
-        bail!("provide exactly one signer source: --suri, --suri-file, or --suri-env");
-    }
-
-    let suri = if let Some(suri) = &sources.suri {
-        suri.clone()
-    } else if let Some(path) = &sources.suri_file {
-        fs::read_to_string(path)
-            .with_context(|| format!("reading signer SURI file {}", path.display()))?
-    } else {
-        let env_name = sources
-            .suri_env
-            .as_deref()
-            .expect("source count already established one signer source exists");
-        env::var(env_name).with_context(|| format!("reading signer SURI from ${env_name}"))?
+    let suri = match (&sources.suri, &sources.suri_file, &sources.suri_env) {
+        (Some(suri), None, None) => suri.clone(),
+        (None, Some(path), None) => fs::read_to_string(path)
+            .with_context(|| format!("reading signer SURI file {}", path.display()))?,
+        (None, None, Some(env_name)) => {
+            env::var(env_name).with_context(|| format!("reading signer SURI from ${env_name}"))?
+        }
+        _ => bail!("provide exactly one signer source: --suri, --suri-file, or --suri-env"),
     };
 
     let suri = suri.trim().to_owned();
@@ -100,6 +100,12 @@ pub fn load_wasm(path: &Path) -> Result<LoadedWasm> {
         fs::read(path).with_context(|| format!("reading runtime Wasm {}", path.display()))?;
     if bytes.is_empty() {
         bail!("runtime Wasm {} is empty", path.display());
+    }
+    if !bytes.starts_with(&WASM_MAGIC) && !bytes.starts_with(&ZSTD_PREFIX) {
+        bail!(
+            "{} is neither raw Wasm nor a Substrate compressed runtime blob",
+            path.display()
+        );
     }
 
     Ok(LoadedWasm {
@@ -185,6 +191,8 @@ pub fn scale_hex(bytes: &[u8]) -> String {
 
 pub async fn ws_client(rpc_url: &str) -> Result<WsClient> {
     WsClientBuilder::default()
+        .max_request_size(MAX_RPC_MESSAGE_SIZE)
+        .max_response_size(MAX_RPC_MESSAGE_SIZE)
         .build(rpc_url)
         .await
         .with_context(|| format!("connecting to {rpc_url}"))
@@ -241,7 +249,7 @@ pub async fn wait_for_finalization(
     client: &WsClient,
     encoded_extrinsic: &[u8],
     start_block: BlockNumber,
-) -> Result<Hash> {
+) -> Result<FinalizedExtrinsic> {
     wait_for_finalization_with(
         client,
         encoded_extrinsic,
@@ -258,7 +266,7 @@ pub async fn wait_for_finalization_with(
     start_block: BlockNumber,
     poll_interval: Duration,
     max_polls: u32,
-) -> Result<Hash> {
+) -> Result<FinalizedExtrinsic> {
     let target_extrinsic = scale_hex(encoded_extrinsic);
     let mut last_checked = start_block;
 
@@ -273,8 +281,10 @@ pub async fn wait_for_finalization_with(
                     block_hash(client, block_number).await?
                 };
 
-                if finalized_block_contains(client, block_hash, &target_extrinsic).await? {
-                    return Ok(block_hash);
+                if let Some(index) =
+                    finalized_block_extrinsic_index(client, block_hash, &target_extrinsic).await?
+                {
+                    return Ok(FinalizedExtrinsic { block_hash, index });
                 }
             }
 
@@ -284,7 +294,28 @@ pub async fn wait_for_finalization_with(
         sleep(poll_interval).await;
     }
 
-    bail!("timed out waiting for extrinsic finalization");
+    let pool_state = match pending_pool_contains(client, &target_extrinsic).await {
+        Ok(true) => "the transaction is still in the node's pending pool and may yet be included".to_owned(),
+        Ok(false) => "the transaction is no longer in the node's pending pool (dropped, expired, or already included)".to_owned(),
+        Err(err) => format!("the node's pending pool could not be inspected: {err:#}"),
+    };
+
+    bail!(
+        "timed out after {}s waiting for extrinsic finalization; {pool_state} — verify on-chain \
+         state (e.g. spec_version) before re-submitting",
+        poll_interval.as_secs().saturating_mul(u64::from(max_polls)),
+    );
+}
+
+async fn pending_pool_contains(client: &WsClient, target_extrinsic: &str) -> Result<bool> {
+    let pending: Vec<String> = client
+        .request("author_pendingExtrinsics", rpc_params![])
+        .await
+        .context("fetching pending extrinsics")?;
+
+    Ok(pending
+        .iter()
+        .any(|extrinsic| extrinsic.eq_ignore_ascii_case(target_extrinsic)))
 }
 
 async fn finalized_head(client: &WsClient) -> Result<(BlockNumber, Hash)> {
@@ -310,6 +341,132 @@ async fn block_hash(client: &WsClient, block_number: BlockNumber) -> Result<Hash
     hash.with_context(|| format!("node returned no block hash for #{block_number}"))
 }
 
+pub async fn sudo_key(client: &WsClient) -> Result<runtime::AccountId> {
+    let bytes = storage_at(client, &storage_key(b"Sudo", b"Key"), None)
+        .await?
+        .context("chain has no sudo key configured (pallet_sudo Key storage is empty)")?;
+
+    runtime::AccountId::decode(&mut bytes.as_slice()).context("decoding on-chain sudo key")
+}
+
+pub async fn runtime_spec_version(client: &WsClient, at: Option<Hash>) -> Result<u32> {
+    let version: Value = match at {
+        Some(hash) => {
+            client
+                .request("state_getRuntimeVersion", rpc_params![hash])
+                .await
+        }
+        None => {
+            client
+                .request("state_getRuntimeVersion", rpc_params![])
+                .await
+        }
+    }
+    .context("fetching runtime version")?;
+
+    let spec_version = version
+        .get("specVersion")
+        .and_then(Value::as_u64)
+        .context("state_getRuntimeVersion response missing specVersion")?;
+
+    Ok(spec_version.saturated_into())
+}
+
+/// Confirms the upgrade extrinsic actually dispatched successfully.
+///
+/// Inclusion in a finalized block is not success: the extrinsic can fail outright
+/// (e.g. signer is not the sudo key → `system.ExtrinsicFailed`), or `sudo` can
+/// dispatch while the inner `system.set_code` fails (`sudo.Sudid(Err)`, e.g. the
+/// new runtime does not increase `spec_version`). Only the events tell the truth.
+pub async fn verify_upgrade_dispatch(
+    client: &WsClient,
+    finalized: &FinalizedExtrinsic,
+) -> Result<()> {
+    let bytes = storage_at(
+        client,
+        &storage_key(b"System", b"Events"),
+        Some(finalized.block_hash),
+    )
+    .await?
+    .with_context(|| {
+        format!(
+            "no system events found in block {}",
+            format_hash(&finalized.block_hash)
+        )
+    })?;
+    let events = Vec::<EventRecord<runtime::RuntimeEvent, Hash>>::decode(&mut bytes.as_slice())
+        .context(
+            "decoding system events (was the tool built from the same runtime as the chain?)",
+        )?;
+
+    let phase = Phase::ApplyExtrinsic(finalized.index);
+    let mut sudo_succeeded = false;
+    for record in events.iter().filter(|record| record.phase == phase) {
+        match &record.event {
+            runtime::RuntimeEvent::System(frame_system::Event::ExtrinsicFailed {
+                dispatch_error,
+                ..
+            }) => {
+                bail!(
+                    "upgrade extrinsic failed in block {}: {dispatch_error:?}",
+                    format_hash(&finalized.block_hash)
+                );
+            }
+            runtime::RuntimeEvent::Sudo(pallet_sudo::Event::Sudid {
+                sudo_result: Err(err),
+            }) => {
+                bail!(
+                    "sudo dispatched but the inner system.set_code failed: {err:?} \
+                     (does the new runtime increase spec_version?)"
+                );
+            }
+            runtime::RuntimeEvent::Sudo(pallet_sudo::Event::Sudid {
+                sudo_result: Ok(()),
+            }) => {
+                sudo_succeeded = true;
+            }
+            _ => {}
+        }
+    }
+
+    if !sudo_succeeded {
+        bail!(
+            "no sudo.Sudid success event for extrinsic {} in block {}; the upgrade cannot be \
+             confirmed",
+            finalized.index,
+            format_hash(&finalized.block_hash)
+        );
+    }
+
+    Ok(())
+}
+
+fn storage_key(pallet: &[u8], item: &[u8]) -> String {
+    let mut key = sp_core::hashing::twox_128(pallet).to_vec();
+    key.extend(sp_core::hashing::twox_128(item));
+
+    format!("0x{}", hex::encode(key))
+}
+
+async fn storage_at(client: &WsClient, key: &str, at: Option<Hash>) -> Result<Option<Vec<u8>>> {
+    let value: Option<String> = match at {
+        Some(hash) => {
+            client
+                .request("state_getStorage", rpc_params![key, hash])
+                .await
+        }
+        None => client.request("state_getStorage", rpc_params![key]).await,
+    }
+    .with_context(|| format!("fetching storage {key}"))?;
+
+    value
+        .map(|encoded| {
+            hex::decode(encoded.strip_prefix("0x").unwrap_or(&encoded))
+                .with_context(|| format!("decoding storage value for {key}"))
+        })
+        .transpose()
+}
+
 fn tx_extension(best_number: BlockNumber, nonce: Nonce) -> TxExtension {
     let period = runtime::configs::BlockHashCount::get()
         .checked_next_power_of_two()
@@ -331,30 +488,41 @@ fn tx_extension(best_number: BlockNumber, nonce: Nonce) -> TxExtension {
     )
 }
 
-async fn finalized_block_contains(
+async fn finalized_block_extrinsic_index(
     client: &WsClient,
     block_hash: Hash,
     target_extrinsic: &str,
-) -> Result<bool> {
+) -> Result<Option<u32>> {
     let block: Option<Value> = client
         .request("chain_getBlock", rpc_params![block_hash])
         .await
         .with_context(|| format!("fetching finalized block {}", format_hash(&block_hash)))?;
-    let Some(block) = block else {
-        return Ok(false);
-    };
+    // A node that cannot serve a block it reported as finalized is malfunctioning
+    // (e.g. pruned); treating this as "not found" would surface as a misleading timeout.
+    let block = block.with_context(|| {
+        format!(
+            "node returned no body for finalized block {}",
+            format_hash(&block_hash)
+        )
+    })?;
 
+    block_extrinsic_index(&block, target_extrinsic)
+}
+
+fn block_extrinsic_index(block: &Value, target_extrinsic: &str) -> Result<Option<u32>> {
     let extrinsics = block
         .get("block")
         .and_then(|block| block.get("extrinsics"))
         .and_then(Value::as_array)
         .context("chain_getBlock response missing block.extrinsics")?;
 
-    Ok(extrinsics.iter().any(|extrinsic| {
+    let index = extrinsics.iter().position(|extrinsic| {
         extrinsic
             .as_str()
             .is_some_and(|candidate| candidate.eq_ignore_ascii_case(target_extrinsic))
-    }))
+    });
+
+    Ok(index.map(|index| index.saturated_into()))
 }
 
 fn parse_header_number(header: &Value) -> Result<BlockNumber> {
@@ -362,9 +530,11 @@ fn parse_header_number(header: &Value) -> Result<BlockNumber> {
         .get("number")
         .and_then(Value::as_str)
         .context("chain_getHeader response missing number")?;
-    let number = number.strip_prefix("0x").unwrap_or(number);
+    let digits = number
+        .strip_prefix("0x")
+        .with_context(|| format!("block number {number} is not 0x-prefixed hex"))?;
 
-    u32::from_str_radix(number, 16).with_context(|| format!("parsing best block number 0x{number}"))
+    u32::from_str_radix(digits, 16).with_context(|| format!("parsing block number {number}"))
 }
 
 #[cfg(test)]
@@ -388,6 +558,75 @@ mod tests {
         fs::remove_file(&path).unwrap();
 
         assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn load_wasm_rejects_non_wasm_files() {
+        let path = temp_path("not-wasm.wasm");
+        fs::write(&path, b"{\"this\": \"is a chainspec, not wasm\"}").unwrap();
+
+        let err = load_wasm(&path).unwrap_err().to_string();
+        fs::remove_file(&path).unwrap();
+
+        assert!(err.contains("neither raw Wasm"));
+    }
+
+    #[test]
+    fn load_wasm_accepts_raw_wasm_and_compressed_blobs() {
+        for (name, magic) in [
+            ("raw.wasm", WASM_MAGIC.as_slice()),
+            ("compressed.wasm", ZSTD_PREFIX.as_slice()),
+        ] {
+            let path = temp_path(name);
+            let mut bytes = magic.to_vec();
+            bytes.extend([1, 2, 3]);
+            fs::write(&path, &bytes).unwrap();
+
+            let loaded = load_wasm(&path);
+            fs::remove_file(&path).unwrap();
+
+            assert_eq!(loaded.unwrap().bytes, bytes);
+        }
+    }
+
+    #[test]
+    fn resolve_suri_rejects_missing_sources() {
+        let err = resolve_suri(&SignerSources::default())
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("exactly one"));
+    }
+
+    #[test]
+    fn resolve_suri_rejects_empty_suri_file() {
+        let path = temp_path("empty-suri.txt");
+        fs::write(&path, "  \n").unwrap();
+
+        let err = resolve_suri(&SignerSources {
+            suri_file: Some(path.clone()),
+            ..SignerSources::default()
+        })
+        .unwrap_err()
+        .to_string();
+        fs::remove_file(&path).unwrap();
+
+        assert!(err.contains("empty"));
+    }
+
+    #[test]
+    fn resolve_suri_rejects_missing_suri_file() {
+        let err = resolve_suri(&SignerSources {
+            suri_file: Some(temp_path("missing-suri.txt")),
+            ..SignerSources::default()
+        });
+
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn pair_from_suri_rejects_garbage() {
+        assert!(pair_from_suri("not a valid suri \u{0}").is_err());
     }
 
     #[test]
@@ -470,11 +709,48 @@ mod tests {
             submission_mode(true, false).unwrap(),
             SubmissionMode::DryRun
         );
+        assert_eq!(submission_mode(true, true).unwrap(), SubmissionMode::DryRun);
         assert!(submission_mode(false, false).is_err());
         assert_eq!(
             submission_mode(false, true).unwrap(),
             SubmissionMode::Submit
         );
+    }
+
+    #[test]
+    fn parse_header_number_requires_prefixed_hex() {
+        let number = parse_header_number(&serde_json::json!({ "number": "0x2a" })).unwrap();
+        assert_eq!(number, 42);
+
+        // A decimal value must error rather than silently parse as hex (1000 != 0x1000).
+        assert!(parse_header_number(&serde_json::json!({ "number": "1000" })).is_err());
+        assert!(parse_header_number(&serde_json::json!({ "number": "0xzz" })).is_err());
+        assert!(parse_header_number(&serde_json::json!({ "number": 42 })).is_err());
+        assert!(parse_header_number(&serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn block_extrinsic_index_finds_case_insensitive_match() {
+        let block = serde_json::json!({
+            "block": { "extrinsics": ["0xaa", "0xAbCd", "0xff"] }
+        });
+
+        assert_eq!(block_extrinsic_index(&block, "0xabcd").unwrap(), Some(1));
+        assert_eq!(block_extrinsic_index(&block, "0xbeef").unwrap(), None);
+    }
+
+    #[test]
+    fn block_extrinsic_index_rejects_malformed_blocks() {
+        let no_extrinsics = serde_json::json!({ "block": {} });
+
+        assert!(block_extrinsic_index(&no_extrinsics, "0xaa").is_err());
+    }
+
+    #[test]
+    fn block_extrinsic_index_handles_empty_blocks() {
+        let empty = serde_json::json!({ "block": { "extrinsics": [] } });
+
+        assert_eq!(block_extrinsic_index(&empty, "0xaa").unwrap(), None);
     }
 
     fn temp_path(name: &str) -> PathBuf {

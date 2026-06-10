@@ -12,14 +12,14 @@ publish = false
 workspace = true
 
 [dependencies]
-anyhow = { version = "1.0.100" }
+anyhow = { workspace = true }
 clap = { features = ["derive"], workspace = true }
 codec = { default-features = true, workspace = true }
 frame-metadata-hash-extension.default-features = true
 frame-metadata-hash-extension.workspace = true
 frame-system.default-features = true
 frame-system.workspace = true
-hex = { version = "0.4.3" }
+hex = { workspace = true }
 jsonrpsee = { features = ["client-core", "macros", "ws-client"], workspace = true }
 pallet-sudo.default-features = true
 pallet-sudo.workspace = true
@@ -30,7 +30,7 @@ quip-transaction-crypto.workspace = true
 serde_json = { features = ["std"], workspace = true }
 sp-core = { default-features = true, features = ["serde"], workspace = true }
 sp-runtime = { default-features = true, features = ["serde"], workspace = true }
-tokio = { version = "1.51.1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { features = ["macros", "rt-multi-thread", "time"], workspace = true }
 
 [features]
 default = ["std"]
