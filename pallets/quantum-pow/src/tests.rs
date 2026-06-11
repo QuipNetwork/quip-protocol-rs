@@ -47,9 +47,9 @@ fn easy_difficulty() -> DifficultyConfig {
 
 fn test_curve_c() -> crate::difficulty::CurveC {
     crate::difficulty::CurveC {
-        easy_milli: 700,
-        knee_milli: 750,
-        hard_milli: 800,
+        easy_milli: <<Test as crate::Config>::CurveCEasyMilli as Get<u32>>::get(),
+        knee_milli: <<Test as crate::Config>::CurveCKneeMilli as Get<u32>>::get(),
+        hard_milli: <<Test as crate::Config>::CurveCHardMilli as Get<u32>>::get(),
     }
 }
 
@@ -76,15 +76,27 @@ fn energy_curve_matches_legacy_gse_for_registered_specs() {
     let curve = test_curve();
     assert_eq!(
         curve.min_milli,
-        quantum_validation::expected_gse_with_c(2, 1, 0.800)
+        quantum_validation::expected_gse_with_c(
+            2,
+            1,
+            f64::from(test_curve_c().hard_milli) / 1000.0
+        )
     );
     assert_eq!(
         curve.knee_milli,
-        quantum_validation::expected_gse_with_c(2, 1, 0.750)
+        quantum_validation::expected_gse_with_c(
+            2,
+            1,
+            f64::from(test_curve_c().knee_milli) / 1000.0
+        )
     );
     assert_eq!(
         curve.max_milli,
-        quantum_validation::expected_gse_with_c(2, 1, 0.700)
+        quantum_validation::expected_gse_with_c(
+            2,
+            1,
+            f64::from(test_curve_c().easy_milli) / 1000.0
+        )
     );
 }
 
@@ -103,14 +115,14 @@ fn energy_curve_zero_field_spec_drops_h_contribution() {
 
     // Every calibration point must equal the pure-J estimate…
     for (actual, c) in [
-        (curve.min_milli, 0.800),
-        (curve.knee_milli, 0.750),
-        (curve.max_milli, 0.700),
+        (curve.min_milli, test_curve_c().hard_milli),
+        (curve.knee_milli, test_curve_c().knee_milli),
+        (curve.max_milli, test_curve_c().easy_milli),
     ] {
         let expected = quantum_validation::expected_gse_for_specs(
             2,
             1,
-            c,
+            f64::from(c) / 1000.0,
             &zero_h.as_slice(),
             &allowed_j_spec().as_slice(),
         )
@@ -1546,7 +1558,7 @@ fn energy_curve_uses_default_topology_not_other_registered() {
         // floored linear steps under either curve and defeat the sanity
         // check below. In-range, A's decay clamps at A's ceiling while B's
         // (out-of-range for B) walks linearly — observably different.
-        let curve_a = crate::difficulty::EnergyCurve::new(2, 1, 700, 725, 750);
+        let curve_a = test_curve();
         let initial = DifficultyConfig {
             min_solutions: 1,
             max_energy_milli: curve_a.knee_milli,

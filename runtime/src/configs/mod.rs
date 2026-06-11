@@ -293,8 +293,8 @@ parameter_types! {
     /// Energy-curve calibration: per-mille `c` values that define the
     /// `(max_energy, knee_energy, min_energy)` triple via
     /// `expected_gse_for_specs` on the default topology and its h/J value
-    /// specs. Defaults `(0.700, 0.750, 0.800)` centre the
-    /// curve's knee on the canonical `c = 0.75` used elsewhere in validation.
+    /// specs. Defaults `(0.700, 0.725, 0.750)` keep the hard edge difficult
+    /// without pushing the threshold into the known-impossible range.
     pub const QuantumPowCurveCEasyMilli: u32 = 700;
     pub const QuantumPowCurveCKneeMilli: u32 = 725;
     pub const QuantumPowCurveCHardMilli: u32 = 750;
