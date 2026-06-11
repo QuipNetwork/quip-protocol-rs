@@ -76,7 +76,9 @@ kaniko-build-push:
   image:
     name: gcr.io/kaniko-project/executor:v1.23.2-debug
     entrypoint: [""]
-  tags: [linux, amd64]
+  # TEMP(kaniko-gpu-test): force a GPU runner to validate the fix — restore
+  # to [linux, amd64] before merge
+  tags: [linux, amd64, cuda]
   timeout: 90m
   interruptible: true
   rules:
