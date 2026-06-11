@@ -9,6 +9,7 @@ pub trait WeightInfo {
 	fn register_miner() -> Weight;
 	fn deregister_miner() -> Weight;
 	fn register_topology() -> Weight;
+	fn set_default_topology() -> Weight;
 	fn set_difficulty() -> Weight;
 	fn submit_proof() -> Weight;
 }
@@ -35,6 +36,12 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		Weight::from_parts(35_000_000, 0)
 			.saturating_add(T::DbWeight::get().reads(2_u64))
 			.saturating_add(T::DbWeight::get().writes(2_u64))
+	}
+
+	fn set_default_topology() -> Weight {
+		Weight::from_parts(10_000_000, 0)
+			.saturating_add(T::DbWeight::get().reads(1_u64))
+			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
 
 	fn set_difficulty() -> Weight {
@@ -66,6 +73,12 @@ impl WeightInfo for () {
 		Weight::from_parts(35_000_000, 0)
 			.saturating_add(RocksDbWeight::get().reads(2_u64))
 			.saturating_add(RocksDbWeight::get().writes(2_u64))
+	}
+
+	fn set_default_topology() -> Weight {
+		Weight::from_parts(10_000_000, 0)
+			.saturating_add(RocksDbWeight::get().reads(1_u64))
+			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
 
 	fn set_difficulty() -> Weight {
