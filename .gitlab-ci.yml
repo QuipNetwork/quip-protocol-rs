@@ -38,6 +38,8 @@ workflow:
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_COMMIT_BRANCH == "v0.2"
     - if: $CI_COMMIT_TAG
+    # TEMP(kaniko-gpu-test): remove before merge
+    - if: $CI_COMMIT_BRANCH == "ci/kaniko-gpu-fix"
 
 # Single test job: pulls the toolchain image once, restores the Cargo cache
 # once, and runs fmt → clippy → test → runtime release build sequentially so
@@ -87,7 +89,28 @@ kaniko-build-push:
     - if: $CI_COMMIT_TAG
       variables:
         PRIMARY_TAG: $CI_COMMIT_TAG
+    # TEMP(kaniko-gpu-test): remove before merge
+    - if: $CI_COMMIT_BRANCH == "ci/kaniko-gpu-fix"
+      variables:
+        PRIMARY_TAG: ci-test
+  variables:
+    # The cuda runners' NVIDIA container runtime bind-mounts host GPU driver
+    # firmware into every job container, which breaks kaniko's rootfs
+    # extraction (it cannot remove /lib to recreate the usr-merge symlink
+    # while those mounts are busy). "void" tells the NVIDIA runtime to skip
+    # all GPU injection for this container — the build does not need a GPU.
+    NVIDIA_VISIBLE_DEVICES: "void"
   before_script:
+    # TEMP(kaniko-gpu-test): diagnostics — remove before merge
+    - echo "=== NVIDIA env ==="; env | grep -i nvidia || echo "(none)"
+    - echo "=== nvidia/firmware mounts ==="; grep -aE 'nvidia|firmware' /proc/self/mountinfo || echo "(none)"
+    # TEMP(kaniko-gpu-test): fallback — lazy-unmount any injected firmware
+    # mounts so we learn whether the container is privileged enough for this
+    # approach if the env var does not stop the injection.
+    - |
+      for m in $(grep -aE 'nvidia|firmware' /proc/self/mountinfo | awk '{print $5}'); do
+        umount -l "$m" 2>/dev/null && echo "umounted $m" || echo "umount FAILED: $m"
+      done
     - mkdir -p /kaniko/.docker
     - |
       printf '{"auths":{"%s":{"auth":"%s"}}}\n' \
