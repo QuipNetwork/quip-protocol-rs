@@ -1,12 +1,16 @@
 use super::mock::*;
 use crate::{
     difficulty, topology,
-    types::{DifficultyConfig, QuantumProof},
+    types::{DifficultyConfig, ProofRecord, QuantumProof},
     AllowedValueSetOf, BlockBestProof, BlockProofCount, DefaultTopology, Difficulty,
-    LastProofBlock, LastProofBlockHash, Miners, PackedSpinBytesOf, RegisteredTopologies,
-    WinningSolutions,
+    LastProofBlock, LastProofBlockHash, Miners, PackedSpinBytesOf, QBlocks, RegisteredTopologies,
+    WinnerStreak,
 };
-use frame_support::{assert_noop, assert_ok, traits::Hooks, BoundedVec};
+use frame_support::{
+    assert_noop, assert_ok,
+    traits::{Get, Hooks, StorageVersion},
+    BoundedVec,
+};
 use quantum_validation::{
     derive_nonce, energy_of_solution, generate_ising_model, packed::pack_solution,
     AllowedValueSpec, MilliValue, MILLI_SCALE,
@@ -161,11 +165,26 @@ fn registered_topology() -> (
     (nodes, edges, hash)
 }
 
+fn test_db_weight() -> frame_support::weights::RuntimeDbWeight {
+    <<Test as frame_system::Config>::DbWeight as frame_support::traits::Get<_>>::get()
+}
+
 fn pack_spins(spins: &[i8]) -> PackedSpinBytesOf<Test> {
     let milli: Vec<MilliValue> = spins.iter().map(|&s| s as MilliValue * SCALE).collect();
     let spec = allowed_spin_spec();
     let bytes = pack_solution(&milli, &spec.as_slice()).expect("binary spin pack");
     bounded::<u8, MaxNodes>(bytes)
+}
+
+fn finalize_winner(miner: u64, block_number: u64) {
+    System::set_block_number(block_number);
+    BlockBestProof::<Test>::put(ProofRecord {
+        miner,
+        submitted_at: block_number,
+        energy_milli: 0,
+        salt: [0u8; 32],
+    });
+    QuantumPow::on_finalize(block_number);
 }
 
 fn proof_for(
@@ -615,7 +634,7 @@ fn submit_proof_uses_decayed_difficulty_after_block_gap() {
         );
 
         // One full epoch later: decay raises the threshold by at least
-        // MIN_DECAY_DELTA_MILLI (= 3 milli), strictly above the proof's
+        // MIN_DECAY_DELTA_MILLI (= 3000 milli), strictly above the proof's
         // energy. Validation now admits the same proof — proving submit_proof
         // consulted current_difficulty(), not the raw storage baseline.
         System::set_block_number(21); // (21 - 1) / EpochLength(20) = 1 decay step
@@ -652,14 +671,14 @@ fn on_finalize_fast_proof_hardens_difficulty() {
 }
 
 #[test]
-fn on_finalize_slow_proof_eases_difficulty_from_decayed_base() {
+fn on_finalize_slow_proof_by_new_winner_hardens_from_decayed_base() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
         // min_solutions / min_diversity_milli are chain-static under the new
         // curve policy; only max_energy_milli decays. Set the chain-static
-        // fields permissively so the proof passes those gates, and let the
-        // assertion below measure the energy easing through both decay and
-        // the post-win adjustment.
+        // fields permissively so the proof passes those gates. A slow win
+        // by a non-dominant (first-streak) winner hardens gently from the
+        // decayed base — the v0.1 rule restored from the original design.
         let initial = DifficultyConfig {
             min_solutions: 1,
             max_energy_milli: 0,
@@ -682,8 +701,10 @@ fn on_finalize_slow_proof_eases_difficulty_from_decayed_base() {
         QuantumPow::on_finalize(System::block_number());
 
         let next = Difficulty::<Test>::get();
-        // Slow proof eases the threshold further past the decayed value.
-        assert!(next.max_energy_milli > decayed.max_energy_milli);
+        // A slow proof by a non-dominant winner hardens the threshold below
+        // the decayed value (gentle 5%±4% band — v0.1 different/new-winner
+        // rule). Decay remains the easing pressure between wins.
+        assert!(next.max_energy_milli < decayed.max_energy_milli);
         // Chain-static fields untouched throughout decay + adjust.
         assert_eq!(next.min_solutions, initial.min_solutions);
         assert_eq!(next.min_diversity_milli, initial.min_diversity_milli);
@@ -691,7 +712,383 @@ fn on_finalize_slow_proof_eases_difficulty_from_decayed_base() {
 }
 
 #[test]
-fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
+fn curve_constants_are_recalibrated() {
+    assert_eq!(
+        <<Test as crate::Config>::CurveCEasyMilli as Get<u32>>::get(),
+        700
+    );
+    assert_eq!(
+        <<Test as crate::Config>::CurveCKneeMilli as Get<u32>>::get(),
+        725
+    );
+    assert_eq!(
+        <<Test as crate::Config>::CurveCHardMilli as Get<u32>>::get(),
+        750
+    );
+
+    let curve = test_curve();
+    assert!(curve.min_milli < curve.knee_milli);
+    assert!(curve.knee_milli < curve.max_milli);
+}
+
+#[test]
+fn runtime_upgrade_clamps_impossible_difficulty_to_knee() {
+    new_test_ext().execute_with(|| {
+        registered_topology();
+        let curve = test_curve();
+        let initial = DifficultyConfig {
+            min_solutions: 7,
+            max_energy_milli: curve.min_milli - 1,
+            min_diversity_milli: 300,
+        };
+        Difficulty::<Test>::put(initial);
+        StorageVersion::new(0).put::<QuantumPow>();
+
+        let weight = QuantumPow::on_runtime_upgrade();
+
+        assert_eq!(
+            Difficulty::<Test>::get(),
+            DifficultyConfig {
+                max_energy_milli: curve.knee_milli,
+                ..initial
+            }
+        );
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(1));
+        assert_eq!(weight, test_db_weight().reads_writes(4, 2));
+    });
+}
+
+#[test]
+fn runtime_upgrade_keeps_in_range_difficulty() {
+    new_test_ext().execute_with(|| {
+        registered_topology();
+        let curve = test_curve();
+        let initial = DifficultyConfig {
+            min_solutions: 7,
+            max_energy_milli: curve.knee_milli,
+            min_diversity_milli: 300,
+        };
+        Difficulty::<Test>::put(initial);
+        StorageVersion::new(0).put::<QuantumPow>();
+
+        let weight = QuantumPow::on_runtime_upgrade();
+
+        assert_eq!(Difficulty::<Test>::get(), initial);
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(1));
+        assert_eq!(weight, test_db_weight().reads_writes(4, 1));
+    });
+}
+
+#[test]
+fn dominant_winner_eases_at_fast_cutoff_but_hardens_below_it() {
+    // The fast cutoff is strict `<`: exactly 60 elapsed blocks is a slow
+    // win, so a dominant winner eases there — one block sooner and even a
+    // dominant winner hardens (v0.1: fast wins always harden).
+    new_test_ext().execute_with(|| {
+        registered_topology();
+        let curve = test_curve();
+        let initial = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: curve.knee_milli,
+            min_diversity_milli: 0,
+        };
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        LastProofBlock::<Test>::put(1);
+        // Seed a streak one short of the threshold (3); the next win makes
+        // the miner dominant.
+        WinnerStreak::<Test>::put(crate::types::WinnerStreak { miner: 1, count: 2 });
+
+        finalize_winner(1, 61); // elapsed 60 == cutoff -> slow, dominant
+
+        let next = Difficulty::<Test>::get();
+        assert!(
+            next.max_energy_milli > initial.max_energy_milli,
+            "a dominant winner at 60 elapsed blocks must ease"
+        );
+    });
+
+    new_test_ext().execute_with(|| {
+        registered_topology();
+        let curve = test_curve();
+        let initial = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: curve.knee_milli,
+            min_diversity_milli: 0,
+        };
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        LastProofBlock::<Test>::put(1);
+        WinnerStreak::<Test>::put(crate::types::WinnerStreak { miner: 1, count: 2 });
+
+        finalize_winner(1, 60); // elapsed 59 < cutoff -> fast, dominance ignored
+
+        let next = Difficulty::<Test>::get();
+        assert!(
+            next.max_energy_milli < initial.max_energy_milli,
+            "a fast win must harden even for a dominant winner"
+        );
+    });
+}
+
+#[test]
+fn slow_win_by_different_miner_hardens() {
+    // Restored v0.1 rule: a slow block won by a *different* miner hardens
+    // difficulty; only dominant repeat winners ease.
+    new_test_ext().execute_with(|| {
+        registered_topology();
+        let curve = test_curve();
+        let initial = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: curve.knee_milli,
+            min_diversity_milli: 0,
+        };
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        LastProofBlock::<Test>::put(1);
+
+        // Make miner 1 dominant so its slow win eases the threshold up to
+        // the curve ceiling — giving the next assertion room to observe a
+        // strict hardening move.
+        WinnerStreak::<Test>::put(crate::types::WinnerStreak { miner: 1, count: 2 });
+        finalize_winner(1, 100);
+        let after_dominant = Difficulty::<Test>::get();
+        assert!(after_dominant.max_energy_milli > initial.max_energy_milli);
+
+        finalize_winner(2, 200); // different miner, slow win
+
+        let after_switch = Difficulty::<Test>::get();
+        let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
+        assert_eq!(streak.miner, 2);
+        assert_eq!(streak.count, 1);
+        assert!(
+            after_switch.max_energy_milli < after_dominant.max_energy_milli,
+            "a slow win by a different miner must harden (v0.1 rule)"
+        );
+    });
+}
+
+#[test]
+fn repeated_same_winner_forces_easing() {
+    new_test_ext().execute_with(|| {
+        registered_topology();
+        let curve = test_curve();
+        let initial = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: curve.knee_milli,
+            min_diversity_milli: 0,
+        };
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        LastProofBlock::<Test>::put(1);
+
+        // Slow wins (elapsed >= 60 blocks): dominance easing only applies
+        // past the fast cutoff, so space the wins ~100 blocks apart.
+        finalize_winner(1, 100);
+        let after_first = Difficulty::<Test>::get();
+        assert!(after_first.max_energy_milli < initial.max_energy_milli);
+
+        finalize_winner(1, 200);
+        let after_second = Difficulty::<Test>::get();
+        // Streak count 2 is still below the threshold (3): slow wins by a
+        // non-dominant winner must keep hardening (or hold at the clamp
+        // floor) — easing here would fire one win early and raise the value.
+        assert!(
+            after_second.max_energy_milli <= after_first.max_energy_milli,
+            "second consecutive win is below the easing threshold and must not ease"
+        );
+
+        finalize_winner(1, 300);
+        let after_third = Difficulty::<Test>::get();
+        let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
+
+        assert_eq!(streak.miner, 1);
+        assert_eq!(streak.count, 3);
+        assert!(
+            after_third.max_energy_milli > after_second.max_energy_milli,
+            "third consecutive slow win must ease for the dominant winner"
+        );
+    });
+}
+
+#[test]
+fn runtime_upgrade_is_noop_once_versioned() {
+    new_test_ext().execute_with(|| {
+        registered_topology();
+        let curve = test_curve();
+        // Out-of-range difficulty that the v1 migration *would* clamp —
+        // but the on-chain version is already 1, so the version guard must
+        // keep the migration from re-running and yanking a legitimately
+        // hardened threshold back to the knee on every future upgrade.
+        let initial = DifficultyConfig {
+            min_solutions: 7,
+            max_energy_milli: curve.min_milli - 1,
+            min_diversity_milli: 300,
+        };
+        Difficulty::<Test>::put(initial);
+        StorageVersion::new(1).put::<QuantumPow>();
+
+        let weight = QuantumPow::on_runtime_upgrade();
+
+        assert_eq!(Difficulty::<Test>::get(), initial);
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(1));
+        assert_eq!(weight, test_db_weight().reads(1));
+    });
+}
+
+#[test]
+fn runtime_upgrade_without_topology_only_bumps_version() {
+    new_test_ext().execute_with(|| {
+        // No topology registered: the plan specifies a no-op repair (there
+        // is no curve to validate against), but the version must still be
+        // bumped so the migration does not re-run forever.
+        let initial = DifficultyConfig {
+            min_solutions: 7,
+            max_energy_milli: -1_000_000,
+            min_diversity_milli: 300,
+        };
+        Difficulty::<Test>::put(initial);
+        StorageVersion::new(0).put::<QuantumPow>();
+
+        let weight = QuantumPow::on_runtime_upgrade();
+
+        assert_eq!(Difficulty::<Test>::get(), initial);
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(1));
+        assert_eq!(weight, test_db_weight().reads_writes(3, 1));
+    });
+}
+
+#[test]
+fn runtime_upgrade_preserves_threshold_at_min_boundary() {
+    new_test_ext().execute_with(|| {
+        registered_topology();
+        let curve = test_curve();
+        // The clamp condition is strict `<`: a threshold sitting exactly on
+        // `min_milli` is still solvable and must be left alone.
+        let initial = DifficultyConfig {
+            min_solutions: 7,
+            max_energy_milli: curve.min_milli,
+            min_diversity_milli: 300,
+        };
+        Difficulty::<Test>::put(initial);
+        StorageVersion::new(0).put::<QuantumPow>();
+
+        QuantumPow::on_runtime_upgrade();
+
+        assert_eq!(Difficulty::<Test>::get(), initial);
+    });
+}
+
+#[test]
+fn zero_easing_threshold_disables_forced_easing() {
+    new_test_ext().execute_with(|| {
+        ConsecutiveWinnerEasingThreshold::set(0);
+        registered_topology();
+        let curve = test_curve();
+        let initial = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: curve.knee_milli,
+            min_diversity_milli: 0,
+        };
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        LastProofBlock::<Test>::put(1);
+
+        // Slow wins: with the default threshold (3) the third one would
+        // ease for the dominant winner, so this spacing discriminates.
+        finalize_winner(1, 100);
+        finalize_winner(1, 200);
+        let after_second = Difficulty::<Test>::get();
+        finalize_winner(1, 300);
+        let after_third = Difficulty::<Test>::get();
+
+        // Without the `threshold > 0` guard, `count >= 0` would force
+        // easing on every slow win. A threshold of 0 must mean "disabled":
+        // slow wins keep hardening (or hold at the clamp floor) — easing
+        // would raise the threshold and trip this.
+        assert!(
+            after_third.max_energy_milli <= after_second.max_energy_milli,
+            "threshold 0 disables streak easing; a slow repeat win must never ease"
+        );
+        assert!(
+            after_third.max_energy_milli >= curve.min_milli,
+            "hardening must respect the curve floor"
+        );
+    });
+}
+
+#[test]
+fn adjustment_from_in_range_never_leaves_curve_range() {
+    let curve = test_curve();
+    // Regression for the convergence bug this MR fixes: a max-roll fast win
+    // from the knee could overshoot below `min_milli`, re-entering the
+    // impossible range the v1 migration repairs. Sweep many seeds and
+    // mining times; an in-range threshold must stay in range.
+    for seed_byte in 0_u8..64 {
+        for &mining_time in &[1_u64, 30, 59, 60, 61, 150, 200, 201, 500] {
+            for &start in &[curve.min_milli, curve.knee_milli, curve.max_milli] {
+                for dominant in [false, true] {
+                    let adjusted = difficulty::adjust_on_proof_with_dominance(
+                        DifficultyConfig {
+                            min_solutions: 1,
+                            max_energy_milli: start,
+                            min_diversity_milli: 0,
+                        },
+                        mining_time,
+                        curve,
+                        &[seed_byte],
+                        dominant,
+                    );
+                    assert!(
+                        adjusted.max_energy_milli >= curve.min_milli
+                            && adjusted.max_energy_milli <= curve.max_milli,
+                        "seed {seed_byte}, time {mining_time}, start {start}, \
+                         dominant {dominant}: adjusted threshold {} left [{}, {}]",
+                        adjusted.max_energy_milli,
+                        curve.min_milli,
+                        curve.max_milli,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn winner_streak_resets_for_different_miner() {
+    new_test_ext().execute_with(|| {
+        registered_topology();
+        let curve = test_curve();
+        let initial = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: curve.knee_milli,
+            min_diversity_milli: 0,
+        };
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        LastProofBlock::<Test>::put(1);
+
+        finalize_winner(1, 10);
+        finalize_winner(1, 20);
+        let before_reset = Difficulty::<Test>::get();
+
+        finalize_winner(2, 30);
+        let after_reset = Difficulty::<Test>::get();
+        let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
+
+        assert_eq!(streak.miner, 2);
+        assert_eq!(streak.count, 1);
+        // Two fast wins from the knee can already pin the threshold at the
+        // clamp floor (`curve.min_milli`), so the reset win may have no room
+        // left to harden further. The regression this guards is the streak
+        // *not* resetting: count 3 would force easing, raising the threshold.
+        assert!(
+            after_reset.max_energy_milli <= before_reset.max_energy_milli,
+            "new winner below cutoff must use normal hardening, never easing"
+        );
+        assert!(
+            after_reset.max_energy_milli >= curve.min_milli,
+            "hardening must respect the curve floor"
+        );
+    });
+}
+
+#[test]
+fn on_finalize_persists_qblock_with_recoverable_nonce() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
         assert_ok!(QuantumPow::set_difficulty(
@@ -714,7 +1111,7 @@ fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
         let block = System::block_number();
         QuantumPow::on_finalize(block);
 
-        let stored = WinningSolutions::<Test>::get(block).expect("winning solution persisted");
+        let stored = QBlocks::<Test>::get(block).expect("qblock persisted");
         assert_eq!(stored.miner, 1);
         assert_eq!(stored.salt, original_salt);
         assert_eq!(stored.reward, 50);
@@ -726,7 +1123,7 @@ fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
         // Re-derive the nonce via the runtime helper and confirm it matches
         // the value that was on the submitted proof. This is the round-trip
         // that lets dashboards recover the nonce from on-chain state alone.
-        let view = crate::Pallet::<Test>::winning_solution_with_nonce(block)
+        let view = crate::Pallet::<Test>::qblock_with_nonce(block)
             .expect("nonce derivation succeeds for a real winner");
         assert_eq!(view.nonce, original_nonce);
         assert_eq!(view.solution.salt, original_salt);
@@ -739,13 +1136,13 @@ fn on_finalize_persists_winning_solution_with_recoverable_nonce() {
 }
 
 #[test]
-fn winning_solution_returns_none_for_genesis_block() {
+fn qblock_returns_none_for_genesis_block() {
     new_test_ext().execute_with(|| {
         // Genesis (block 0) never had a `submit_proof` call, so the storage
         // entry is absent and the helper short-circuits before any block-hash
         // arithmetic. Pins the contract that saturating subtraction on
         // `block_number - 1 == 0u32 - 1` never reaches the nonce derivation.
-        assert!(crate::Pallet::<Test>::winning_solution_with_nonce(0).is_none());
+        assert!(crate::Pallet::<Test>::qblock_with_nonce(0).is_none());
     });
 }
 
@@ -806,9 +1203,9 @@ fn mining_snapshot_returns_default_and_selected_topology_views() {
 }
 
 #[test]
-fn winning_solution_records_active_difficulty_threshold() {
+fn qblock_records_active_difficulty_threshold() {
     new_test_ext().execute_with(|| {
-        // Pin the contract that WinningSolution stores the *active* threshold
+        // Pin the contract that the QBlock stores the *active* threshold
         // a proof had to clear (decay applied, pre-adjust) rather than the
         // post-adjustment value that lives in Difficulty<T> after on_finalize.
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
@@ -827,13 +1224,13 @@ fn winning_solution_records_active_difficulty_threshold() {
         QuantumPow::on_finalize(System::block_number());
 
         let expected_active = difficulty::apply_decay(initial, 2, test_curve());
-        let stored = WinningSolutions::<Test>::get(45).expect("winner persisted");
+        let stored = QBlocks::<Test>::get(45).expect("winner persisted");
         assert_eq!(
             stored.difficulty, expected_active,
             "stored difficulty must be the decayed-but-pre-adjust threshold"
         );
 
-        // Mining time blocks = 45 - 1 = 44 < TARGET_PROOF_BLOCKS (100), so the
+        // Mining time blocks = 45 - 1 = 44 < harden cutoff (60), so the
         // adjustment hardens. Only the energy threshold moves now; chain-static
         // fields stay put.
         let next = Difficulty::<Test>::get();
@@ -1070,7 +1467,15 @@ fn decay_moves_less_than_hardening_per_step() {
 
 #[test]
 fn curve_compresses_motion_near_boundaries() {
-    let curve = test_curve();
+    // Production-scale curve (v0.1's documented -16000/-15600/-14000 energy
+    // units, in milli). The tiny (2, 1) test curve's range sits below the
+    // 5000-milli proof floor, which would flatten every delta to the floor
+    // and hide the compression this test pins.
+    let curve = crate::difficulty::EnergyCurve {
+        min_milli: -16_000_000,
+        knee_milli: -15_600_000,
+        max_milli: -14_000_000,
+    };
     // Pick two starting points inside the curve range: one near the knee
     // (max curve_factor ≈ 1.0) and one near the max boundary (curve_factor ≈ 0.1).
     let mid_start = (curve.min_milli + curve.knee_milli) / 2;
@@ -1135,10 +1540,16 @@ fn energy_curve_uses_default_topology_not_other_registered() {
         // First-write-wins keeps A as the default.
         assert_eq!(DefaultTopology::<Test>::get(), Some(default_hash));
 
-        // Set a stored difficulty and let decay elapse.
+        // Set a stored difficulty and let decay elapse. Start inside A's
+        // curve range: the 3000-milli decay floor exceeds both tiny test
+        // curves' spans, so an out-of-range start would decay by identical
+        // floored linear steps under either curve and defeat the sanity
+        // check below. In-range, A's decay clamps at A's ceiling while B's
+        // (out-of-range for B) walks linearly — observably different.
+        let curve_a = crate::difficulty::EnergyCurve::new(2, 1, 700, 725, 750);
         let initial = DifficultyConfig {
             min_solutions: 1,
-            max_energy_milli: -10_000,
+            max_energy_milli: curve_a.knee_milli,
             min_diversity_milli: 0,
         };
         assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));

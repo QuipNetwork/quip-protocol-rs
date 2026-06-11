@@ -99,6 +99,9 @@ kaniko-build-push:
     # release tag (e.g. v0.2.0rc1 → :v0.2) so deployments can pin a series and
     # pick up the latest release in it. Branch pipelines get PRIMARY_TAG + sha
     # only. kaniko's debug image ships busybox sh/grep, which supports -oE.
+    # --ignore-path=/lib/firmware: GPU runners bind-mount host NVIDIA firmware
+    # into the container; kaniko can't remove /lib to recreate the usr-merge
+    # symlink while those mounts are busy, so it must skip that subtree.
     - |
       SERIES_DEST=""
       if [ -n "$CI_COMMIT_TAG" ]; then
@@ -113,4 +116,5 @@ kaniko-build-push:
         $SERIES_DEST \
         --build-arg "SUBSTRATE_CLI_GIT_COMMIT_HASH=$CI_COMMIT_SHORT_SHA" \
         --cache=true \
-        --cache-repo "$CACHE_IMAGE"
+        --cache-repo "$CACHE_IMAGE" \
+        --ignore-path=/lib/firmware

@@ -13,22 +13,35 @@ use crate::types::DifficultyConfig;
 // - proof adjustment and decay reason over the same time unit
 // - validation does not depend on timestamp availability or conversion
 //
-// These constants are the block-native thresholds the current policy uses.
-// They correspond to the earlier 6-second-block translation:
+// These constants are the block-native thresholds the current policy uses,
+// measuring elapsed chain blocks between consecutive qblocks (PoW-won
+// blocks — formerly referred to as "solution #"/"problem #"). They
+// correspond to the earlier 6-second-block translation:
 // 360s -> 60 blocks, 600s -> 100 blocks, 1200s -> 200 blocks.
+//
+// `TARGET_PROOF_BLOCKS` is deliberately co-located with the runtime's
+// `QuantumPowEpochLength` (= 100, the decay interval): the first decay
+// step, the hardening band's gentle plateau, and the easing rate ramp all
+// begin at the same 100-block boundary. A win round is therefore either
+// "sub-epoch" (adjusts from the stored difficulty) or "decayed" (adjusts
+// gently from the decay-eased base) — never a mix. The two remain separate
+// constants on purpose: this one anchors the rate bands, the runtime one
+// sets decay cadence. Retune them together.
 const FAST_PROOF_BLOCKS: u64 = 60;
 const TARGET_PROOF_BLOCKS: u64 = 100;
 const SLOW_PROOF_BLOCKS: u64 = 200;
 
-/// Hardening enforces a 5-milli floor on the energy delta so very small
-/// curve outputs still move the threshold by a perceptible amount.
+/// Proof adjustment enforces a 5000-milli floor on the energy delta so very
+/// small curve outputs still move the threshold by a perceptible amount.
 /// Mirrors v0.1 `apply_min_adjustment(min_adj=5.0)` for non-decay
-/// adjustments.
-const MIN_HARDENING_DELTA_MILLI: i64 = 5;
+/// adjustments: v0.1 operated on whole energy units, chain state stores
+/// milli-energy, so 5.0 units -> 5000 milli.
+const MIN_PROOF_ADJUSTMENT_DELTA_MILLI: i64 = 5000;
 
-/// Decay enforces a 3-milli floor — matches v0.1
-/// `apply_min_adjustment(min_adj=3.0)` for decay easing.
-const MIN_DECAY_DELTA_MILLI: i64 = 3;
+/// Decay enforces a 3000-milli floor — matches v0.1
+/// `apply_min_adjustment(min_adj=3.0)` (whole energy units -> milli) for
+/// decay easing.
+const MIN_DECAY_DELTA_MILLI: i64 = 3000;
 
 /// Decay rate per epoch step: 25 per-mille = 2.5%, half of the typical
 /// hardening floor (50 per-mille). Mirrors v0.1 `energy_ease_rate = 0.025`.
@@ -118,6 +131,15 @@ impl EnergyCurve {
     }
 }
 
+// Rate bands mirror v0.1 `calculate_adjustment_rate_with_randomness`:
+//
+// Hardening: <360s (60 blocks) -> 35% ± 30%; >600s (100 blocks) -> 5% ± 4%;
+// linear interpolation in between. The graduated band matters because slow
+// qblocks won by a non-dominant winner harden too — they need the gentle
+// 5% rates, not the fast-qblock 35% ones.
+//
+// Easing: <600s (100 blocks) -> 2.5% ± 2%; >1200s (200 blocks) -> 15% ± 14%;
+// linear interpolation in between.
 fn sample_adjustment_milli(mining_time_blocks: u64, harder: bool, seed: &[u8]) -> u32 {
     let (base, variance) = if harder {
         if mining_time_blocks < FAST_PROOF_BLOCKS {
@@ -164,6 +186,11 @@ fn sample_adjustment_milli(mining_time_blocks: u64, harder: bool, seed: &[u8]) -
 /// `33a4837^`. When `current_milli` lies outside `[min_milli, max_milli]`,
 /// the curve degrades to a linear `total_range * rate` adjustment — same
 /// behaviour as v0.1.
+///
+/// Unlike v0.1, an in-range `current_milli` is clamped back into
+/// `[min_milli, max_milli]` after the adjustment: a max-roll fast win from
+/// the knee can otherwise overshoot past `min_milli`, recreating the
+/// impossible-threshold state the v1 storage migration exists to repair.
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn adjust_energy_along_curve(
     current_milli: i64,
@@ -216,9 +243,19 @@ pub(crate) fn adjust_energy_along_curve(
         return current_milli;
     }
 
-    match direction {
+    let adjusted = match direction {
         Direction::Harder => current_milli.saturating_sub(delta),
         Direction::Easier => current_milli.saturating_add(delta),
+    };
+    // In-range thresholds stay in range (see doc comment). Out-of-range
+    // inputs keep the unclamped linear fallback so root-set sentinel values
+    // converge gradually instead of snapping to a boundary. The early
+    // `total_range <= 0` return above guarantees `min < max` here, so
+    // `clamp` cannot panic.
+    if current_milli >= curve.min_milli && current_milli <= curve.max_milli {
+        adjusted.clamp(curve.min_milli, curve.max_milli)
+    } else {
+        adjusted
     }
 }
 
@@ -239,16 +276,40 @@ pub fn apply_decay(current: DifficultyConfig, steps: u32, curve: EnergyCurve) ->
     difficulty
 }
 
-/// Adjust difficulty after a winning proof. Mutates only `max_energy_milli`;
-/// `min_solutions` and `min_diversity_milli` are chain-static (only the
-/// `set_difficulty` extrinsic — `ensure_root` — can change them).
+/// Adjust difficulty after a winning proof by a non-dominant winner.
+/// Mutates only `max_energy_milli`; `min_solutions` and
+/// `min_diversity_milli` are chain-static (only the `set_difficulty`
+/// extrinsic — `ensure_root` — can change them).
 pub fn adjust_on_proof(
     current: DifficultyConfig,
     mining_time_blocks: u64,
     curve: EnergyCurve,
     randomness_seed: &[u8],
 ) -> DifficultyConfig {
-    let harder = mining_time_blocks < TARGET_PROOF_BLOCKS;
+    adjust_on_proof_with_dominance(current, mining_time_blocks, curve, randomness_seed, false)
+}
+
+/// Adjust difficulty after a winning proof (a qblock), following the v0.1
+/// `compute_next_block_requirements` policy:
+///
+/// - A fast qblock (under [`FAST_PROOF_BLOCKS`] elapsed chain blocks)
+///   ALWAYS hardens — even for a dominant winner.
+/// - A slow qblock eases only when the winner dominates (`dominant_winner`,
+///   i.e. the same account won at least `ConsecutiveWinnerEasingThreshold`
+///   consecutive qblocks); otherwise it hardens gently via the graduated
+///   rate band.
+///
+/// v0.1 keyed dominance on the miner *type* repeating once (streak 2); we
+/// key it on the account meeting the configured threshold instead — see
+/// QUI-653 for the rationale.
+pub fn adjust_on_proof_with_dominance(
+    current: DifficultyConfig,
+    mining_time_blocks: u64,
+    curve: EnergyCurve,
+    randomness_seed: &[u8],
+    dominant_winner: bool,
+) -> DifficultyConfig {
+    let harder = mining_time_blocks < FAST_PROOF_BLOCKS || !dominant_winner;
     let rate_milli = sample_adjustment_milli(mining_time_blocks, harder, randomness_seed);
     let direction = if harder {
         Direction::Harder
@@ -260,7 +321,7 @@ pub fn adjust_on_proof(
         rate_milli,
         direction,
         curve,
-        MIN_HARDENING_DELTA_MILLI,
+        MIN_PROOF_ADJUSTMENT_DELTA_MILLI,
     );
     DifficultyConfig {
         max_energy_milli: new_max_energy_milli,
