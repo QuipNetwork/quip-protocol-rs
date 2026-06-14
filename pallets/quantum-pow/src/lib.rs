@@ -76,6 +76,28 @@ sp_api::decl_runtime_apis! {
             crate::types::QBlockWithNonce<AccountId, Balance, BlockNumber>
         >;
 
+        /// Latest assigned monotonic qblock id, or `None` before the first
+        /// qblock. qblock ids are 1-based ordinals and are distinct from
+        /// substrate block numbers.
+        fn latest_qblock_id() -> Option<u64>;
+
+        /// qblock id assigned to `block_number`, or `None` if that substrate
+        /// block was not a qblock.
+        fn qblock_id_by_block(block_number: BlockNumber) -> Option<u64>;
+
+        /// Winning qblock for a monotonic qblock id, augmented with its
+        /// derived nonce.
+        fn qblock_by_id(qblock_id: u64) -> Option<
+            crate::types::QBlockWithNonce<AccountId, Balance, BlockNumber>
+        >;
+
+        /// Winning qblock for a substrate block number, augmented with its
+        /// derived nonce. This is the qblock-named alias for
+        /// `winning_solution`.
+        fn qblock_by_block(block_number: BlockNumber) -> Option<
+            crate::types::QBlockWithNonce<AccountId, Balance, BlockNumber>
+        >;
+
         /// Live difficulty threshold a miner has to clear *right now*.
         ///
         /// Differs from `api.query.quantumPow.difficulty()` (the raw storage
@@ -84,6 +106,9 @@ sp_api::decl_runtime_apis! {
         /// returns the decayed value, matching what `submit_proof` validation
         /// will actually require.
         fn current_difficulty() -> crate::types::DifficultyConfig;
+
+        /// Client-facing alias for the live difficulty threshold.
+        fn current_hardness() -> crate::types::DifficultyConfig;
     }
 }
 
@@ -232,6 +257,19 @@ pub mod pallet {
     #[pallet::storage_prefix = "WinningSolutions"]
     pub type QBlocks<T: Config> = StorageMap<_, Blake2_128Concat, BlockNumberFor<T>, QBlockOf<T>>;
 
+    /// Number of accepted qblocks. Because qblock ids are 1-based, this is
+    /// also the latest assigned qblock id when non-zero.
+    #[pallet::storage]
+    pub type QBlockCount<T: Config> = StorageValue<_, u64, ValueQuery>;
+
+    /// Monotonic qblock id to substrate block number index.
+    #[pallet::storage]
+    pub type QBlockBlockById<T: Config> = StorageMap<_, Blake2_128Concat, u64, BlockNumberFor<T>>;
+
+    /// Substrate block number to monotonic qblock id index.
+    #[pallet::storage]
+    pub type QBlockIdByBlock<T: Config> = StorageMap<_, Blake2_128Concat, BlockNumberFor<T>, u64>;
+
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
@@ -262,6 +300,8 @@ pub mod pallet {
             valid_solution_count: u32,
         },
         BlockWinner {
+            qblock_id: u64,
+            block_number: BlockNumberFor<T>,
             miner: T::AccountId,
             reward: BalanceOf<T>,
             energy_milli: i64,
@@ -456,6 +496,7 @@ pub mod pallet {
             };
             Difficulty::<T>::put(next);
             LastProofBlock::<T>::put(n);
+            let qblock_id = Self::next_qblock_id();
 
             QBlocks::<T>::insert(
                 n,
@@ -469,9 +510,13 @@ pub mod pallet {
                     last_proof_block_hash,
                 },
             );
+            QBlockBlockById::<T>::insert(qblock_id, n);
+            QBlockIdByBlock::<T>::insert(n, qblock_id);
 
             Self::deposit_event(Event::DifficultyUpdated { difficulty: next });
             Self::deposit_event(Event::BlockWinner {
+                qblock_id,
+                block_number: n,
                 miner: record.miner,
                 reward,
                 energy_milli: record.energy_milli,
@@ -779,6 +824,19 @@ pub mod pallet {
             Self::current_difficulty(block_number)
         }
 
+        pub fn latest_qblock_id() -> Option<u64> {
+            let count = QBlockCount::<T>::get();
+            (count > 0).then_some(count)
+        }
+
+        pub fn qblock_id_by_block(block_number: BlockNumberFor<T>) -> Option<u64> {
+            QBlockIdByBlock::<T>::get(block_number)
+        }
+
+        pub fn qblock_block_by_id(qblock_id: u64) -> Option<BlockNumberFor<T>> {
+            QBlockBlockById::<T>::get(qblock_id)
+        }
+
         pub fn mining_snapshot(topology_hash: Option<H256>) -> Option<MiningSnapshotOf<T>> {
             let (topology_hash, topology) = match topology_hash {
                 Some(hash) => (hash, Self::topology_meta(hash)?),
@@ -826,6 +884,18 @@ pub mod pallet {
             let miner_bytes = Self::account_to_bytes(&solution.miner);
             let nonce = derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &solution.salt);
             Some(types::QBlockWithNonce { solution, nonce })
+        }
+
+        pub fn qblock_with_nonce_by_id(qblock_id: u64) -> Option<QBlockWithNonceOf<T>> {
+            let block_number = Self::qblock_block_by_id(qblock_id)?;
+            Self::qblock_with_nonce(block_number)
+        }
+
+        fn next_qblock_id() -> u64 {
+            QBlockCount::<T>::mutate(|count| {
+                *count = count.saturating_add(1);
+                *count
+            })
         }
 
         /// 32-byte representation of a block hash, suitable for use as a

@@ -1,6 +1,8 @@
 use super::mock::*;
 use crate::types::{Formulation, JobMode, MinerType, ResultDelivery, RewardResolution};
-use crate::{Event as QuantumComputeMempoolEvent, JobOrders, JobSpecs, OrderFrontRunner, Solvers};
+use crate::{
+    Event as QuantumComputeMempoolEvent, JobOrders, JobSpecs, OpenOrders, OrderFrontRunner, Solvers,
+};
 use frame_support::{
     assert_noop, assert_ok,
     traits::{Hooks, StorageVersion},
@@ -188,6 +190,61 @@ fn propose_job_works_with_genesis_default_ising_spec() {
         let order = JobOrders::<Test>::get(0).unwrap();
         assert_eq!(order.spec_id, spec_id);
         assert_eq!(order.proposer, 1);
+    });
+}
+
+#[test]
+fn proposed_jobs_are_discoverable_through_open_order_index() {
+    new_test_ext().execute_with(|| {
+        let spec_id = register_spec();
+
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            10,
+            5,
+            ResultDelivery::OnChainOnly,
+        ));
+
+        assert!(OpenOrders::<Test>::contains_key(0));
+        assert_eq!(QuantumComputeMempool::open_order_ids(None, 10), vec![0]);
+        assert_eq!(
+            QuantumComputeMempool::open_order_ids(Some(0), 10),
+            Vec::<u64>::new()
+        );
+        assert_eq!(QuantumComputeMempool::job_order(0).unwrap().proposer, 1);
+    });
+}
+
+#[test]
+fn open_order_ids_filter_lazily_expired_orders() {
+    new_test_ext().execute_with(|| {
+        let spec_id = register_spec();
+
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            1,
+            1,
+            ResultDelivery::OnChainOnly,
+        ));
+        assert!(OpenOrders::<Test>::contains_key(0));
+
+        System::set_block_number(2);
+
+        assert!(OpenOrders::<Test>::contains_key(0));
+        assert_eq!(
+            QuantumComputeMempool::open_order_ids(None, 10),
+            Vec::<u64>::new()
+        );
     });
 }
 
@@ -658,6 +715,11 @@ fn reclaim_order_returns_reserved_reward_when_no_solutions() {
 
         let order = JobOrders::<Test>::get(0).unwrap();
         assert_eq!(order.status, crate::types::OrderStatus::Closed);
+        assert!(!OpenOrders::<Test>::contains_key(0));
+        assert_eq!(
+            QuantumComputeMempool::open_order_ids(None, 10),
+            Vec::<u64>::new()
+        );
         assert_eq!(Balances::reserved_balance(1), 0);
         assert_eq!(Balances::free_balance(1), 1_000_000);
     });

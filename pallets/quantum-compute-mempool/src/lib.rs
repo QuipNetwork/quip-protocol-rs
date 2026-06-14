@@ -20,6 +20,7 @@ mod tests;
 
 pub use weights::*;
 
+use alloc::vec::Vec;
 use core::marker::PhantomData;
 use frame_support::traits::{Currency, Get};
 
@@ -98,6 +99,61 @@ pub struct CanonicalDefaultIsingSpecId<T>(PhantomData<T>);
 impl<T: Config> Get<<T as frame_system::Config>::Hash> for CanonicalDefaultIsingSpecId<T> {
     fn get() -> <T as frame_system::Config>::Hash {
         Pallet::<T>::default_ising_spec_id()
+    }
+}
+
+sp_api::decl_runtime_apis! {
+    pub trait QuantumComputeMempoolApi<
+        AccountId,
+        Balance,
+        BlockNumber,
+        Hash,
+        Nodes,
+        Edges,
+        Fields,
+        Couplings,
+        MinerAccounts,
+        MinerTypes,
+    >
+    where
+        AccountId: codec::Codec,
+        Balance: codec::Codec,
+        BlockNumber: codec::Codec,
+        Hash: codec::Codec,
+        Nodes: codec::Codec,
+        Edges: codec::Codec,
+        Fields: codec::Codec,
+        Couplings: codec::Codec,
+        MinerAccounts: codec::Codec,
+        MinerTypes: codec::Codec,
+    {
+        /// Open order ids after `start_after`, capped by `limit`.
+        ///
+        /// The pallet maintains `OpenOrders` as the recovery index. This API
+        /// additionally filters lazily expired orders against the current
+        /// block without mutating state.
+        fn open_order_ids(start_after: Option<u64>, limit: u32) -> Vec<u64>;
+
+        /// Full order payload for a known order id.
+        fn job_order(order_id: u64) -> Option<
+            crate::types::JobOrder<
+                AccountId,
+                Balance,
+                BlockNumber,
+                Hash,
+                crate::types::IsingParams<Nodes, Edges, Fields, Couplings>,
+                crate::types::JobMode<MinerAccounts, MinerTypes>,
+            >
+        >;
+
+        /// Stored poll result for a settled order, if retained.
+        fn order_result(order_id: u64) -> Option<
+            crate::types::StoredResult<AccountId, Balance, BlockNumber>
+        >;
+
+        /// Current ranked solver list for Top-N settlement modes. Empty for
+        /// unknown orders and for SingleBest orders.
+        fn order_top_solvers(order_id: u64) -> Vec<crate::types::RankedSolver<AccountId>>;
     }
 }
 
@@ -209,6 +265,13 @@ pub mod pallet {
 
     #[pallet::storage]
     pub type NextOrderId<T: Config> = StorageValue<_, u64, ValueQuery>;
+
+    /// Recovery index for orders that are still considered open by stored
+    /// lifecycle state. Expired orders are removed lazily when the pallet next
+    /// touches them; runtime APIs filter against the current block so callers
+    /// do not have to treat this index as authoritative for time-based expiry.
+    #[pallet::storage]
+    pub type OpenOrders<T: Config> = StorageMap<_, Blake2_128Concat, u64, (), OptionQuery>;
 
     #[pallet::storage]
     pub type OrderSolutions<T: Config> = StorageDoubleMap<
@@ -510,6 +573,7 @@ pub mod pallet {
                     solution_count: 0,
                 },
             );
+            OpenOrders::<T>::insert(order_id, ());
             ProposerOrders::<T>::insert(&proposer, proposer_orders);
             JobSpecs::<T>::mutate(spec_id, |maybe_spec| {
                 if let Some(spec) = maybe_spec {
@@ -745,6 +809,7 @@ pub mod pallet {
 
             order.status = types::OrderStatus::Closed;
             JobOrders::<T>::insert(order_id, &order);
+            OpenOrders::<T>::remove(order_id);
             JobSpecs::<T>::mutate(order.spec_id, |maybe_spec| {
                 if let Some(spec) = maybe_spec {
                     spec.successful_orders = spec.successful_orders.saturating_add(1);
@@ -782,6 +847,7 @@ pub mod pallet {
 
             order.status = types::OrderStatus::Closed;
             JobOrders::<T>::insert(order_id, &order);
+            OpenOrders::<T>::remove(order_id);
 
             Self::deposit_event(Event::RewardReclaimed {
                 order_id,
@@ -924,6 +990,42 @@ pub mod pallet {
         /// the pallet’s external contract.
         pub fn result_for_order(order_id: u64) -> Option<StoredResultOf<T>> {
             OrderResults::<T>::get(order_id)
+        }
+
+        pub fn job_order(order_id: u64) -> Option<JobOrderOf<T>> {
+            JobOrders::<T>::get(order_id)
+        }
+
+        pub fn order_top_solvers(order_id: u64) -> Vec<types::RankedSolver<T::AccountId>> {
+            OrderTopSolvers::<T>::get(order_id).to_vec()
+        }
+
+        pub fn open_order_ids(start_after: Option<u64>, limit: u32) -> Vec<u64> {
+            let limit = limit.min(1_000) as usize;
+            if limit == 0 {
+                return Vec::new();
+            }
+
+            let now = frame_system::Pallet::<T>::block_number();
+            let mut ids: Vec<u64> = OpenOrders::<T>::iter_keys()
+                .filter(|order_id| start_after.map(|cursor| *order_id > cursor).unwrap_or(true))
+                .filter(|order_id| {
+                    let Some(order) = JobOrders::<T>::get(order_id) else {
+                        return false;
+                    };
+                    order.status == types::OrderStatus::Opened
+                        && !lifecycle::is_expired(
+                            now,
+                            order.created_at,
+                            order.first_solution_at,
+                            &order.timing,
+                        )
+                })
+                .collect();
+
+            ids.sort_unstable();
+            ids.truncate(limit);
+            ids
         }
 
         /// Derive the storage key hash for a job spec tuple.
@@ -1070,6 +1172,7 @@ pub mod pallet {
             {
                 order.status = types::OrderStatus::Expired;
                 JobOrders::<T>::insert(order_id, order.clone());
+                OpenOrders::<T>::remove(order_id);
                 Self::deposit_event(Event::OrderExpired { order_id });
             }
         }

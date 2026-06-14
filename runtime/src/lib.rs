@@ -84,7 +84,11 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // default topology's allowed-value specs instead of hardcoded ternary-h /
     // binary-J). Existing call encodings are unchanged, so
     // `transaction_version` stays at 3.
-    spec_version: 104,
+    // Bumped to 105 for indexer-free quantum reads: adds monotonic qblock ids,
+    // qblock/hardness runtime APIs, and the mempool open-order recovery index.
+    // Existing call encodings are unchanged, so `transaction_version` stays at
+    // 3.
+    spec_version: 105,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 3,

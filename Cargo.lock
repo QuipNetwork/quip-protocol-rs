@@ -6494,6 +6494,7 @@ dependencies = [
  "parity-scale-codec",
  "quantum-validation",
  "scale-info",
+ "sp-api",
  "sp-core",
  "sp-io",
  "sp-runtime",

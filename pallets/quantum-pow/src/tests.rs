@@ -3,8 +3,8 @@ use crate::{
     difficulty, topology,
     types::{DifficultyConfig, ProofRecord, QuantumProof},
     AllowedValueSetOf, BlockBestProof, BlockProofCount, DefaultTopology, Difficulty,
-    LastProofBlock, LastProofBlockHash, Miners, PackedSpinBytesOf, QBlocks, RegisteredTopologies,
-    WinnerStreak,
+    LastProofBlock, LastProofBlockHash, Miners, PackedSpinBytesOf, QBlockBlockById, QBlockCount,
+    QBlockIdByBlock, QBlocks, RegisteredTopologies, WinnerStreak,
 };
 use frame_support::{
     assert_noop, assert_ok,
@@ -1127,6 +1127,12 @@ fn on_finalize_persists_qblock_with_recoverable_nonce() {
         assert_eq!(stored.miner, 1);
         assert_eq!(stored.salt, original_salt);
         assert_eq!(stored.reward, 50);
+        assert_eq!(QBlockCount::<Test>::get(), 1);
+        assert_eq!(QBlockBlockById::<Test>::get(1), Some(block));
+        assert_eq!(QBlockIdByBlock::<Test>::get(block), Some(1));
+        assert_eq!(crate::Pallet::<Test>::latest_qblock_id(), Some(1));
+        assert_eq!(crate::Pallet::<Test>::qblock_id_by_block(block), Some(1));
+        assert_eq!(crate::Pallet::<Test>::qblock_block_by_id(1), Some(block));
         // LastProofBlock was zero before this proof, so no decay applied —
         // the active threshold equals whatever set_difficulty just stored.
         assert_eq!(stored.difficulty, easy_difficulty());
@@ -1144,6 +1150,10 @@ fn on_finalize_persists_qblock_with_recoverable_nonce() {
             view.solution.last_proof_block_hash,
             expected_last_proof_block_hash
         );
+
+        let by_id = crate::Pallet::<Test>::qblock_with_nonce_by_id(1)
+            .expect("qblock id resolves to the persisted qblock");
+        assert_eq!(by_id, view);
     });
 }
 
@@ -1155,6 +1165,33 @@ fn qblock_returns_none_for_genesis_block() {
         // arithmetic. Pins the contract that saturating subtraction on
         // `block_number - 1 == 0u32 - 1` never reaches the nonce derivation.
         assert!(crate::Pallet::<Test>::qblock_with_nonce(0).is_none());
+        assert!(crate::Pallet::<Test>::latest_qblock_id().is_none());
+        assert!(crate::Pallet::<Test>::qblock_with_nonce_by_id(1).is_none());
+    });
+}
+
+#[test]
+fn qblock_ids_increment_only_for_winning_qblocks() {
+    new_test_ext().execute_with(|| {
+        registered_topology();
+
+        finalize_winner(1, 10);
+        finalize_winner(2, 15);
+
+        assert_eq!(QBlockCount::<Test>::get(), 2);
+        assert_eq!(crate::Pallet::<Test>::latest_qblock_id(), Some(2));
+        assert_eq!(QBlockBlockById::<Test>::get(1), Some(10));
+        assert_eq!(QBlockBlockById::<Test>::get(2), Some(15));
+        assert_eq!(QBlockIdByBlock::<Test>::get(10), Some(1));
+        assert_eq!(QBlockIdByBlock::<Test>::get(15), Some(2));
+        assert!(QBlockIdByBlock::<Test>::get(11).is_none());
+        assert_eq!(
+            crate::Pallet::<Test>::qblock_with_nonce_by_id(2)
+                .expect("second qblock exists")
+                .solution
+                .miner,
+            2
+        );
     });
 }
 
