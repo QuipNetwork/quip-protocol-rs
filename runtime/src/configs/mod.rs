@@ -47,7 +47,7 @@ use pallet_xqvm::WeightInfo as _;
 use super::{
     AccountId, Babe, Balance, Balances, Block, BlockNumber, Hash, Nonce, PalletInfo, Runtime,
     RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask,
-    SessionKeys, System, EXISTENTIAL_DEPOSIT, SLOT_DURATION, UNIT, VERSION,
+    SessionKeys, System, EXISTENTIAL_DEPOSIT, MICRO_UNIT, MILLI_UNIT, SLOT_DURATION, UNIT, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -299,6 +299,18 @@ parameter_types! {
     pub const QuantumPowCurveCKneeMilli: u32 = 725;
     pub const QuantumPowCurveCHardMilli: u32 = 750;
     pub const QuantumPowConsecutiveWinnerEasingThreshold: u32 = 3;
+
+    pub const MinerRegistryMaxNodeIdBytes: u32 = 64;
+    pub const MinerRegistryMaxNodeNameBytes: u32 = 64;
+    pub const MinerRegistryMaxPublicHostBytes: u32 = 253;
+    pub const MinerRegistryMaxRpcEndpointBytes: u32 = 256;
+    pub const MinerRegistryMaxRpcEndpoints: u32 = 8;
+    pub const MinerRegistryMaxMinerSpecs: u32 = 16;
+    pub const MinerRegistryMaxMinerLabelBytes: u32 = 64;
+    pub const MinerRegistryMaxMinerBackendBytes: u32 = 32;
+    pub const MinerRegistryMaxMinerDeviceIdBytes: u32 = 128;
+    pub const MinerRegistryDescriptorDepositBase: Balance = MILLI_UNIT;
+    pub const MinerRegistryDescriptorDepositPerByte: Balance = MICRO_UNIT;
 }
 
 /// Account attributed as the builder for migration-inserted default job specs.
@@ -353,6 +365,32 @@ impl pallet_quantum_pow::Config for Runtime {
     type CurveCHardMilli = QuantumPowCurveCHardMilli;
     type ConsecutiveWinnerEasingThreshold = QuantumPowConsecutiveWinnerEasingThreshold;
     type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
+}
+
+pub struct RuntimeQBlockIds;
+
+impl pallet_miner_registry::QBlockIdProvider for RuntimeQBlockIds {
+    fn latest_qblock_id() -> Option<u64> {
+        pallet_quantum_pow::Pallet::<Runtime>::latest_qblock_id()
+    }
+}
+
+impl pallet_miner_registry::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type QBlockIds = RuntimeQBlockIds;
+    type MaxNodeIdBytes = MinerRegistryMaxNodeIdBytes;
+    type MaxNodeNameBytes = MinerRegistryMaxNodeNameBytes;
+    type MaxPublicHostBytes = MinerRegistryMaxPublicHostBytes;
+    type MaxRpcEndpointBytes = MinerRegistryMaxRpcEndpointBytes;
+    type MaxRpcEndpoints = MinerRegistryMaxRpcEndpoints;
+    type MaxMinerSpecs = MinerRegistryMaxMinerSpecs;
+    type MaxMinerLabelBytes = MinerRegistryMaxMinerLabelBytes;
+    type MaxMinerBackendBytes = MinerRegistryMaxMinerBackendBytes;
+    type MaxMinerDeviceIdBytes = MinerRegistryMaxMinerDeviceIdBytes;
+    type DescriptorDepositBase = MinerRegistryDescriptorDepositBase;
+    type DescriptorDepositPerByte = MinerRegistryDescriptorDepositPerByte;
+    type WeightInfo = pallet_miner_registry::weights::SubstrateWeight<Runtime>;
 }
 
 #[cfg(test)]

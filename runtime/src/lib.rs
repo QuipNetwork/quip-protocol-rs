@@ -88,7 +88,11 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // qblock/hardness runtime APIs, and the mempool open-order recovery index.
     // Existing call encodings are unchanged, so `transaction_version` stays at
     // 3.
-    spec_version: 105,
+    // Bumped to 106 for on-chain miner descriptors and qblock participation:
+    // adds `MinerRegistry` (idx 13) with descriptor/participation calls,
+    // events, and storage. Existing call encodings are unchanged, so
+    // `transaction_version` stays at 3.
+    spec_version: 106,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 3,
@@ -366,4 +370,7 @@ mod runtime {
 
     #[runtime::pallet_index(12)]
     pub type Session = pallet_session;
+
+    #[runtime::pallet_index(13)]
+    pub type MinerRegistry = pallet_miner_registry;
 }
