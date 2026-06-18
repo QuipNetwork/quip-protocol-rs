@@ -1,0 +1,26 @@
+{
+  "name": "@quip-network/quip-signer",
+  "version": "0.1.0",
+  "description": "Polkadot.js signer wrapper for Quip hybrid transaction signatures",
+  "license": "MIT-0",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "@polkadot/api": "^16.5.6",
+    "@polkadot/types": "^16.5.6",
+    "@polkadot/util": "^14.0.3",
+    "@polkadot/util-crypto": "^14.0.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}

@@ -24,7 +24,6 @@ fn dump(name: &str, uri: &str) {
     let seed = pair.to_raw_vec();
     let public = pair.public();
     let account = account_id_from_public(&public);
-    let public_bytes: &[u8] = public.as_ref();
 
     // `Public` implements both `AsRef<[u8]>` and `AsRef<InnerPublic>`; bind
     // the byte slice through an explicit type annotation so neither call site

@@ -8,14 +8,27 @@ repository.workspace = true
 edition.workspace = true
 
 [dependencies]
+bip39 = { workspace = true }
 blake2.workspace = true
 codec = { features = ["derive"], workspace = true }
-quip-crypto-primitives = { workspace = true, default-features = false }
+fips204.workspace = true
+hkdf.workspace = true
+rand_core.workspace = true
+schnorrkel.workspace = true
+sha2.workspace = true
+substrate-bip39 = { workspace = true }
+zeroize.workspace = true
 
 [features]
 default = ["std"]
 std = [
     "blake2/std",
     "codec/std",
-    "quip-crypto-primitives/std",
+    "fips204/default",
+    "hkdf/std",
+    "rand_core/std",
+    "schnorrkel/std",
+    "sha2/std",
+    "substrate-bip39/std",
+    "zeroize/std",
 ]

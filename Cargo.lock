@@ -8073,9 +8073,26 @@ dependencies = [
 name = "quip-transaction-crypto-core"
 version = "0.1.0"
 dependencies = [
+ "bip39",
  "blake2 0.10.6",
+ "fips204",
+ "hkdf",
  "parity-scale-codec",
- "quip-crypto-primitives",
+ "rand_core 0.6.4",
+ "schnorrkel",
+ "sha2 0.10.9",
+ "substrate-bip39 0.6.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zeroize",
+]
+
+[[package]]
+name = "quip-transaction-crypto-wasm"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.2.17",
+ "hex",
+ "quip-transaction-crypto-core",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -10742,7 +10759,7 @@ dependencies = [
  "sp-std",
  "sp-storage",
  "ss58-registry",
- "substrate-bip39",
+ "substrate-bip39 0.6.1 (git+https://github.com/QuipNetwork/polkadot-sdk.git?branch=v0.2)",
  "thiserror 1.0.69",
  "tracing",
  "w3f-bls",
@@ -11455,6 +11472,19 @@ dependencies = [
  "quote",
  "rustversion",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "substrate-bip39"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d93affb0135879b1b67cbcf6370a256e1772f9eaaece3899ec20966d67ad0492"
+dependencies = [
+ "hmac 0.12.1",
+ "pbkdf2",
+ "schnorrkel",
+ "sha2 0.10.9",
+ "zeroize",
 ]
 
 [[package]]
