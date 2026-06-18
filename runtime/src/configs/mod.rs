@@ -292,7 +292,7 @@ parameter_types! {
     pub const QuantumPowMaxAllowedValues: u32 = 32;
     /// Energy-curve calibration: per-mille `c` values that define the
     /// `(max_energy, knee_energy, min_energy)` triple via
-    /// `expected_gse_for_specs` on the default topology and its h/J value
+    /// `expected_gse` on the default topology and its h/J value
     /// specs. Defaults `(0.700, 0.725, 0.750)` keep the hard edge difficult
     /// without pushing the threshold into the known-impossible range.
     pub const QuantumPowCurveCEasyMilli: u32 = 700;

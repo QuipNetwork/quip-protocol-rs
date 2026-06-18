@@ -69,35 +69,24 @@ fn test_curve() -> crate::difficulty::EnergyCurve {
 }
 
 #[test]
-fn energy_curve_matches_legacy_gse_for_registered_specs() {
-    // The registered ternary-h/binary-J specs are exactly the distributions
-    // the legacy formula hardcodes, so the spec-aware curve must reproduce
-    // expected_gse_with_c at all three calibration points.
+fn energy_curve_matches_gse_for_registered_ternary_specs() {
+    // The registered ternary-h/binary-J specs reproduce the legacy magnitudes,
+    // so the spec-aware curve must equal expected_gse at all three calibration
+    // points when fed those same specs.
     let curve = test_curve();
-    assert_eq!(
-        curve.min_milli,
-        quantum_validation::expected_gse_with_c(
+    let gse = |c_milli: u32| {
+        quantum_validation::expected_gse(
             2,
             1,
-            f64::from(test_curve_c().hard_milli) / 1000.0
+            f64::from(c_milli) / 1000.0,
+            &allowed_h_spec().as_slice(),
+            &allowed_j_spec().as_slice(),
         )
-    );
-    assert_eq!(
-        curve.knee_milli,
-        quantum_validation::expected_gse_with_c(
-            2,
-            1,
-            f64::from(test_curve_c().knee_milli) / 1000.0
-        )
-    );
-    assert_eq!(
-        curve.max_milli,
-        quantum_validation::expected_gse_with_c(
-            2,
-            1,
-            f64::from(test_curve_c().easy_milli) / 1000.0
-        )
-    );
+        .unwrap()
+    };
+    assert_eq!(curve.min_milli, gse(test_curve_c().hard_milli));
+    assert_eq!(curve.knee_milli, gse(test_curve_c().knee_milli));
+    assert_eq!(curve.max_milli, gse(test_curve_c().easy_milli));
 }
 
 #[test]
@@ -119,7 +108,7 @@ fn energy_curve_zero_field_spec_drops_h_contribution() {
         (curve.knee_milli, test_curve_c().knee_milli),
         (curve.max_milli, test_curve_c().easy_milli),
     ] {
-        let expected = quantum_validation::expected_gse_for_specs(
+        let expected = quantum_validation::expected_gse(
             2,
             1,
             f64::from(c) / 1000.0,
