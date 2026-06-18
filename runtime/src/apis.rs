@@ -268,7 +268,19 @@ impl_runtime_apis! {
         }
     }
 
-    impl pallet_quantum_compute_mempool::QuantumComputeMempoolApi<Block, AccountId, Balance, BlockNumber, Hash, QuantumMempoolNodes, QuantumMempoolEdges, QuantumMempoolFields, QuantumMempoolCouplings, QuantumMempoolMinerAccounts, QuantumMempoolMinerTypes> for Runtime {
+    impl pallet_quantum_compute_mempool::QuantumComputeMempoolApi<
+        Block,
+        AccountId,
+        Balance,
+        BlockNumber,
+        Hash,
+        QuantumMempoolNodes,
+        QuantumMempoolEdges,
+        QuantumMempoolFields,
+        QuantumMempoolCouplings,
+        QuantumMempoolMinerAccounts,
+        QuantumMempoolMinerTypes,
+    > for Runtime {
         fn open_order_ids(start_after: Option<u64>, limit: u32) -> Vec<u64> {
             QuantumComputeMempool::open_order_ids(start_after, limit)
         }
@@ -296,7 +308,9 @@ impl_runtime_apis! {
 
         fn order_result(
             order_id: u64,
-        ) -> Option<pallet_quantum_compute_mempool::types::StoredResult<AccountId, Balance, BlockNumber>> {
+        ) -> Option<
+            pallet_quantum_compute_mempool::types::StoredResult<AccountId, Balance, BlockNumber>,
+        > {
             QuantumComputeMempool::result_for_order(order_id)
         }
 

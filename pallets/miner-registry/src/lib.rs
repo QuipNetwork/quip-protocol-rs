@@ -47,11 +47,19 @@ type NodeDescriptorOf<T> = NodeDescriptor<
 >;
 type ParticipationRecordOf<T> = ParticipationRecord<BlockNumberOf<T>>;
 
+/// Schema version stamped onto every `NodeDescriptor::V1` stored by this pallet.
 pub const NODE_DESCRIPTOR_SCHEMA_V1: u16 = 1;
 
+/// Read-only view into the proof-of-work pallet's qblock numbering.
+///
+/// Lets the miner registry decide which qblock a participation declaration
+/// targets without depending on `pallet-quantum-pow` directly.
 pub trait QBlockIdProvider {
+    /// Highest qblock id minted so far, or `None` if none has been produced yet.
     fn latest_qblock_id() -> Option<u64>;
 
+    /// Id of the qblock miners should currently be working towards — one past
+    /// the latest, treating the empty chain as candidate id `1`.
     fn candidate_qblock_id() -> u64 {
         Self::latest_qblock_id().unwrap_or(0).saturating_add(1)
     }
@@ -75,6 +83,7 @@ impl QBlockIdProvider for () {
     PartialEq,
     TypeInfo,
 )]
+/// Verbosity a node advertises for its off-chain logging.
 pub enum LogLevel {
     Debug,
     Info,
@@ -94,6 +103,7 @@ pub enum LogLevel {
     PartialEq,
     TypeInfo,
 )]
+/// Class of compute backend a miner runs on.
 pub enum MinerKind {
     Cpu,
     Gpu,
@@ -107,6 +117,7 @@ pub enum MinerKind {
 #[derive(
     Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
 )]
+/// A single miner advertised within a node descriptor.
 pub struct MinerSpec<Label, Backend, DeviceId> {
     pub kind: MinerKind,
     pub label: Option<Label>,
@@ -117,6 +128,7 @@ pub struct MinerSpec<Label, Backend, DeviceId> {
 #[derive(
     Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
 )]
+/// Caller-supplied descriptor payload for schema v1, validated before storage.
 pub struct NodeDescriptorV1Input<NodeId, NodeName, PublicHost, RpcEndpoints, MinerSpecs> {
     pub node_id: NodeId,
     pub node_name: NodeName,
@@ -131,6 +143,8 @@ pub struct NodeDescriptorV1Input<NodeId, NodeName, PublicHost, RpcEndpoints, Min
 #[derive(
     Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
 )]
+/// Versioned wrapper over descriptor inputs so future schemas can be added
+/// without breaking the extrinsic signature.
 pub enum NodeDescriptorInput<V1> {
     V1(V1),
 }
@@ -138,6 +152,8 @@ pub enum NodeDescriptorInput<V1> {
 #[derive(
     Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
 )]
+/// Stored, validated node descriptor: the canonical record kept on-chain
+/// together with its payload hash and the deposit reserved for it.
 pub struct NodeDescriptor<
     NodeId,
     NodeName,
@@ -173,6 +189,8 @@ pub struct NodeDescriptor<
     PartialEq,
     TypeInfo,
 )]
+/// An account's most recent participation declaration, used to reject more
+/// than one declaration per qblock.
 pub struct ParticipationRecord<BlockNumber> {
     pub qblock_id: u64,
     pub kind: MinerKind,
@@ -242,14 +260,15 @@ pub mod pallet {
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
     pub enum Event<T: Config> {
+        /// A node descriptor was created or replaced for `who`.
         DescriptorUpdated {
             who: T::AccountId,
             payload_hash: sp_core::H256,
             payload_len: u32,
         },
-        DescriptorCleared {
-            who: T::AccountId,
-        },
+        /// A node descriptor was removed and its deposit returned to `who`.
+        DescriptorCleared { who: T::AccountId },
+        /// `who` declared participation in `qblock_id` with the given backend.
         MinerParticipated {
             qblock_id: u64,
             who: T::AccountId,
@@ -277,6 +296,11 @@ pub mod pallet {
 
     #[pallet::call]
     impl<T: Config> Pallet<T> {
+        /// Create or replace the caller's node descriptor.
+        ///
+        /// Validates the payload, then reserves (or refunds) the difference
+        /// between the new and any previous deposit so the held amount always
+        /// matches the current descriptor size.
         #[pallet::call_index(0)]
         #[pallet::weight(<T as Config>::WeightInfo::set_descriptor())]
         pub fn set_descriptor(
@@ -297,17 +321,29 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Remove the caller's node descriptor, return its deposit, and drop the
+        /// associated participation record. Fails if no descriptor is stored.
         #[pallet::call_index(1)]
         #[pallet::weight(<T as Config>::WeightInfo::clear_descriptor())]
         pub fn clear_descriptor(origin: OriginFor<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             let descriptor =
                 NodeDescriptors::<T>::take(&who).ok_or(Error::<T>::DescriptorNotFound)?;
-            let _ = T::Currency::unreserve(&who, descriptor.deposit);
+            // The reserved amount always equals the stored deposit, so the full
+            // amount must be returned. A non-zero remainder signals reserve/unreserve
+            // accounting drift and is caught in tests / try-runtime.
+            let remaining = T::Currency::unreserve(&who, descriptor.deposit);
+            debug_assert!(remaining.is_zero());
+            // Drop the stale participation record so a cleared account does not keep
+            // a dangling row in storage after its descriptor is gone.
+            LatestParticipation::<T>::remove(&who);
             Self::deposit_event(Event::DescriptorCleared { who });
             Ok(())
         }
 
+        /// Declare that the caller's node is working on the current candidate
+        /// qblock. Requires a stored descriptor, the qblock id to match the
+        /// current candidate, and at most one declaration per qblock.
         #[pallet::call_index(2)]
         #[pallet::weight(<T as Config>::WeightInfo::participate())]
         pub fn participate(
@@ -424,7 +460,11 @@ pub mod pallet {
             if next_deposit > previous_deposit {
                 T::Currency::reserve(who, next_deposit.saturating_sub(previous_deposit))?;
             } else if previous_deposit > next_deposit {
-                let _ = T::Currency::unreserve(who, previous_deposit.saturating_sub(next_deposit));
+                // The surplus over the previous deposit is always reserved, so the
+                // entire delta must be returnable; a remainder means accounting drift.
+                let remaining =
+                    T::Currency::unreserve(who, previous_deposit.saturating_sub(next_deposit));
+                debug_assert!(remaining.is_zero());
             }
 
             descriptor.payload_hash = payload_hash;

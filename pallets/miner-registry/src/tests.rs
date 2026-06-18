@@ -163,6 +163,28 @@ fn clear_descriptor_removes_storage_and_unreserves_deposit() {
 }
 
 #[test]
+fn clear_descriptor_drops_participation_record() {
+    new_test_ext().execute_with(|| {
+        set_latest_qblock_id(Some(4));
+        assert_ok!(MinerRegistry::set_descriptor(
+            RuntimeOrigin::signed(1),
+            descriptor()
+        ));
+        assert_ok!(MinerRegistry::participate(
+            RuntimeOrigin::signed(1),
+            5,
+            MinerKind::Cpu,
+            None,
+        ));
+        assert!(LatestParticipation::<Test>::get(1).is_some());
+
+        assert_ok!(MinerRegistry::clear_descriptor(RuntimeOrigin::signed(1)));
+
+        assert!(LatestParticipation::<Test>::get(1).is_none());
+    });
+}
+
+#[test]
 fn participate_requires_descriptor() {
     new_test_ext().execute_with(|| {
         assert_noop!(
