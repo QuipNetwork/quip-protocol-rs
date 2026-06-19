@@ -54,6 +54,8 @@ pub struct ChainContext {
     pub best_hash: Hash,
     pub best_number: BlockNumber,
     pub nonce: Nonce,
+    pub spec_version: u32,
+    pub transaction_version: u32,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -136,8 +138,8 @@ pub fn build_signed_extrinsic(
         (
             (),
             (),
-            runtime::VERSION.spec_version,
-            runtime::VERSION.transaction_version,
+            context.spec_version,
+            context.transaction_version,
             context.genesis_hash,
             context.best_hash,
             (),
@@ -227,11 +229,31 @@ pub async fn fetch_chain_context(
         .await
         .context("fetching signer nonce")?;
 
+    // Source spec_version / transaction_version from the live chain rather than
+    // the compiled `runtime::VERSION`, so the CheckSpecVersion / CheckTxVersion
+    // signed extensions stay valid across runtime upgrades without rebuilding.
+    let runtime_version: Value = client
+        .request("state_getRuntimeVersion", rpc_params![])
+        .await
+        .context("fetching runtime version")?;
+    let spec_version: u32 = runtime_version
+        .get("specVersion")
+        .and_then(Value::as_u64)
+        .context("state_getRuntimeVersion response missing specVersion")?
+        .saturated_into();
+    let transaction_version: u32 = runtime_version
+        .get("transactionVersion")
+        .and_then(Value::as_u64)
+        .context("state_getRuntimeVersion response missing transactionVersion")?
+        .saturated_into();
+
     Ok(ChainContext {
         genesis_hash,
         best_hash,
         best_number,
         nonce,
+        spec_version,
+        transaction_version,
     })
 }
 
@@ -680,6 +702,8 @@ mod tests {
             best_hash: Hash::repeat_byte(2),
             best_number: 42,
             nonce: 7,
+            spec_version: 103,
+            transaction_version: 3,
         };
 
         let left = build_signed_extrinsic(&signer, build_upgrade_call(vec![1, 2, 3]), context);
