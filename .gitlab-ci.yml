@@ -117,4 +117,4 @@ kaniko-build-push:
         --build-arg "SUBSTRATE_CLI_GIT_COMMIT_HASH=$CI_COMMIT_SHORT_SHA" \
         --cache=true \
         --cache-repo "$CACHE_IMAGE" \
-        --ignore-path=/lib/firmware
+        --ignore-path=/lib
