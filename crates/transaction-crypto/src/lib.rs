@@ -278,7 +278,8 @@ mod tests {
     #[test]
     fn mnemonic_password_seed_matches_substrate() {
         let core_seed = master_seed_from_mnemonic(TEST_PHRASE, Some("hunter2")).unwrap();
-        let (_pair, substrate_seed) = HybridPair::from_phrase(TEST_PHRASE, Some("hunter2")).unwrap();
+        let (_pair, substrate_seed) =
+            HybridPair::from_phrase(TEST_PHRASE, Some("hunter2")).unwrap();
 
         assert_eq!(core_seed.to_vec(), substrate_seed.to_vec());
     }
@@ -291,7 +292,9 @@ mod tests {
 
         assert_eq!(
             core_seed.to_vec(),
-            substrate_seed.expect("phrase without junctions yields a seed").to_vec()
+            substrate_seed
+                .expect("phrase without junctions yields a seed")
+                .to_vec()
         );
     }
 

@@ -56,7 +56,10 @@ pub const ACCOUNT_ID_DOMAIN: &[u8] = b"quip-account-v1";
 /// Error returned by byte-level hybrid transaction crypto helpers.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HybridTxCryptoError {
-    InvalidLength { expected: usize, actual: usize },
+    InvalidLength {
+        expected: usize,
+        actual: usize,
+    },
     InvalidPublicKey,
     InvalidSecretKey,
     InvalidSeed,
@@ -150,7 +153,10 @@ pub fn master_seed_from_secret_uri(uri: &str) -> HybridResult<[u8; MASTER_SEED_L
     };
     let phrase = phrase.trim();
 
-    if let Some(hex) = phrase.strip_prefix("0x").or_else(|| phrase.strip_prefix("0X")) {
+    if let Some(hex) = phrase
+        .strip_prefix("0x")
+        .or_else(|| phrase.strip_prefix("0X"))
+    {
         return decode_seed_hex(hex);
     }
 
@@ -180,8 +186,9 @@ pub fn master_seed_from_mnemonic(
         .map_err(|_| HybridTxCryptoError::InvalidMnemonic)?;
     let (entropy, entropy_len) = mnemonic.to_entropy_array();
 
-    let mut big_seed = substrate_bip39::seed_from_entropy(&entropy[..entropy_len], password.unwrap_or(""))
-        .map_err(|_| HybridTxCryptoError::InvalidMnemonic)?;
+    let mut big_seed =
+        substrate_bip39::seed_from_entropy(&entropy[..entropy_len], password.unwrap_or(""))
+            .map_err(|_| HybridTxCryptoError::InvalidMnemonic)?;
 
     let mut seed = [0u8; MASTER_SEED_LEN];
     seed.copy_from_slice(&big_seed[..MASTER_SEED_LEN]);
@@ -656,7 +663,8 @@ mod tests {
 
     #[test]
     fn secret_uri_password_matches_explicit_password() {
-        let split = master_seed_from_secret_uri(&alloc::format!("{TEST_PHRASE}///hunter2")).unwrap();
+        let split =
+            master_seed_from_secret_uri(&alloc::format!("{TEST_PHRASE}///hunter2")).unwrap();
         let explicit = master_seed_from_mnemonic(TEST_PHRASE, Some("hunter2")).unwrap();
 
         assert_eq!(split, explicit);
