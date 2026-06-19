@@ -313,7 +313,7 @@ Then connect Polkadot.js Apps to `ws://localhost:9944` (node1),
 
 ## Public testnet
 
-`quip-testnet` is the public testnet ("tQUIP" tokens, 12 decimals). The
+`quip-testnet` is the public testnet ("AGLS" tokens, 12 decimals). The
 canonical genesis is baked into the `v0.2.0+` binary as the `quip-testnet`
 chain spec preset and also published as a raw JSON file at
 `nodes.quip.network/chain-specs/quip-testnet.json`.

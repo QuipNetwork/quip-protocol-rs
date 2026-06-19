@@ -84,7 +84,19 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // default topology's allowed-value specs instead of hardcoded ternary-h /
     // binary-J). Existing call encodings are unchanged, so
     // `transaction_version` stays at 3.
-    spec_version: 104,
+    // Bumped to 105 for indexer-free quantum reads: adds monotonic qblock ids,
+    // qblock/hardness runtime APIs, and the mempool open-order recovery index.
+    // Existing call encodings are unchanged, so `transaction_version` stays at
+    // 3.
+    // Bumped to 106 for on-chain miner descriptors and qblock participation:
+    // adds `MinerRegistry` (idx 13) with descriptor/participation calls,
+    // events, and storage. Existing call encodings are unchanged, so
+    // `transaction_version` stays at 3.
+    // Bumped to 107 for the participants-per-qblock reverse index
+    // (`ParticipantsByQBlock`, `ParticipantCountByQBlock`) and the
+    // `MinerRegistryApi` runtime API. Call encodings are unchanged, so
+    // `transaction_version` stays at 3.
+    spec_version: 107,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 3,
@@ -362,4 +374,7 @@ mod runtime {
 
     #[runtime::pallet_index(12)]
     pub type Session = pallet_session;
+
+    #[runtime::pallet_index(13)]
+    pub type MinerRegistry = pallet_miner_registry;
 }

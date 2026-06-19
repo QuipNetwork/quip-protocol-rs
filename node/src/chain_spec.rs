@@ -52,7 +52,7 @@ pub fn local_three_validator_chain_spec() -> Result<ChainSpec, String> {
 pub fn quip_testnet_chain_spec() -> Result<ChainSpec, String> {
     let properties = {
         let mut p = sc_service::Properties::new();
-        p.insert("tokenSymbol".into(), "tQUIP".into());
+        p.insert("tokenSymbol".into(), "AGLS".into());
         p.insert("tokenDecimals".into(), 12.into());
         p.insert("ss58Format".into(), 42.into());
         p

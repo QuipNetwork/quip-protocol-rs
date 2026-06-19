@@ -29,6 +29,7 @@ pallet-babe.workspace = true
 pallet-balances.workspace = true
 pallet-faucet-ops.workspace = true
 pallet-grandpa.workspace = true
+pallet-miner-registry.workspace = true
 pallet-quantum-compute-mempool.workspace = true
 pallet-quantum-pow.workspace = true
 quantum-validation.workspace = true
@@ -82,6 +83,7 @@ std = [
   "pallet-balances/std",
   "pallet-faucet-ops/std",
   "pallet-grandpa/std",
+  "pallet-miner-registry/std",
   "pallet-quantum-compute-mempool/std",
   "pallet-quantum-pow/std",
   "quantum-validation/std",
@@ -138,6 +140,7 @@ try-runtime = [
   "pallet-balances/try-runtime",
   "pallet-faucet-ops/try-runtime",
   "pallet-grandpa/try-runtime",
+  "pallet-miner-registry/try-runtime",
   "pallet-quantum-compute-mempool/try-runtime",
   "pallet-quantum-pow/try-runtime",
   "pallet-session/try-runtime",

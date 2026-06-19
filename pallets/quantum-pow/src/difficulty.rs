@@ -63,7 +63,7 @@ pub enum Direction {
 ///
 /// SCALE-encoded `u32` per-mille because pallet constants must implement
 /// `Get<_>` and `f64` does not implement `Encode`. They are divided by 1000
-/// before being fed to `expected_gse_for_specs`.
+/// before being fed to `expected_gse`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CurveC {
     /// Easiest (least-negative) end of the curve.
@@ -80,11 +80,11 @@ pub struct CurveC {
 /// num_edges)` and its allowed h/J value specs, evaluated at three empirical
 /// `c` values:
 ///
-/// - `min_milli` = `expected_gse_for_specs(.., c_hard, ..)` — hardest, most
+/// - `min_milli` = `expected_gse(.., c_hard, ..)` — hardest, most
 ///   negative.
-/// - `knee_milli` = `expected_gse_for_specs(.., c_knee, ..)` — where the
+/// - `knee_milli` = `expected_gse(.., c_knee, ..)` — where the
 ///   curve compression peaks (motion most aggressive here).
-/// - `max_milli` = `expected_gse_for_specs(.., c_easy, ..)` — easiest, least
+/// - `max_milli` = `expected_gse(.., c_easy, ..)` — easiest, least
 ///   negative.
 ///
 /// All three values are in milli precision. `min_milli < knee_milli <
@@ -115,7 +115,7 @@ impl EnergyCurve {
         allowed_j: &AllowedValueSpec<&[MilliValue]>,
     ) -> Result<Self, ValidationError> {
         let gse = |c_milli: u32| {
-            quantum_validation::expected_gse_for_specs(
+            quantum_validation::expected_gse(
                 num_nodes,
                 num_edges,
                 f64::from(c_milli) / 1000.0,

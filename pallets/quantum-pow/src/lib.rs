@@ -76,6 +76,28 @@ sp_api::decl_runtime_apis! {
             crate::types::QBlockWithNonce<AccountId, Balance, BlockNumber>
         >;
 
+        /// Latest assigned monotonic qblock id, or `None` before the first
+        /// qblock. qblock ids are 1-based ordinals and are distinct from
+        /// substrate block numbers.
+        fn latest_qblock_id() -> Option<u64>;
+
+        /// qblock id assigned to `block_number`, or `None` if that substrate
+        /// block was not a qblock.
+        fn qblock_id_by_block(block_number: BlockNumber) -> Option<u64>;
+
+        /// Winning qblock for a monotonic qblock id, augmented with its
+        /// derived nonce.
+        fn qblock_by_id(qblock_id: u64) -> Option<
+            crate::types::QBlockWithNonce<AccountId, Balance, BlockNumber>
+        >;
+
+        /// Winning qblock for a substrate block number, augmented with its
+        /// derived nonce. This is the qblock-named alias for
+        /// `winning_solution`.
+        fn qblock_by_block(block_number: BlockNumber) -> Option<
+            crate::types::QBlockWithNonce<AccountId, Balance, BlockNumber>
+        >;
+
         /// Live difficulty threshold a miner has to clear *right now*.
         ///
         /// Differs from `api.query.quantumPow.difficulty()` (the raw storage
@@ -84,6 +106,9 @@ sp_api::decl_runtime_apis! {
         /// returns the decayed value, matching what `submit_proof` validation
         /// will actually require.
         fn current_difficulty() -> crate::types::DifficultyConfig;
+
+        /// Client-facing alias for the live difficulty threshold.
+        fn current_hardness() -> crate::types::DifficultyConfig;
     }
 }
 
@@ -107,7 +132,7 @@ pub mod pallet {
     use sp_core::H256;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
 
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -223,14 +248,21 @@ pub mod pallet {
     /// server-side. `last_proof_block_hash` for each entry is the value the
     /// round used at submission time, persisted in the `QBlock` itself so
     /// re-derivation needs no chain-state lookup.
-    ///
-    /// The storage prefix keeps the legacy `WinningSolutions` name so
-    /// existing chain state and `quantumPow.winningSolutions` queries stay
-    /// valid until the API-rename ticket lands; only the Rust identifier
-    /// uses the qblock terminology.
     #[pallet::storage]
-    #[pallet::storage_prefix = "WinningSolutions"]
     pub type QBlocks<T: Config> = StorageMap<_, Blake2_128Concat, BlockNumberFor<T>, QBlockOf<T>>;
+
+    /// Number of accepted qblocks. Because qblock ids are 1-based, this is
+    /// also the latest assigned qblock id when non-zero.
+    #[pallet::storage]
+    pub type QBlockCount<T: Config> = StorageValue<_, u64, ValueQuery>;
+
+    /// Monotonic qblock id to substrate block number index.
+    #[pallet::storage]
+    pub type QBlockBlockById<T: Config> = StorageMap<_, Blake2_128Concat, u64, BlockNumberFor<T>>;
+
+    /// Substrate block number to monotonic qblock id index.
+    #[pallet::storage]
+    pub type QBlockIdByBlock<T: Config> = StorageMap<_, Blake2_128Concat, BlockNumberFor<T>, u64>;
 
     #[pallet::event]
     #[pallet::generate_deposit(pub(super) fn deposit_event)]
@@ -262,6 +294,8 @@ pub mod pallet {
             valid_solution_count: u32,
         },
         BlockWinner {
+            qblock_id: u64,
+            block_number: BlockNumberFor<T>,
             miner: T::AccountId,
             reward: BalanceOf<T>,
             energy_milli: i64,
@@ -333,62 +367,53 @@ pub mod pallet {
             <T as Config>::WeightInfo::register_miner()
         }
 
+        /// Network upgrade (v0.2 → v2): drop all PoW state instead of carrying
+        /// it forward.
+        ///
+        /// The v0.2 storage layout (legacy `WinningSolutions` prefix, old
+        /// `QBlock`/miner encodings, difficulty, topologies) is intentionally
+        /// not migrated. Rather than translate stale encodings we clear the
+        /// entire pallet prefix — which also reaps the renamed `WinningSolutions`
+        /// entries that the current `QBlocks` type no longer references — and
+        /// let the chain repopulate from mining. `Difficulty` reads back at its
+        /// `Default`, identical to a fresh genesis.
+        ///
+        /// The version guard makes this run exactly once: v0.2 chains sit at
+        /// version 1, fresh chains are seeded at version 2 by genesis and skip.
         fn on_runtime_upgrade() -> Weight {
+            use frame_support::{traits::PalletInfoAccess, StorageHasher};
+
             let on_chain = Pallet::<T>::on_chain_storage_version();
             if on_chain >= STORAGE_VERSION {
                 return T::DbWeight::get().reads(1);
             }
 
-            let mut reads = 1_u64;
-            let mut writes = 1_u64;
-
-            reads = reads.saturating_add(2);
-            if let Some(curve) = Self::current_energy_curve() {
-                let mut difficulty = Difficulty::<T>::get();
-                reads = reads.saturating_add(1);
-
-                if difficulty.max_energy_milli < curve.min_milli {
-                    // Reset to the knee rather than the nearest boundary:
-                    // `min_milli` is the hardest solvable edge, so clamping
-                    // there would leave mining barely feasible. The knee
-                    // recentres the threshold where post-win adjustments
-                    // have symmetric headroom in both directions.
-                    difficulty.max_energy_milli = curve.knee_milli;
-                    Difficulty::<T>::put(difficulty);
-                    writes = writes.saturating_add(1);
-                }
-            }
+            let pallet_prefix =
+                frame_support::Twox128::hash(<Pallet<T> as PalletInfoAccess>::name().as_bytes());
+            let cleared =
+                frame_support::storage::unhashed::clear_prefix(&pallet_prefix, None, None).backend;
 
             STORAGE_VERSION.put::<Pallet<T>>();
-            T::DbWeight::get().reads_writes(reads, writes)
+
+            // 1 read (version) + 1 write per cleared key + 1 write (version).
+            T::DbWeight::get().reads_writes(1, u64::from(cleared).saturating_add(1))
         }
 
         #[cfg(feature = "try-runtime")]
         fn pre_upgrade() -> Result<Vec<u8>, sp_runtime::TryRuntimeError> {
-            Ok(Difficulty::<T>::get().encode())
+            Ok(Vec::new())
         }
 
         #[cfg(feature = "try-runtime")]
-        fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
-            use codec::Decode;
-            let prior = crate::types::DifficultyConfig::decode(&mut &state[..])
-                .map_err(|_| sp_runtime::TryRuntimeError::Other("pre_upgrade state undecodable"))?;
+        fn post_upgrade(_state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
             ensure!(
                 Pallet::<T>::on_chain_storage_version() >= STORAGE_VERSION,
-                "storage version must be bumped by the migration"
+                "storage version must be bumped by the network upgrade"
             );
-            let current = Difficulty::<T>::get();
             ensure!(
-                current.min_solutions == prior.min_solutions
-                    && current.min_diversity_milli == prior.min_diversity_milli,
-                "migration must only touch max_energy_milli"
+                QBlockCount::<T>::get() == 0 && Miners::<T>::iter().next().is_none(),
+                "network upgrade must leave PoW state wiped"
             );
-            if let Some(curve) = Self::current_energy_curve() {
-                ensure!(
-                    current.max_energy_milli >= curve.min_milli,
-                    "post-migration threshold must not sit below curve.min_milli"
-                );
-            }
             Ok(())
         }
 
@@ -456,6 +481,7 @@ pub mod pallet {
             };
             Difficulty::<T>::put(next);
             LastProofBlock::<T>::put(n);
+            let qblock_id = Self::next_qblock_id();
 
             QBlocks::<T>::insert(
                 n,
@@ -469,9 +495,13 @@ pub mod pallet {
                     last_proof_block_hash,
                 },
             );
+            QBlockBlockById::<T>::insert(qblock_id, n);
+            QBlockIdByBlock::<T>::insert(n, qblock_id);
 
             Self::deposit_event(Event::DifficultyUpdated { difficulty: next });
             Self::deposit_event(Event::BlockWinner {
+                qblock_id,
+                block_number: n,
                 miner: record.miner,
                 reward,
                 energy_milli: record.energy_milli,
@@ -779,6 +809,19 @@ pub mod pallet {
             Self::current_difficulty(block_number)
         }
 
+        pub fn latest_qblock_id() -> Option<u64> {
+            let count = QBlockCount::<T>::get();
+            (count > 0).then_some(count)
+        }
+
+        pub fn qblock_id_by_block(block_number: BlockNumberFor<T>) -> Option<u64> {
+            QBlockIdByBlock::<T>::get(block_number)
+        }
+
+        pub fn qblock_block_by_id(qblock_id: u64) -> Option<BlockNumberFor<T>> {
+            QBlockBlockById::<T>::get(qblock_id)
+        }
+
         pub fn mining_snapshot(topology_hash: Option<H256>) -> Option<MiningSnapshotOf<T>> {
             let (topology_hash, topology) = match topology_hash {
                 Some(hash) => (hash, Self::topology_meta(hash)?),
@@ -826,6 +869,18 @@ pub mod pallet {
             let miner_bytes = Self::account_to_bytes(&solution.miner);
             let nonce = derive_nonce(&last_proof_block_hash_bytes, &miner_bytes, &solution.salt);
             Some(types::QBlockWithNonce { solution, nonce })
+        }
+
+        pub fn qblock_with_nonce_by_id(qblock_id: u64) -> Option<QBlockWithNonceOf<T>> {
+            let block_number = Self::qblock_block_by_id(qblock_id)?;
+            Self::qblock_with_nonce(block_number)
+        }
+
+        fn next_qblock_id() -> u64 {
+            QBlockCount::<T>::mutate(|count| {
+                *count = count.saturating_add(1);
+                *count
+            })
         }
 
         /// 32-byte representation of a block hash, suitable for use as a

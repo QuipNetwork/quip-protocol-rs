@@ -3,8 +3,8 @@ use crate::{
     difficulty, topology,
     types::{DifficultyConfig, ProofRecord, QuantumProof},
     AllowedValueSetOf, BlockBestProof, BlockProofCount, DefaultTopology, Difficulty,
-    LastProofBlock, LastProofBlockHash, Miners, PackedSpinBytesOf, QBlocks, RegisteredTopologies,
-    WinnerStreak,
+    LastProofBlock, LastProofBlockHash, Miners, PackedSpinBytesOf, QBlockBlockById, QBlockCount,
+    QBlockIdByBlock, QBlocks, RegisteredTopologies, WinnerStreak,
 };
 use frame_support::{
     assert_noop, assert_ok,
@@ -69,35 +69,24 @@ fn test_curve() -> crate::difficulty::EnergyCurve {
 }
 
 #[test]
-fn energy_curve_matches_legacy_gse_for_registered_specs() {
-    // The registered ternary-h/binary-J specs are exactly the distributions
-    // the legacy formula hardcodes, so the spec-aware curve must reproduce
-    // expected_gse_with_c at all three calibration points.
+fn energy_curve_matches_gse_for_registered_ternary_specs() {
+    // The registered ternary-h/binary-J specs reproduce the legacy magnitudes,
+    // so the spec-aware curve must equal expected_gse at all three calibration
+    // points when fed those same specs.
     let curve = test_curve();
-    assert_eq!(
-        curve.min_milli,
-        quantum_validation::expected_gse_with_c(
+    let gse = |c_milli: u32| {
+        quantum_validation::expected_gse(
             2,
             1,
-            f64::from(test_curve_c().hard_milli) / 1000.0
+            f64::from(c_milli) / 1000.0,
+            &allowed_h_spec().as_slice(),
+            &allowed_j_spec().as_slice(),
         )
-    );
-    assert_eq!(
-        curve.knee_milli,
-        quantum_validation::expected_gse_with_c(
-            2,
-            1,
-            f64::from(test_curve_c().knee_milli) / 1000.0
-        )
-    );
-    assert_eq!(
-        curve.max_milli,
-        quantum_validation::expected_gse_with_c(
-            2,
-            1,
-            f64::from(test_curve_c().easy_milli) / 1000.0
-        )
-    );
+        .unwrap()
+    };
+    assert_eq!(curve.min_milli, gse(test_curve_c().hard_milli));
+    assert_eq!(curve.knee_milli, gse(test_curve_c().knee_milli));
+    assert_eq!(curve.max_milli, gse(test_curve_c().easy_milli));
 }
 
 #[test]
@@ -119,7 +108,7 @@ fn energy_curve_zero_field_spec_drops_h_contribution() {
         (curve.knee_milli, test_curve_c().knee_milli),
         (curve.max_milli, test_curve_c().easy_milli),
     ] {
-        let expected = quantum_validation::expected_gse_for_specs(
+        let expected = quantum_validation::expected_gse(
             2,
             1,
             f64::from(c) / 1000.0,
@@ -175,10 +164,6 @@ fn registered_topology() -> (
         allowed_spin_spec(),
     ));
     (nodes, edges, hash)
-}
-
-fn test_db_weight() -> frame_support::weights::RuntimeDbWeight {
-    <<Test as frame_system::Config>::DbWeight as frame_support::traits::Get<_>>::get()
 }
 
 fn pack_spins(spins: &[i8]) -> PackedSpinBytesOf<Test> {
@@ -744,50 +729,30 @@ fn curve_constants_are_recalibrated() {
 }
 
 #[test]
-fn runtime_upgrade_clamps_impossible_difficulty_to_knee() {
+fn network_upgrade_wipes_pow_state_and_bumps_version() {
     new_test_ext().execute_with(|| {
-        registered_topology();
-        let curve = test_curve();
-        let initial = DifficultyConfig {
+        // Seed v0.2-style state.
+        let (.., hash) = registered_topology();
+        assert!(RegisteredTopologies::<Test>::contains_key(hash));
+        assert_eq!(DefaultTopology::<Test>::get(), Some(hash));
+        Difficulty::<Test>::put(DifficultyConfig {
             min_solutions: 7,
-            max_energy_milli: curve.min_milli - 1,
+            max_energy_milli: 12_345,
             min_diversity_milli: 300,
-        };
-        Difficulty::<Test>::put(initial);
-        StorageVersion::new(0).put::<QuantumPow>();
+        });
+        QBlockCount::<Test>::put(9);
+        // Simulate the on-chain v0.2 storage version so the guard fires.
+        StorageVersion::new(1).put::<QuantumPow>();
 
-        let weight = QuantumPow::on_runtime_upgrade();
+        QuantumPow::on_runtime_upgrade();
 
-        assert_eq!(
-            Difficulty::<Test>::get(),
-            DifficultyConfig {
-                max_energy_milli: curve.knee_milli,
-                ..initial
-            }
-        );
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(1));
-        assert_eq!(weight, test_db_weight().reads_writes(4, 2));
-    });
-}
-
-#[test]
-fn runtime_upgrade_keeps_in_range_difficulty() {
-    new_test_ext().execute_with(|| {
-        registered_topology();
-        let curve = test_curve();
-        let initial = DifficultyConfig {
-            min_solutions: 7,
-            max_energy_milli: curve.knee_milli,
-            min_diversity_milli: 300,
-        };
-        Difficulty::<Test>::put(initial);
-        StorageVersion::new(0).put::<QuantumPow>();
-
-        let weight = QuantumPow::on_runtime_upgrade();
-
-        assert_eq!(Difficulty::<Test>::get(), initial);
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(1));
-        assert_eq!(weight, test_db_weight().reads_writes(4, 1));
+        // All PoW state is dropped rather than carried forward.
+        assert!(RegisteredTopologies::<Test>::iter().next().is_none());
+        assert_eq!(DefaultTopology::<Test>::get(), None);
+        assert_eq!(QBlockCount::<Test>::get(), 0);
+        // `Difficulty` reads back at its Default, identical to a fresh chain.
+        assert_eq!(Difficulty::<Test>::get(), DifficultyConfig::default());
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(2));
     });
 }
 
@@ -920,70 +885,26 @@ fn repeated_same_winner_forces_easing() {
 }
 
 #[test]
-fn runtime_upgrade_is_noop_once_versioned() {
+fn network_upgrade_is_noop_once_at_v2() {
     new_test_ext().execute_with(|| {
-        registered_topology();
-        let curve = test_curve();
-        // Out-of-range difficulty that the v1 migration *would* clamp —
-        // but the on-chain version is already 1, so the version guard must
-        // keep the migration from re-running and yanking a legitimately
-        // hardened threshold back to the knee on every future upgrade.
-        let initial = DifficultyConfig {
+        // Already at the post-upgrade version (e.g. a fresh genesis chain):
+        // the guard must keep the wipe from re-running and nuking live state.
+        let (.., hash) = registered_topology();
+        let difficulty = DifficultyConfig {
             min_solutions: 7,
-            max_energy_milli: curve.min_milli - 1,
+            max_energy_milli: 12_345,
             min_diversity_milli: 300,
         };
-        Difficulty::<Test>::put(initial);
-        StorageVersion::new(1).put::<QuantumPow>();
-
-        let weight = QuantumPow::on_runtime_upgrade();
-
-        assert_eq!(Difficulty::<Test>::get(), initial);
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(1));
-        assert_eq!(weight, test_db_weight().reads(1));
-    });
-}
-
-#[test]
-fn runtime_upgrade_without_topology_only_bumps_version() {
-    new_test_ext().execute_with(|| {
-        // No topology registered: the plan specifies a no-op repair (there
-        // is no curve to validate against), but the version must still be
-        // bumped so the migration does not re-run forever.
-        let initial = DifficultyConfig {
-            min_solutions: 7,
-            max_energy_milli: -1_000_000,
-            min_diversity_milli: 300,
-        };
-        Difficulty::<Test>::put(initial);
-        StorageVersion::new(0).put::<QuantumPow>();
-
-        let weight = QuantumPow::on_runtime_upgrade();
-
-        assert_eq!(Difficulty::<Test>::get(), initial);
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(1));
-        assert_eq!(weight, test_db_weight().reads_writes(3, 1));
-    });
-}
-
-#[test]
-fn runtime_upgrade_preserves_threshold_at_min_boundary() {
-    new_test_ext().execute_with(|| {
-        registered_topology();
-        let curve = test_curve();
-        // The clamp condition is strict `<`: a threshold sitting exactly on
-        // `min_milli` is still solvable and must be left alone.
-        let initial = DifficultyConfig {
-            min_solutions: 7,
-            max_energy_milli: curve.min_milli,
-            min_diversity_milli: 300,
-        };
-        Difficulty::<Test>::put(initial);
-        StorageVersion::new(0).put::<QuantumPow>();
+        Difficulty::<Test>::put(difficulty);
+        QBlockCount::<Test>::put(9);
+        StorageVersion::new(2).put::<QuantumPow>();
 
         QuantumPow::on_runtime_upgrade();
 
-        assert_eq!(Difficulty::<Test>::get(), initial);
+        assert!(RegisteredTopologies::<Test>::contains_key(hash));
+        assert_eq!(Difficulty::<Test>::get(), difficulty);
+        assert_eq!(QBlockCount::<Test>::get(), 9);
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(2));
     });
 }
 
@@ -1127,6 +1048,12 @@ fn on_finalize_persists_qblock_with_recoverable_nonce() {
         assert_eq!(stored.miner, 1);
         assert_eq!(stored.salt, original_salt);
         assert_eq!(stored.reward, 50);
+        assert_eq!(QBlockCount::<Test>::get(), 1);
+        assert_eq!(QBlockBlockById::<Test>::get(1), Some(block));
+        assert_eq!(QBlockIdByBlock::<Test>::get(block), Some(1));
+        assert_eq!(crate::Pallet::<Test>::latest_qblock_id(), Some(1));
+        assert_eq!(crate::Pallet::<Test>::qblock_id_by_block(block), Some(1));
+        assert_eq!(crate::Pallet::<Test>::qblock_block_by_id(1), Some(block));
         // LastProofBlock was zero before this proof, so no decay applied —
         // the active threshold equals whatever set_difficulty just stored.
         assert_eq!(stored.difficulty, easy_difficulty());
@@ -1144,6 +1071,10 @@ fn on_finalize_persists_qblock_with_recoverable_nonce() {
             view.solution.last_proof_block_hash,
             expected_last_proof_block_hash
         );
+
+        let by_id = crate::Pallet::<Test>::qblock_with_nonce_by_id(1)
+            .expect("qblock id resolves to the persisted qblock");
+        assert_eq!(by_id, view);
     });
 }
 
@@ -1155,6 +1086,33 @@ fn qblock_returns_none_for_genesis_block() {
         // arithmetic. Pins the contract that saturating subtraction on
         // `block_number - 1 == 0u32 - 1` never reaches the nonce derivation.
         assert!(crate::Pallet::<Test>::qblock_with_nonce(0).is_none());
+        assert!(crate::Pallet::<Test>::latest_qblock_id().is_none());
+        assert!(crate::Pallet::<Test>::qblock_with_nonce_by_id(1).is_none());
+    });
+}
+
+#[test]
+fn qblock_ids_increment_only_for_winning_qblocks() {
+    new_test_ext().execute_with(|| {
+        registered_topology();
+
+        finalize_winner(1, 10);
+        finalize_winner(2, 15);
+
+        assert_eq!(QBlockCount::<Test>::get(), 2);
+        assert_eq!(crate::Pallet::<Test>::latest_qblock_id(), Some(2));
+        assert_eq!(QBlockBlockById::<Test>::get(1), Some(10));
+        assert_eq!(QBlockBlockById::<Test>::get(2), Some(15));
+        assert_eq!(QBlockIdByBlock::<Test>::get(10), Some(1));
+        assert_eq!(QBlockIdByBlock::<Test>::get(15), Some(2));
+        assert!(QBlockIdByBlock::<Test>::get(11).is_none());
+        assert_eq!(
+            crate::Pallet::<Test>::qblock_with_nonce_by_id(2)
+                .expect("second qblock exists")
+                .solution
+                .miner,
+            2
+        );
     });
 }
 
