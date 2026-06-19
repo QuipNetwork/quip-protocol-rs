@@ -5,15 +5,6 @@ use crate::fixed::{MilliEnergy, MilliValue, MILLI_SCALE};
 use crate::puzzle_spec::AllowedValueSpec;
 use crate::validation::{ensure_valid_spins, ensure_valid_topology};
 
-const DEFAULT_GSE_C: f64 = 0.75;
-/// Mean |h| of the legacy ternary field spec `{-1, 0, +1}`: two of three
-/// equally-likely values have unit magnitude, so ⟨|h|⟩ = 2/3. Kept as the
-/// default so [`expected_gse_with_c`] keeps mirroring the v0.1 Python
-/// reference (which expressed the same quantity as nonzero-fraction × unit
-/// magnitude).
-const DEFAULT_H_MEAN_ABS: f64 = 2.0 / 3.0;
-/// Mean |J| of the legacy binary coupling spec `{-1, +1}`.
-const DEFAULT_J_MEAN_ABS: f64 = 1.0;
 /// Empirical SA alignment-efficiency factor for the field term. Calibrated
 /// against the v0.1 Python reference; applies only to the h contribution.
 const DEFAULT_H_ALPHA: f64 = 0.88;
@@ -72,36 +63,31 @@ pub fn energy_of_solution(
     Ok(energy)
 }
 
-/// Estimate the expected ground-state energy at a chosen empirical `c`.
-///
-/// Mirrors `shared.energy_utils.expected_solution_energy(c=…)` from the
-/// v0.1 Python reference. The `c` factor encodes SA efficiency at a given
-/// computational effort — lower values (e.g. 0.7) correspond to less
-/// effort and a higher (less-negative) energy, higher values (e.g. 0.8)
-/// to more effort and a lower (more-negative) energy. The result is
-/// returned in milli precision.
-pub fn expected_gse_with_c(num_nodes: u32, num_edges: u32, c: f64) -> MilliEnergy {
-    gse_from_mean_magnitudes(
-        num_nodes,
-        num_edges,
-        c,
-        DEFAULT_H_MEAN_ABS,
-        DEFAULT_J_MEAN_ABS,
-    )
-}
-
 /// Estimate the expected ground-state energy for the h/J distributions a
-/// registered topology actually samples.
+/// registered topology actually samples, at a chosen empirical `c`.
 ///
-/// Generalizes [`expected_gse_with_c`] (which hardcodes the legacy ternary-h
-/// / binary-J magnitudes) by deriving the mean field and coupling magnitudes
-/// from the topology's allowed-value specs. A zero-field spec (`Set([0])`)
-/// drops the h contribution entirely, so the difficulty curve for an h = 0
-/// spin-glass topology no longer credits energy that no puzzle can produce.
+/// The estimate is `-(c·⟨|J|⟩·√d·n + c·α·⟨|h|⟩·n/√d)` in milli precision,
+/// where `d = 2·num_edges/num_nodes` is the average degree and `⟨|h|⟩`,
+/// `⟨|J|⟩` are the mean magnitudes (unit scale, 1.0 == 1000 milli) of the
+/// field and coupling distributions under each spec's uniform sampling.
 ///
-/// Returns [`ValidationError::EmptyAllowedValues`] when either spec is empty
-/// or has inverted bounds.
-pub fn expected_gse_for_specs(
+/// Deriving the magnitudes from the specs keeps the difficulty curve aligned
+/// with what puzzles actually sample: a zero-field spec (`Set([0])`) has
+/// `⟨|h|⟩ = 0`, so the field term drops out entirely rather than crediting
+/// energy no puzzle can produce. With the legacy ternary-h `{-1, 0, +1}`
+/// (`⟨|h|⟩ = 2/3`) and binary-J `{-1, +1}` (`⟨|J|⟩ = 1`) specs at `c = 0.75`,
+/// this reproduces `shared.energy_utils.expected_solution_energy` from the
+/// v0.1 Python reference.
+///
+/// The `c` factor encodes SA efficiency at a given computational effort —
+/// lower values (e.g. 0.7) correspond to less effort and a higher
+/// (less-negative) energy, higher values (e.g. 0.8) to more effort and a
+/// lower (more-negative) energy.
+///
+/// Returns `0` for an empty topology, and
+/// [`ValidationError::EmptyAllowedValues`] when either spec is empty or has
+/// inverted bounds (impossible for a topology that passed registration).
+pub fn expected_gse(
     num_nodes: u32,
     num_edges: u32,
     c: f64,
@@ -110,34 +96,20 @@ pub fn expected_gse_for_specs(
 ) -> Result<MilliEnergy, ValidationError> {
     let h_mean_abs = mean_abs_unit(allowed_h)?;
     let j_mean_abs = mean_abs_unit(allowed_j)?;
-    Ok(gse_from_mean_magnitudes(
-        num_nodes, num_edges, c, h_mean_abs, j_mean_abs,
-    ))
-}
 
-/// Shared core of the GSE estimate: per-spin J term plus α-damped field
-/// term, both scaled by the distributions' mean magnitudes (unit scale,
-/// i.e. 1.0 == 1000 milli).
-fn gse_from_mean_magnitudes(
-    num_nodes: u32,
-    num_edges: u32,
-    c: f64,
-    h_mean_abs: f64,
-    j_mean_abs: f64,
-) -> MilliEnergy {
     if num_nodes == 0 || num_edges == 0 {
-        return 0;
+        return Ok(0);
     }
 
     let n = f64::from(num_nodes);
     let m = f64::from(num_edges);
     let avg_degree = (2.0 * m) / n;
-
     let sqrt_avg_degree = libm::sqrt(avg_degree);
+
     let j_contribution = -c * j_mean_abs * sqrt_avg_degree * n;
     let h_contribution = -c * DEFAULT_H_ALPHA * h_mean_abs * n / sqrt_avg_degree;
 
-    libm::round((j_contribution + h_contribution) * (MILLI_SCALE as f64)) as MilliEnergy
+    Ok(libm::round((j_contribution + h_contribution) * (MILLI_SCALE as f64)) as MilliEnergy)
 }
 
 /// Mean |value| of a spec on the unit scale (1.0 == [`MILLI_SCALE`] milli),
@@ -187,21 +159,6 @@ fn discrete_mean_abs(min: i64, max: i64) -> Result<f64, ValidationError> {
     Ok(sum_abs as f64 / span as f64)
 }
 
-/// Estimate the expected ground-state energy for a random Ising problem
-/// at the canonical `c = 0.75`.
-///
-/// This mirrors the current Python reference model in
-/// `shared.energy_utils.expected_solution_energy()` using its default
-/// parameters:
-///
-/// - `c = 0.75`
-/// - ternary local fields `{-1, 0, +1}`
-///
-/// The result is returned in milli precision.
-pub fn expected_gse(num_nodes: u32, num_edges: u32) -> MilliEnergy {
-    expected_gse_with_c(num_nodes, num_edges, DEFAULT_GSE_C)
-}
-
 fn validate_shape(
     solution: &[i8],
     h: &[MilliValue],
@@ -245,10 +202,14 @@ fn position_of_node(nodes: &[u32], target: u32) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{energy_of_solution, expected_gse, expected_gse_for_specs, expected_gse_with_c};
+    use super::{energy_of_solution, expected_gse};
     use crate::errors::ValidationError;
     use crate::fixed::MilliValue;
     use crate::puzzle_spec::AllowedValueSpec;
+
+    fn set_spec(values: &[MilliValue]) -> AllowedValueSpec<&[MilliValue]> {
+        AllowedValueSpec::Set(values)
+    }
 
     #[test]
     fn computes_energy_for_simple_problem() {
@@ -293,66 +254,44 @@ mod tests {
     }
 
     #[test]
-    fn expected_gse_is_zero_for_empty_topology() {
-        assert_eq!(expected_gse(0, 100), 0);
-        assert_eq!(expected_gse(100, 0), 0);
+    fn expected_gse_ternary_field_matches_reference() {
+        // Legacy ternary h ∈ {-1, 0, +1} (⟨|h|⟩ = 2/3) + binary J ∈ {-1, +1}
+        // (⟨|J|⟩ = 1) at c = 0.75, n=1024, m=2048 (avg degree 4, √4 = 2):
+        //   J term = -0.75 · 1     · 2 · 1024       = -1536.0
+        //   h term = -0.75 · 0.88 · (2/3) · 1024/2  =  -225.28
+        //   total                                   = -1761.28 → -1_761_280 milli
+        // This is the value the v0.1 Python reference produces, so the Python
+        // parity fixtures stay valid.
+        let h = set_spec(&[-1000, 0, 1000]);
+        let j = set_spec(&[-1000, 1000]);
+        assert_eq!(expected_gse(1024, 2048, 0.75, &h, &j).unwrap(), -1_761_280);
     }
 
     #[test]
-    fn expected_gse_with_c_matches_default_at_canonical_c() {
-        assert_eq!(
-            expected_gse(1024, 2048),
-            expected_gse_with_c(1024, 2048, 0.75),
-        );
+    fn expected_gse_zero_field_drops_h_term() {
+        // h = {0} → pure ±J spin glass: E ≈ -c·⟨|J|⟩·√(2m/n)·n, no field
+        // term. n=1024, m=2048 → avg degree 4, √4 = 2:
+        // -0.75 · 1.0 · 2 · 1024 = -1536.0 → -1_536_000 milli. Exactly the
+        // ternary value above minus its -225_280 field term.
+        let h = set_spec(&[0]);
+        let j = set_spec(&[-1000, 1000]);
+        assert_eq!(expected_gse(1024, 2048, 0.75, &h, &j).unwrap(), -1_536_000);
     }
 
     #[test]
-    fn expected_gse_with_c_is_more_negative_for_larger_c() {
-        let easy = expected_gse_with_c(1024, 2048, 0.70);
-        let hard = expected_gse_with_c(1024, 2048, 0.80);
+    fn expected_gse_is_more_negative_for_larger_c() {
+        let h = set_spec(&[-1000, 0, 1000]);
+        let j = set_spec(&[-1000, 1000]);
+        let easy = expected_gse(1024, 2048, 0.70, &h, &j).unwrap();
+        let hard = expected_gse(1024, 2048, 0.80, &h, &j).unwrap();
         assert!(
             hard < easy,
             "hard (c=0.80) must be more negative than easy (c=0.70): hard={hard}, easy={easy}",
         );
     }
 
-    fn set_spec(values: &[MilliValue]) -> AllowedValueSpec<&[MilliValue]> {
-        AllowedValueSpec::Set(values)
-    }
-
     #[test]
-    fn expected_gse_for_specs_matches_legacy_for_default_specs() {
-        // The legacy formula hardcodes ternary h ∈ {-1, 0, +1} (mean |h| =
-        // 2/3) and unit-magnitude J. The spec-aware path must reproduce it
-        // bit-for-bit so the Python parity fixtures stay valid.
-        let h = set_spec(&[-1000, 0, 1000]);
-        let j = set_spec(&[-1000, 1000]);
-        for (nodes, edges) in [(1024, 2048), (4800, 48000), (16, 32)] {
-            for c in [0.70, 0.75, 0.80] {
-                assert_eq!(
-                    expected_gse_for_specs(nodes, edges, c, &h, &j).unwrap(),
-                    expected_gse_with_c(nodes, edges, c),
-                    "nodes={nodes} edges={edges} c={c}",
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn expected_gse_for_specs_zero_field_drops_h_term() {
-        // h = {0} → pure ±J spin glass: E ≈ -c·⟨|J|⟩·√(2m/n)·n, no field
-        // term. n=1024, m=2048 → avg degree 4, √4 = 2:
-        // -0.75 · 1.0 · 2 · 1024 = -1536.0 → -1_536_000 milli.
-        let h = set_spec(&[0]);
-        let j = set_spec(&[-1000, 1000]);
-        assert_eq!(
-            expected_gse_for_specs(1024, 2048, 0.75, &h, &j).unwrap(),
-            -1_536_000,
-        );
-    }
-
-    #[test]
-    fn expected_gse_for_specs_integer_range_matches_equivalent_set() {
+    fn expected_gse_integer_range_matches_equivalent_set() {
         // IntegerRange {-2..=2} samples {-2,-1,0,1,2} scaled by MILLI_SCALE,
         // exactly the same distribution as the explicit milli set.
         let h_range: AllowedValueSpec<&[MilliValue]> =
@@ -360,13 +299,13 @@ mod tests {
         let h_set = set_spec(&[-2000, -1000, 0, 1000, 2000]);
         let j = set_spec(&[-1000, 1000]);
         assert_eq!(
-            expected_gse_for_specs(1024, 2048, 0.75, &h_range, &j).unwrap(),
-            expected_gse_for_specs(1024, 2048, 0.75, &h_set, &j).unwrap(),
+            expected_gse(1024, 2048, 0.75, &h_range, &j).unwrap(),
+            expected_gse(1024, 2048, 0.75, &h_set, &j).unwrap(),
         );
     }
 
     #[test]
-    fn expected_gse_for_specs_positive_continuous_range_matches_equivalent_mean() {
+    fn expected_gse_positive_continuous_range_matches_equivalent_mean() {
         // ContinuousRange [500, 1500] milli is all-positive with mean |v| =
         // 1000 milli — the same mean magnitude as the binary ±1000 set.
         let h_range: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::ContinuousRange {
@@ -376,32 +315,32 @@ mod tests {
         let h_set = set_spec(&[-1000, 1000]);
         let j = set_spec(&[-1000, 1000]);
         assert_eq!(
-            expected_gse_for_specs(1024, 2048, 0.75, &h_range, &j).unwrap(),
-            expected_gse_for_specs(1024, 2048, 0.75, &h_set, &j).unwrap(),
+            expected_gse(1024, 2048, 0.75, &h_range, &j).unwrap(),
+            expected_gse(1024, 2048, 0.75, &h_set, &j).unwrap(),
         );
     }
 
     #[test]
-    fn expected_gse_for_specs_rejects_empty_or_inverted_specs() {
+    fn expected_gse_rejects_empty_or_inverted_specs() {
         let valid = set_spec(&[-1000, 1000]);
         let empty = set_spec(&[]);
         let inverted: AllowedValueSpec<&[MilliValue]> =
             AllowedValueSpec::IntegerRange { min: 3, max: -3 };
         assert_eq!(
-            expected_gse_for_specs(1024, 2048, 0.75, &empty, &valid).unwrap_err(),
+            expected_gse(1024, 2048, 0.75, &empty, &valid).unwrap_err(),
             ValidationError::EmptyAllowedValues,
         );
         assert_eq!(
-            expected_gse_for_specs(1024, 2048, 0.75, &valid, &inverted).unwrap_err(),
+            expected_gse(1024, 2048, 0.75, &valid, &inverted).unwrap_err(),
             ValidationError::EmptyAllowedValues,
         );
     }
 
     #[test]
-    fn expected_gse_for_specs_is_zero_for_empty_topology() {
+    fn expected_gse_is_zero_for_empty_topology() {
         let h = set_spec(&[0]);
         let j = set_spec(&[-1000, 1000]);
-        assert_eq!(expected_gse_for_specs(0, 100, 0.75, &h, &j).unwrap(), 0);
-        assert_eq!(expected_gse_for_specs(100, 0, 0.75, &h, &j).unwrap(), 0);
+        assert_eq!(expected_gse(0, 100, 0.75, &h, &j).unwrap(), 0);
+        assert_eq!(expected_gse(100, 0, 0.75, &h, &j).unwrap(), 0);
     }
 }
