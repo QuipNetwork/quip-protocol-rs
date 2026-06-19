@@ -907,7 +907,8 @@ pub mod pallet {
             let cleared =
                 frame_support::storage::unhashed::clear_prefix(&pallet_prefix, None, None).backend;
 
-            if let Err(err) = Self::insert_default_ising_spec(T::DefaultJobSpecBuilder::get(), false)
+            if let Err(err) =
+                Self::insert_default_ising_spec(T::DefaultJobSpecBuilder::get(), false)
             {
                 frame_support::defensive!(
                     "on_runtime_upgrade: failed to reseed default Ising spec",
