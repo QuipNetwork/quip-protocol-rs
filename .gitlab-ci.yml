@@ -17,10 +17,18 @@
 #
 # Multi-arch: kaniko has no cross-build/manifest support — it builds for the
 # native architecture of whichever runner it runs on. So each architecture has
-# its own kaniko job pinned to a native runner (tags: [amd64] / [arm64]) that
-# publishes an arch-suffixed image (:<tag>-amd64 / :<tag>-arm64). The
-# `manifest` job then combines those into the real consumer-facing tags as a
-# manifest list with `manifest-tool` (buildx-free).
+# its own kaniko job pinned to a native runner (tags: [docker, amd64] /
+# [docker, arm64]) that publishes an arch-suffixed image (:<tag>-amd64 /
+# :<tag>-arm64). The `manifest` job then combines those into the real
+# consumer-facing tags as a manifest list with `manifest-tool` (buildx-free).
+#
+# The `docker` tag is load-bearing: it pins these jobs to *container* (Docker)
+# executors, which honour `image:` and can run kaniko. The fleet also has macOS
+# *shell* runners that carry the bare arch tags (amd64/arm64) but ignore
+# `image:` and run on the SIP-protected host — kaniko cannot run there. Every
+# runner that should accept these jobs must carry `docker`: the amd64 Linux
+# Docker boxes (lovelace/finney/watch) and an arm64 Docker-executor runner
+# (e.g. a docker-executor gitlab-runner hosted on an Apple-Silicon Mac).
 #
 # Toolchain image: docker.io/carback1/rust-substrate-builder:latest
 # (built manually from .gitlab/ci-toolchain.Dockerfile and pushed to Docker
@@ -57,7 +65,7 @@ workflow:
 cargo-test:
   stage: test
   image: $TOOLCHAIN_IMAGE
-  tags: [amd64]
+  tags: [docker, amd64]
   interruptible: true
   timeout: 60m
   cache:
@@ -136,14 +144,14 @@ cargo-test:
 
 kaniko-build-amd64:
   extends: .kaniko-build
-  tags: [amd64]
+  tags: [docker, amd64]
   variables:
     ARCH: amd64
     TRIPLET: x86_64-linux-gnu
 
 kaniko-build-arm64:
   extends: .kaniko-build
-  tags: [arm64]
+  tags: [docker, arm64]
   variables:
     ARCH: arm64
     TRIPLET: aarch64-linux-gnu
@@ -160,7 +168,7 @@ manifest:
   image:
     name: mplatform/manifest-tool:alpine
     entrypoint: [""]
-  tags: [amd64]
+  tags: [docker, amd64]
   interruptible: true
   rules: !reference [.publish-rules, rules]
   script:
