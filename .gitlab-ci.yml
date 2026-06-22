@@ -142,7 +142,8 @@ cargo-test:
         --build-arg "SUBSTRATE_CLI_GIT_COMMIT_HASH=$CI_COMMIT_SHORT_SHA" \
         --cache=true \
         --cache-repo "$CACHE_IMAGE-$ARCH" \
-        $KANIKO_LIB_IGNORE
+        $KANIKO_LIB_IGNORE \
+        $KANIKO_EXTRA
 
 kaniko-build-amd64:
   extends: .kaniko-build
@@ -159,6 +160,13 @@ kaniko-build-arm64:
   tags: [docker, arm64]
   variables:
     ARCH: arm64
+    # The arm64 runner is a docker-executor on an Apple-Silicon Mac (OrbStack),
+    # a far more memory/disk-constrained VM than the amd64 Linux boxes. kaniko's
+    # default --compressed-caching=true holds compressed layers in RAM while
+    # snapshotting the multi-GB Rust builder rootfs, which OOM-freezes the whole
+    # VM (docker daemon hangs) right at "Taking snapshot of full filesystem".
+    # Disable it so layers stream to disk instead of accumulating in memory.
+    KANIKO_EXTRA: "--compressed-caching=false"
 
 # Combine the per-arch images into a multi-arch manifest list. manifest-tool
 # replaces the literal `ARCH` token in --template with each platform's arch
