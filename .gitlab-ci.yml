@@ -3,14 +3,24 @@
 # CI pipeline for quip-protocol-rs.
 #
 # Stages:
-#   - test:  fmt / clippy / test / runtime release build on every MR
-#   - build: publish quip-network-node container on main/v0.2/tags
+#   - test:      fmt / clippy / test / runtime release build on every MR
+#   - build:     build the quip-network-node container per architecture
+#                (amd64 + arm64), each on a native runner, on main/v0.2/tags
+#   - manifest:  stitch the per-arch images into a multi-arch manifest list so
+#                a single tag serves both architectures
 #
 # Triggers:
 #   - merge_request_event  →  test
-#   - push to main         →  test + build (:latest)
-#   - push to v0.2         →  test + build (:v0.2)
-#   - git tag              →  test + build (:<tag> + floating :<vMAJOR.MINOR>)
+#   - push to main         →  test + build + manifest (:latest)
+#   - push to v0.2         →  test + build + manifest (:v0.2)
+#   - git tag              →  test + build + manifest (:<tag> + floating :<vMAJOR.MINOR>)
+#
+# Multi-arch: kaniko has no cross-build/manifest support — it builds for the
+# native architecture of whichever runner it runs on. So each architecture has
+# its own kaniko job pinned to a native runner (tags: [amd64] / [arm64]) that
+# publishes an arch-suffixed image (:<tag>-amd64 / :<tag>-arm64). The
+# `manifest` job then combines those into the real consumer-facing tags as a
+# manifest list with `manifest-tool` (buildx-free).
 #
 # Toolchain image: docker.io/carback1/rust-substrate-builder:latest
 # (built manually from .gitlab/ci-toolchain.Dockerfile and pushed to Docker
@@ -22,6 +32,7 @@
 stages:
   - test
   - build
+  - manifest
 
 variables:
   TOOLCHAIN_IMAGE: docker.io/carback1/rust-substrate-builder:latest
@@ -46,7 +57,7 @@ workflow:
 cargo-test:
   stage: test
   image: $TOOLCHAIN_IMAGE
-  tags: [linux, amd64]
+  tags: [amd64]
   interruptible: true
   timeout: 60m
   cache:
@@ -63,20 +74,10 @@ cargo-test:
     - cargo test --workspace --lib --bins --tests
     - cargo build --release -p quip-protocol-runtime
 
-# Publish the production node image. `needs: []` lets the kaniko job start
-# as soon as the pipeline is created instead of waiting for `cargo-test` —
-# the container build is independent of the cargo lint/test suite, so there
-# is no reason to serialise the two. Stage label remains `build` so the
-# pipeline UI still groups it separately from the test stage.
-kaniko-build-push:
-  stage: build
-  needs: []
-  image:
-    name: gcr.io/kaniko-project/executor:v1.23.2-debug
-    entrypoint: [""]
-  tags: [linux, amd64]
-  timeout: 90m
-  interruptible: true
+# Shared publish rules: which branches/tags publish, and the PRIMARY_TAG each
+# maps to. Referenced (not inherited) by the build jobs and the manifest job so
+# all three resolve the same PRIMARY_TAG for a given pipeline.
+.publish-rules:
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
       variables:
@@ -87,8 +88,31 @@ kaniko-build-push:
     - if: $CI_COMMIT_TAG
       variables:
         PRIMARY_TAG: $CI_COMMIT_TAG
+
+# Per-architecture container build. `needs: []` lets the kaniko jobs start as
+# soon as the pipeline is created instead of waiting for `cargo-test` — the
+# container build is independent of the cargo lint/test suite. Each concrete
+# job below pins itself to a native runner and sets ARCH + TRIPLET; this
+# template holds everything they share. Only the arch-suffixed tag
+# (:<tag>-<arch>) is pushed here — the consumer-facing tags are assembled by
+# the `manifest` job.
+.kaniko-build:
+  stage: build
+  needs: []
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  timeout: 90m
+  interruptible: true
+  rules: !reference [.publish-rules, rules]
   before_script:
-    - mkdir -p /lib && ln -sfn /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu
+    # --ignore-path=/lib (below) stops kaniko snapshotting /lib, so the
+    # usr-merge symlink for the multilib dir isn't recreated in the image and
+    # the runtime's dynamic linker can't find libc/libssl. Recreate it by hand
+    # for this arch's triplet before the build. (/lib is ignored because GPU
+    # runners bind-mount host NVIDIA firmware there, which kaniko can't unmount
+    # to rebuild the tree.)
+    - mkdir -p /lib && ln -sfn /usr/lib/$TRIPLET /lib/$TRIPLET
     - mkdir -p /kaniko/.docker
     - |
       printf '{"auths":{"%s":{"auth":"%s"}}}\n' \
@@ -96,26 +120,61 @@ kaniko-build-push:
         "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')" \
         > /kaniko/.docker/config.json
   script:
-    # On tag pipelines, also publish a floating minor-series tag derived from the
-    # release tag (e.g. v0.2.0rc1 → :v0.2) so deployments can pin a series and
-    # pick up the latest release in it. Branch pipelines get PRIMARY_TAG + sha
-    # only. kaniko's debug image ships busybox sh/grep, which supports -oE.
-    # --ignore-path=/lib/firmware: GPU runners bind-mount host NVIDIA firmware
-    # into the container; kaniko can't remove /lib to recreate the usr-merge
-    # symlink while those mounts are busy, so it must skip that subtree.
+    # --cache-repo is suffixed per arch: kaniko's cache keys hash the build
+    # instructions, not the target architecture, so amd64 and arm64 would
+    # collide on identical keys but hold arch-incompatible layers if they
+    # shared one cache repo.
     - |
-      SERIES_DEST=""
-      if [ -n "$CI_COMMIT_TAG" ]; then
-        SERIES_TAG=$(printf '%s' "$CI_COMMIT_TAG" | grep -oE '^v[0-9]+\.[0-9]+' || true)
-        [ -n "$SERIES_TAG" ] && SERIES_DEST="--destination=$IMAGE:$SERIES_TAG"
-      fi
       /kaniko/executor \
         --context "$CI_PROJECT_DIR" \
         --dockerfile "$CI_PROJECT_DIR/Dockerfile" \
-        --destination "$IMAGE:$PRIMARY_TAG" \
-        --destination "$IMAGE:sha-$CI_COMMIT_SHORT_SHA" \
-        $SERIES_DEST \
+        --destination "$IMAGE:$PRIMARY_TAG-$ARCH" \
         --build-arg "SUBSTRATE_CLI_GIT_COMMIT_HASH=$CI_COMMIT_SHORT_SHA" \
         --cache=true \
-        --cache-repo "$CACHE_IMAGE" \
+        --cache-repo "$CACHE_IMAGE-$ARCH" \
         --ignore-path=/lib
+
+kaniko-build-amd64:
+  extends: .kaniko-build
+  tags: [amd64]
+  variables:
+    ARCH: amd64
+    TRIPLET: x86_64-linux-gnu
+
+kaniko-build-arm64:
+  extends: .kaniko-build
+  tags: [arm64]
+  variables:
+    ARCH: arm64
+    TRIPLET: aarch64-linux-gnu
+
+# Combine the per-arch images into a multi-arch manifest list. manifest-tool
+# replaces the literal `ARCH` token in --template with each platform's arch
+# (amd64 / arm64), matching the arch-suffixed tags the build jobs pushed, and
+# stamps the assembled index with the consumer-facing tags: PRIMARY_TAG, the
+# commit-sha tag, and (on release tags) the floating minor-series tag
+# (e.g. v0.2.0rc1 → :v0.2). kaniko's debug image ships busybox sh/grep with -oE.
+manifest:
+  stage: manifest
+  needs: [kaniko-build-amd64, kaniko-build-arm64]
+  image:
+    name: mplatform/manifest-tool:alpine
+    entrypoint: [""]
+  tags: [amd64]
+  interruptible: true
+  rules: !reference [.publish-rules, rules]
+  script:
+    - |
+      ADDL_TAGS="sha-$CI_COMMIT_SHORT_SHA"
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        SERIES_TAG=$(printf '%s' "$CI_COMMIT_TAG" | grep -oE '^v[0-9]+\.[0-9]+' || true)
+        [ -n "$SERIES_TAG" ] && ADDL_TAGS="$ADDL_TAGS,$SERIES_TAG"
+      fi
+      manifest-tool \
+        --username "$CI_REGISTRY_USER" \
+        --password "$CI_REGISTRY_PASSWORD" \
+        push from-args \
+        --platforms linux/amd64,linux/arm64 \
+        --template "$IMAGE:$PRIMARY_TAG-ARCH" \
+        --target "$IMAGE:$PRIMARY_TAG" \
+        --tags "$ADDL_TAGS"
