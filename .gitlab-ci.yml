@@ -100,8 +100,9 @@ cargo-test:
 # Per-architecture container build. `needs: []` lets the kaniko jobs start as
 # soon as the pipeline is created instead of waiting for `cargo-test` — the
 # container build is independent of the cargo lint/test suite. Each concrete
-# job below pins itself to a native runner and sets ARCH + TRIPLET; this
-# template holds everything they share. Only the arch-suffixed tag
+# job below pins itself to a native runner and sets ARCH (amd64 also opts into
+# the GPU-runner /lib workaround); this template holds what they share. Only
+# the arch-suffixed tag
 # (:<tag>-<arch>) is pushed here — the consumer-facing tags are assembled by
 # the `manifest` job.
 .kaniko-build:
@@ -114,13 +115,14 @@ cargo-test:
   interruptible: true
   rules: !reference [.publish-rules, rules]
   before_script:
-    # --ignore-path=/lib (below) stops kaniko snapshotting /lib, so the
-    # usr-merge symlink for the multilib dir isn't recreated in the image and
-    # the runtime's dynamic linker can't find libc/libssl. Recreate it by hand
-    # for this arch's triplet before the build. (/lib is ignored because GPU
-    # runners bind-mount host NVIDIA firmware there, which kaniko can't unmount
-    # to rebuild the tree.)
-    - mkdir -p /lib && ln -sfn /usr/lib/$TRIPLET /lib/$TRIPLET
+    # GPU-runner firmware workaround — amd64 only (see KANIKO_LIB_IGNORE below).
+    # The amd64 builders are NVIDIA GPU hosts that bind-mount host firmware into
+    # /lib, so kaniko must --ignore-path=/lib; that drops the multilib dir, so
+    # recreate it for this arch's triplet. This is NOT applied on arm64: the
+    # OrbStack runner has no firmware mount, and on aarch64 the ELF interpreter
+    # /lib/ld-linux-aarch64.so.1 lives directly in /lib, so ignoring /lib would
+    # make every `RUN` fail with `exec /bin/sh: no such file or directory`.
+    - if [ -n "$KANIKO_LIB_IGNORE" ]; then mkdir -p /lib && ln -sfn /usr/lib/$TRIPLET /lib/$TRIPLET; fi
     - mkdir -p /kaniko/.docker
     - |
       printf '{"auths":{"%s":{"auth":"%s"}}}\n' \
@@ -140,21 +142,23 @@ cargo-test:
         --build-arg "SUBSTRATE_CLI_GIT_COMMIT_HASH=$CI_COMMIT_SHORT_SHA" \
         --cache=true \
         --cache-repo "$CACHE_IMAGE-$ARCH" \
-        --ignore-path=/lib
+        $KANIKO_LIB_IGNORE
 
 kaniko-build-amd64:
   extends: .kaniko-build
   tags: [docker, amd64]
   variables:
     ARCH: amd64
+    # GPU runners bind-mount firmware into /lib; ignore it + shim the multilib
+    # dir (TRIPLET). arm64 deliberately sets neither — see the before_script.
     TRIPLET: x86_64-linux-gnu
+    KANIKO_LIB_IGNORE: "--ignore-path=/lib"
 
 kaniko-build-arm64:
   extends: .kaniko-build
   tags: [docker, arm64]
   variables:
     ARCH: arm64
-    TRIPLET: aarch64-linux-gnu
 
 # Combine the per-arch images into a multi-arch manifest list. manifest-tool
 # replaces the literal `ARCH` token in --template with each platform's arch
