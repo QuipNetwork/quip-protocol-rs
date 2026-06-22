@@ -45,7 +45,12 @@ stages:
 variables:
   TOOLCHAIN_IMAGE: docker.io/carback1/rust-substrate-builder:latest
   IMAGE: $CI_REGISTRY_IMAGE/quip-network-node
-  CACHE_IMAGE: $CI_REGISTRY_IMAGE/quip-network-node:buildcache
+  # Tagless repository: kaniko's --cache-repo must be a bare repo, not a tag
+  # ref. A ':buildcache' tag here makes kaniko reject the cache destination
+  # ("repository can only contain the characters ...") and silently skip every
+  # cache upload, so builds never warm. The per-arch suffix is appended in the
+  # build job (-> quip-network-node-buildcache-<arch>).
+  CACHE_IMAGE: $CI_REGISTRY_IMAGE/quip-network-node-buildcache
   # Keep Cargo's registry and the workspace target/ inside the project dir so
   # the GitLab CI cache can pick them up between runs.
   CARGO_HOME: $CI_PROJECT_DIR/.cargo
