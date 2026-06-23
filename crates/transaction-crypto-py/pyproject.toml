@@ -1,0 +1,22 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "quip-signer"
+version = "0.1.0"
+description = "Quip hybrid (sr25519 + ML-DSA-44) transaction signer"
+requires-python = ">=3.9"
+license = { text = "MIT-0" }
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3 :: Only",
+]
+
+[tool.maturin]
+# Mixed layout: the Rust extension `_quip_signer` is dropped into the
+# `quip_signer` Python package living at py/quip-signer/, which re-exports it
+# and ships type stubs. That dir doubles as the submodule staging location.
+module-name = "quip_signer._quip_signer"
+python-source = "../../py/quip-signer"
+manifest-path = "Cargo.toml"
