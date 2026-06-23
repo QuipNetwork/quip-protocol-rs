@@ -128,13 +128,6 @@ cargo-test:
     # /lib/ld-linux-aarch64.so.1 lives directly in /lib, so ignoring /lib would
     # make every `RUN` fail with `exec /bin/sh: no such file or directory`.
     - if [ -n "$KANIKO_LIB_IGNORE" ]; then mkdir -p /lib && ln -sfn /usr/lib/$TRIPLET /lib/$TRIPLET; fi
-    # Normalize build-context mtimes to a fixed timestamp. Each CI run does a
-    # fresh git checkout that resets every file's mtime, and kaniko folds file
-    # metadata into the cache key for COPY-derived layers — so without this the
-    # cargo-chef `cook` layer never cache-hits across runs. The builder stage
-    # re-touches sources to "now" before the final build (see Dockerfile) so
-    # cargo still rebuilds the real crates rather than shipping cook's stubs.
-    - find "$CI_PROJECT_DIR" -path "$CI_PROJECT_DIR/.git" -prune -o -exec touch -t 202001010000 {} \;
     - mkdir -p /kaniko/.docker
     - |
       printf '{"auths":{"%s":{"auth":"%s"}}}\n' \
@@ -153,7 +146,6 @@ cargo-test:
         --destination "$IMAGE:$PRIMARY_TAG-$ARCH" \
         --build-arg "SUBSTRATE_CLI_GIT_COMMIT_HASH=$CI_COMMIT_SHORT_SHA" \
         --cache=true \
-        --cache-copy-layers=true \
         --cache-repo "$CACHE_IMAGE-$ARCH" \
         $KANIKO_LIB_IGNORE \
         $KANIKO_EXTRA
@@ -171,9 +163,9 @@ kaniko-build-amd64:
 kaniko-build-arm64:
   extends: .kaniko-build
   tags: [docker, arm64]
-  # The OrbStack runner is slower than the amd64 boxes; a cold cargo-chef `cook`
-  # (full dep compile + cache-layer push) can exceed the 90m template default.
-  # Once the cook layer is warm in the registry cache this drops to minutes.
+  # The OrbStack/Colima Mac runner is slower than the amd64 boxes; a full
+  # Substrate release compile + kaniko snapshot can run long, so give it more
+  # than the 90m template default.
   timeout: 180m
   variables:
     ARCH: arm64
