@@ -24,7 +24,14 @@ RUN rustup target add wasm32v1-none \
 # url.insteadOf to take effect (cargo's libgit2 backend ignores it).
 RUN cargo install cargo-chef --locked --version '^0.1' \
  && git config --global url."https://gitlab.com/".insteadOf "ssh://git@gitlab.com/"
-ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
+# Harden crate downloads against the runner VM's flaky network. cargo's HTTP/2
+# multiplexing stalls on crates.io from VMs/CI ("[28] Timeout was reached /
+# failed to transfer more than 10 bytes in 30s"); force HTTP/1.1 and retry more.
+# The runtime's wasm build (substrate-wasm-builder) resolves + downloads its
+# full dependency graph at build time, so it's especially exposed.
+ENV CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    CARGO_NET_RETRY=10 \
+    CARGO_HTTP_MULTIPLEXING=false
 WORKDIR /build
 
 # Planner: distil the dependency graph into recipe.json. cargo-chef's `prepare`
