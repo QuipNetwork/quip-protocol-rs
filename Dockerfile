@@ -27,21 +27,34 @@ RUN cargo install cargo-chef --locked --version '^0.1' \
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
 WORKDIR /build
 
-# Planner: distil the workspace's dependency graph into recipe.json. This layer
-# changes only when Cargo.toml/Cargo.lock change, so the expensive `cook` below
-# is reused across source-only edits.
+# Planner: copy ONLY the workspace manifests + build scripts and distil the
+# dependency graph into recipe.json. recipe.json is derived purely from the
+# Cargo.toml/Cargo.lock graph, so it (and therefore the expensive `cook` layer
+# below) is independent of source edits — a .rs change no longer busts the
+# dependency cache. The COPY list is explicit; update it when a workspace
+# member is added or removed.
 FROM chef AS planner
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY node/Cargo.toml node/build.rs node/
+COPY runtime/Cargo.toml runtime/build.rs runtime/
+COPY crates/quantum-validation/Cargo.toml crates/quantum-validation/
+COPY crates/transaction-crypto/Cargo.toml crates/transaction-crypto/
+COPY pallets/faucet-ops/Cargo.toml pallets/faucet-ops/
+COPY pallets/miner-registry/Cargo.toml pallets/miner-registry/
+COPY pallets/quantum-compute-mempool/Cargo.toml pallets/quantum-compute-mempool/
+COPY pallets/quantum-pow/Cargo.toml pallets/quantum-pow/
+COPY pallets/template/Cargo.toml pallets/template/
+COPY pallets/xqvm/Cargo.toml pallets/xqvm/
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Builder: compile just the dependencies from the recipe (the slow part, ~the
 # whole polkadot-sdk tree) as one cached layer, then build the workspace.
-# kaniko snapshots/caches the `cook` layer keyed on recipe.json, so dep-stable
-# pushes skip it entirely and only the workspace crates (+ the wasm runtime,
-# which substrate-wasm-builder compiles during the final build) are rebuilt.
+# SKIP_WASM_BUILD=1 keeps the runtime build script (substrate-wasm-builder)
+# from trying to compile the wasm runtime against cargo-chef's stub sources;
+# the real wasm runtime is built in the final `cargo build` below.
 FROM chef AS builder
 COPY --from=planner /build/recipe.json recipe.json
-RUN cargo chef cook --release -p quip-network-node --recipe-path recipe.json
+RUN SKIP_WASM_BUILD=1 cargo chef cook --release -p quip-network-node --recipe-path recipe.json
 
 # `substrate-build-script-utils` embeds the commit hash into
 # `SUBSTRATE_CLI_IMPL_VERSION` (what `--version` prints). It checks the
@@ -54,7 +67,14 @@ ARG SUBSTRATE_CLI_GIT_COMMIT_HASH=""
 ENV SUBSTRATE_CLI_GIT_COMMIT_HASH=${SUBSTRATE_CLI_GIT_COMMIT_HASH}
 
 COPY . .
-RUN cargo build --release -p quip-network-node \
+# cargo-chef built the workspace crates as stubs during `cook`; cargo decides
+# whether to rebuild them from source mtime. CI normalizes context mtimes to a
+# fixed value for a stable kaniko cache key (see .gitlab-ci.yml), which can
+# leave the real sources looking older than the cooked stub artifacts — cargo
+# would then skip the rebuild and ship the stubs. Touch the sources to "now" so
+# they are unambiguously newer and the real crates (and wasm runtime) rebuild.
+RUN find . -name '*.rs' -exec touch {} + \
+ && cargo build --release -p quip-network-node \
  && cp target/release/quip-network-node /usr/local/bin/quip-network-node
 
 FROM debian:${DEBIAN_VERSION}-slim AS runtime
