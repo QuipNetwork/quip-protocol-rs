@@ -84,6 +84,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates libssl3 gosu \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --home-dir /data --uid 1000 --shell /bin/false quip
+# db_version self-heal target for entrypoint.sh. Must equal sc-client-db's
+# CURRENT_VERSION (substrate/client/db/src/upgrade.rs); bump in lockstep when a
+# database schema migration lands in the pinned polkadot-sdk.
+ENV QUIP_DB_VERSION=4
 COPY --from=builder /usr/local/bin/quip-network-node /usr/local/bin/quip-network-node
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
