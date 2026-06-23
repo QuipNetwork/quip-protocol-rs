@@ -134,7 +134,7 @@ cargo-test:
     # cargo-chef `cook` layer never cache-hits across runs. The builder stage
     # re-touches sources to "now" before the final build (see Dockerfile) so
     # cargo still rebuilds the real crates rather than shipping cook's stubs.
-    - find "$CI_PROJECT_DIR" -path "$CI_PROJECT_DIR/.git" -prune -o -exec touch -t 202001010000 {} +
+    - find "$CI_PROJECT_DIR" -path "$CI_PROJECT_DIR/.git" -prune -o -exec touch -t 202001010000 {} \;
     - mkdir -p /kaniko/.docker
     - |
       printf '{"auths":{"%s":{"auth":"%s"}}}\n' \
