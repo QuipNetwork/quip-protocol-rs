@@ -27,24 +27,16 @@ RUN cargo install cargo-chef --locked --version '^0.1' \
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=true
 WORKDIR /build
 
-# Planner: copy ONLY the workspace manifests + build scripts and distil the
-# dependency graph into recipe.json. recipe.json is derived purely from the
-# Cargo.toml/Cargo.lock graph, so it (and therefore the expensive `cook` layer
-# below) is independent of source edits — a .rs change no longer busts the
-# dependency cache. The COPY list is explicit; update it when a workspace
-# member is added or removed.
+# Planner: distil the dependency graph into recipe.json. cargo-chef's `prepare`
+# runs `cargo metadata`, which loads the whole workspace, so it needs the full
+# tree (a manifest-only COPY fails to resolve workspace members). recipe.json
+# is still derived purely from the Cargo.toml/Cargo.lock graph — identical for a
+# given lockfile regardless of source — so the `cook` layer below stays cached
+# across source-only edits because kaniko keys `COPY --from=planner recipe.json`
+# on the file's content. CI normalizes context mtimes so the key is stable
+# across the fresh checkout each run does (see .gitlab-ci.yml).
 FROM chef AS planner
-COPY Cargo.toml Cargo.lock ./
-COPY node/Cargo.toml node/build.rs node/
-COPY runtime/Cargo.toml runtime/build.rs runtime/
-COPY crates/quantum-validation/Cargo.toml crates/quantum-validation/
-COPY crates/transaction-crypto/Cargo.toml crates/transaction-crypto/
-COPY pallets/faucet-ops/Cargo.toml pallets/faucet-ops/
-COPY pallets/miner-registry/Cargo.toml pallets/miner-registry/
-COPY pallets/quantum-compute-mempool/Cargo.toml pallets/quantum-compute-mempool/
-COPY pallets/quantum-pow/Cargo.toml pallets/quantum-pow/
-COPY pallets/template/Cargo.toml pallets/template/
-COPY pallets/xqvm/Cargo.toml pallets/xqvm/
+COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Builder: compile just the dependencies from the recipe (the slow part, ~the
