@@ -761,6 +761,7 @@ pub mod pallet {
                 submitted_at: frame_system::Pallet::<T>::block_number(),
                 energy_milli: validation.best_energy_milli,
                 salt: proof.salt,
+                topology_hash: proof.topology_hash,
             };
 
             let should_replace = match BlockBestProof::<T>::get() {

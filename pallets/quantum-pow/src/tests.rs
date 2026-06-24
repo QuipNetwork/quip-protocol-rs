@@ -180,6 +180,7 @@ fn finalize_winner(miner: u64, block_number: u64) {
         submitted_at: block_number,
         energy_milli: 0,
         salt: [0u8; 32],
+        topology_hash: DefaultTopology::<Test>::get().unwrap_or_default(),
     });
     QuantumPow::on_finalize(block_number);
 }
@@ -1705,4 +1706,19 @@ fn difficulty_adjust_applies_min_delta_for_small_positive_floats() {
         result, current,
         "difficulty must advance by min_delta_milli when raw float delta is small but positive"
     );
+}
+
+#[test]
+fn submit_proof_records_topology_hash() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let (nodes, edges, topology_hash) = registered_topology();
+        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), easy_difficulty()));
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+
+        assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
+
+        let record = BlockBestProof::<Test>::get().expect("best proof recorded");
+        assert_eq!(record.topology_hash, topology_hash);
+    });
 }
