@@ -46,6 +46,10 @@ type QBlockOf<T> = types::QBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>
 type QBlockWithNonceOf<T> = types::QBlockWithNonce<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 
 sp_api::decl_runtime_apis! {
+    /// Version 2 adds the per-topology `difficulty_for` and the
+    /// `mineable_topologies` whitelist query. Clients can feature-detect
+    /// these via the reported API version against older runtimes.
+    #[api_version(2)]
     pub trait QuantumPowApi<BlockNumber, AccountId, Balance, Nodes, Edges, AllowedValues>
     where
         BlockNumber: codec::Codec,
@@ -109,6 +113,13 @@ sp_api::decl_runtime_apis! {
 
         /// Client-facing alias for the live difficulty threshold.
         fn current_hardness() -> crate::types::DifficultyConfig;
+
+        /// Per-topology live difficulty (decay applied), or `None` if the
+        /// topology is not registered.
+        fn difficulty_for(topology_hash: sp_core::H256) -> Option<crate::types::DifficultyConfig>;
+
+        /// Hashes of every topology currently on the mineable whitelist.
+        fn mineable_topologies() -> alloc::vec::Vec<sp_core::H256>;
     }
 }
 
@@ -132,7 +143,7 @@ pub mod pallet {
     use sp_core::H256;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
 
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(3);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -203,8 +214,20 @@ pub mod pallet {
     #[pallet::storage]
     pub type DefaultTopology<T: Config> = StorageValue<_, H256>;
 
+    /// Per-topology difficulty baseline (post-last-adjust; decay is applied
+    /// on read by `current_difficulty_for`). Keyed by `topology_hash` so a
+    /// `DefaultTopology` switch is clean and one topology's winners can never
+    /// pin another's difficulty. Unset entries read back as
+    /// `DifficultyConfig::default()`.
     #[pallet::storage]
-    pub type Difficulty<T: Config> = StorageValue<_, types::DifficultyConfig, ValueQuery>;
+    pub type Difficulties<T: Config> =
+        StorageMap<_, Blake2_128Concat, H256, types::DifficultyConfig>;
+
+    /// Root-controlled whitelist of topologies that may be mined: a topology
+    /// must have an entry here for `submit_proof` to accept its solutions.
+    /// Steady state is `{ DefaultTopology }`.
+    #[pallet::storage]
+    pub type MineableTopologies<T: Config> = StorageMap<_, Blake2_128Concat, H256, ()>;
 
     #[pallet::storage]
     pub type Miners<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, MinerInfoOf<T>>;
@@ -280,11 +303,20 @@ pub mod pallet {
             edge_count: u32,
         },
         DifficultyUpdated {
+            /// The topology whose difficulty baseline changed. Difficulty is
+            /// per-topology, so consumers need this to attribute the update.
+            topology_hash: H256,
             difficulty: types::DifficultyConfig,
         },
         /// `DefaultTopology` was repointed by root. The difficulty energy
         /// curve is calibrated against this topology from now on.
         DefaultTopologySet {
+            topology_hash: H256,
+        },
+        TopologyMineableAdded {
+            topology_hash: H256,
+        },
+        TopologyMineableRemoved {
             topology_hash: H256,
         },
         ProofAccepted {
@@ -337,6 +369,19 @@ pub mod pallet {
         /// (32 bits per spin) is paired with more than `MaxNodes / 4` nodes,
         /// which would leave the topology accepted but unmineable.
         PackedSolutionTooLarge,
+        /// The proof's topology is registered but not on the mineable
+        /// whitelist (`MineableTopologies`).
+        TopologyNotMineable,
+        /// Refused to remove the current `DefaultTopology` from the mineable
+        /// whitelist; repoint the default first.
+        TopologyIsDefault,
+        /// Refused to whitelist a second non-default topology while one is
+        /// already mineable. The difficulty decay anchor (`LastProofBlock`)
+        /// is global (model A: single active topology), so concurrent mining
+        /// of two non-default topologies would let one topology's wins
+        /// mis-drive the other's difficulty. Remove the existing non-default
+        /// mineable topology before adding another.
+        MineableTopologyConflict,
     }
 
     #[pallet::hooks]
@@ -367,53 +412,69 @@ pub mod pallet {
             <T as Config>::WeightInfo::register_miner()
         }
 
-        /// Network upgrade (v0.2 → v2): drop all PoW state instead of carrying
-        /// it forward.
+        /// v2 → v3: difficulty becomes per-topology and a mineable whitelist
+        /// is introduced.
         ///
-        /// The v0.2 storage layout (legacy `WinningSolutions` prefix, old
-        /// `QBlock`/miner encodings, difficulty, topologies) is intentionally
-        /// not migrated. Rather than translate stale encodings we clear the
-        /// entire pallet prefix — which also reaps the renamed `WinningSolutions`
-        /// entries that the current `QBlocks` type no longer references — and
-        /// let the chain repopulate from mining. `Difficulty` reads back at its
-        /// `Default`, identical to a fresh genesis.
-        ///
-        /// The version guard makes this run exactly once: v0.2 chains sit at
-        /// version 1, fresh chains are seeded at version 2 by genesis and skip.
+        /// - on-chain `>= 3`: nothing to do.
+        /// - on-chain `== 2`: carry the single global `Difficulty` into
+        ///   `Difficulties[DefaultTopology]`, seed `MineableTopologies` with
+        ///   the default, and remove the old global value.
+        /// - on-chain `< 2`: legacy v0.2 wipe (old encodings cannot be
+        ///   carried), then proceed to v3 with empty per-topology state.
         fn on_runtime_upgrade() -> Weight {
-            use frame_support::{traits::PalletInfoAccess, StorageHasher};
-
             let on_chain = Pallet::<T>::on_chain_storage_version();
             if on_chain >= STORAGE_VERSION {
                 return T::DbWeight::get().reads(1);
             }
 
-            let pallet_prefix =
-                frame_support::Twox128::hash(<Pallet<T> as PalletInfoAccess>::name().as_bytes());
-            let cleared =
-                frame_support::storage::unhashed::clear_prefix(&pallet_prefix, None, None).backend;
+            let weight = if on_chain == StorageVersion::new(2) {
+                crate::migration::v3::carry_forward::<T>()
+            } else {
+                crate::migration::v3::wipe::<T>()
+            };
 
             STORAGE_VERSION.put::<Pallet<T>>();
-
-            // 1 read (version) + 1 write per cleared key + 1 write (version).
-            T::DbWeight::get().reads_writes(1, u64::from(cleared).saturating_add(1))
+            weight.saturating_add(T::DbWeight::get().reads_writes(1, 1))
         }
 
         #[cfg(feature = "try-runtime")]
         fn pre_upgrade() -> Result<Vec<u8>, sp_runtime::TryRuntimeError> {
-            Ok(Vec::new())
+            // Capture whether the chain was at v2 (as a bool) + the default
+            // topology so post_upgrade can assert the carry-forward preserved
+            // it. StorageVersion has no Into<u16> in this SDK fork; == is
+            // available and a bool is Encode/Decode, so we use that.
+            let was_v2 = Pallet::<T>::on_chain_storage_version() == StorageVersion::new(2);
+            Ok((was_v2, DefaultTopology::<T>::get()).encode())
         }
 
         #[cfg(feature = "try-runtime")]
-        fn post_upgrade(_state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
+        fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
             ensure!(
                 Pallet::<T>::on_chain_storage_version() >= STORAGE_VERSION,
-                "storage version must be bumped by the network upgrade"
+                "storage version must be >= 3 after upgrade"
             );
-            ensure!(
-                QBlockCount::<T>::get() == 0 && Miners::<T>::iter().next().is_none(),
-                "network upgrade must leave PoW state wiped"
-            );
+            let (was_v2, default): (bool, Option<H256>) =
+                Decode::decode(&mut &state[..]).map_err(|_| "pre_upgrade state decode failed")?;
+            if was_v2 {
+                // The old global `Difficulty` value must be gone.
+                ensure!(
+                    frame_support::storage::unhashed::get::<types::DifficultyConfig>(
+                        &crate::migration::v3::old_difficulty_key::<T>()
+                    )
+                    .is_none(),
+                    "v2→v3 must remove the old global Difficulty value"
+                );
+                if let Some(hash) = default {
+                    ensure!(
+                        Difficulties::<T>::contains_key(hash),
+                        "v2→v3 must seed Difficulties[DefaultTopology]"
+                    );
+                    ensure!(
+                        MineableTopologies::<T>::contains_key(hash),
+                        "v2→v3 must whitelist the default topology"
+                    );
+                }
+            }
             Ok(())
         }
 
@@ -449,17 +510,14 @@ pub mod pallet {
                     .saturated_into::<u64>()
             };
 
+            let topology_hash = record.topology_hash;
             // Snapshot the live (decay-applied) threshold this proof had to
-            // clear before adjust_on_proof rewrites it. QBlocks stores
-            // this so explorers and miners can answer "what difficulty did
-            // block N actually clear?" without replaying decay client-side.
-            let active = Self::current_difficulty(n);
+            // clear before adjustment rewrites it.
+            let active = Self::current_difficulty_for(topology_hash, n);
             let winner_streak = Self::update_winner_streak(&record.miner);
             let dominant_winner = Self::is_dominant_streak(&winner_streak);
-            // Curve calibration MUST come from chain state (DefaultTopology),
-            // not from the winning proof. See `current_energy_curve` docs and
-            // GitLab issue #5 for the invariant rationale.
-            let next = match Self::current_energy_curve() {
+            // Adjust ONLY the winning topology's difficulty, using ITS curve.
+            let next = match Self::energy_curve_for(topology_hash) {
                 Some(curve) => crate::difficulty::adjust_on_proof_with_dominance(
                     active,
                     mining_time_blocks,
@@ -467,11 +525,6 @@ pub mod pallet {
                     &(frame_system::Pallet::<T>::parent_hash(), &record.miner, n).encode(),
                     dominant_winner,
                 ),
-                // Unreachable in normal operation: a proof would not have
-                // been submitted without a registered topology, and the
-                // first registration also seeds `DefaultTopology`. The
-                // defensive trips tests/try-runtime and logs in production
-                // so a frozen difficulty is diagnosable, not silent.
                 None => {
                     frame_support::defensive!(
                         "energy curve missing during on_finalize difficulty adjustment"
@@ -479,7 +532,7 @@ pub mod pallet {
                     active
                 }
             };
-            Difficulty::<T>::put(next);
+            Difficulties::<T>::insert(topology_hash, next);
             LastProofBlock::<T>::put(n);
             let qblock_id = Self::next_qblock_id();
 
@@ -498,7 +551,10 @@ pub mod pallet {
             QBlockBlockById::<T>::insert(qblock_id, n);
             QBlockIdByBlock::<T>::insert(n, qblock_id);
 
-            Self::deposit_event(Event::DifficultyUpdated { difficulty: next });
+            Self::deposit_event(Event::DifficultyUpdated {
+                topology_hash,
+                difficulty: next,
+            });
             Self::deposit_event(Event::BlockWinner {
                 qblock_id,
                 block_number: n,
@@ -639,6 +695,10 @@ pub mod pallet {
 
             if DefaultTopology::<T>::get().is_none() {
                 DefaultTopology::<T>::put(topology_hash);
+                // The default topology must always be mineable (the invariant
+                // set_default_topology enforces). Auto-whitelist the first-registered
+                // default so a fresh chain can mine it immediately.
+                MineableTopologies::<T>::insert(topology_hash, ());
             }
 
             Self::deposit_event(Event::TopologyRegistered {
@@ -666,20 +726,43 @@ pub mod pallet {
                 RegisteredTopologies::<T>::contains_key(topology_hash),
                 Error::<T>::TopologyNotRegistered
             );
+            ensure!(
+                MineableTopologies::<T>::contains_key(topology_hash),
+                Error::<T>::TopologyNotMineable
+            );
+            // NOTE (model A): `LastProofBlock` (global decay anchor) is NOT
+            // reset here. Under single-active-topology mining this is fine —
+            // the new default's difficulty reads through decay anchored to the
+            // previous win, which on an actively-mining chain is ~one win old.
+            // If concurrent multi-topology mining (model B) is added, reset
+            // hardness/round state at the switch (see "Future work").
+            // Operators should re-baseline via `set_difficulty(hash, …)` before
+            // repointing when the curves differ materially.
             DefaultTopology::<T>::put(topology_hash);
             Self::deposit_event(Event::DefaultTopologySet { topology_hash });
             Ok(())
         }
 
+        /// Set the difficulty baseline for a specific registered topology.
+        /// Root only. The topology must be registered so no orphan difficulty
+        /// entries can be created.
         #[pallet::call_index(3)]
         #[pallet::weight(<T as Config>::WeightInfo::set_difficulty())]
         pub fn set_difficulty(
             origin: OriginFor<T>,
+            topology_hash: H256,
             difficulty: types::DifficultyConfig,
         ) -> DispatchResult {
             ensure_root(origin)?;
-            Difficulty::<T>::put(difficulty);
-            Self::deposit_event(Event::DifficultyUpdated { difficulty });
+            ensure!(
+                RegisteredTopologies::<T>::contains_key(topology_hash),
+                Error::<T>::TopologyNotRegistered
+            );
+            Difficulties::<T>::insert(topology_hash, difficulty);
+            Self::deposit_event(Event::DifficultyUpdated {
+                topology_hash,
+                difficulty,
+            });
             Ok(())
         }
 
@@ -706,6 +789,10 @@ pub mod pallet {
             // cross-check.
             let topology = RegisteredTopologies::<T>::get(proof.topology_hash)
                 .ok_or(Error::<T>::TopologyNotRegistered)?;
+            ensure!(
+                MineableTopologies::<T>::contains_key(proof.topology_hash),
+                Error::<T>::TopologyNotMineable
+            );
             ensure!(
                 topology.nodes.len() >= T::MinNodes::get() as usize,
                 Error::<T>::GraphTooSmall
@@ -736,7 +823,10 @@ pub mod pallet {
             )
             .map_err(|_| Error::<T>::InvalidTopology)?;
 
-            let current = Self::current_difficulty(frame_system::Pallet::<T>::block_number());
+            let current = Self::current_difficulty_for(
+                proof.topology_hash,
+                frame_system::Pallet::<T>::block_number(),
+            );
             let validation = Self::validate_proof(&proof, &topology, &h, &j, &current)?;
 
             ensure!(
@@ -761,6 +851,7 @@ pub mod pallet {
                 submitted_at: frame_system::Pallet::<T>::block_number(),
                 energy_milli: validation.best_energy_milli,
                 salt: proof.salt,
+                topology_hash: proof.topology_hash,
             };
 
             let should_replace = match BlockBestProof::<T>::get() {
@@ -784,6 +875,54 @@ pub mod pallet {
 
             Ok(())
         }
+
+        /// Add a registered topology to the mineable whitelist. Root only.
+        #[pallet::call_index(6)]
+        #[pallet::weight(<T as Config>::WeightInfo::add_mineable_topology())]
+        pub fn add_mineable_topology(origin: OriginFor<T>, topology_hash: H256) -> DispatchResult {
+            ensure_root(origin)?;
+            ensure!(
+                RegisteredTopologies::<T>::contains_key(topology_hash),
+                Error::<T>::TopologyNotRegistered
+            );
+            if !MineableTopologies::<T>::contains_key(topology_hash) {
+                // Model A: enforce at most one non-default mineable topology
+                // at a time, so the global decay anchor stays correct. The
+                // default is always mineable; this caps the whitelist at
+                // {default, one incoming} during a switch. The scan is
+                // therefore bounded to <=2 keys by this very invariant.
+                let default = DefaultTopology::<T>::get();
+                if Some(topology_hash) != default {
+                    let has_other_non_default =
+                        MineableTopologies::<T>::iter_keys().any(|h| Some(h) != default);
+                    ensure!(!has_other_non_default, Error::<T>::MineableTopologyConflict);
+                }
+                MineableTopologies::<T>::insert(topology_hash, ());
+                Self::deposit_event(Event::TopologyMineableAdded { topology_hash });
+            }
+            Ok(())
+        }
+
+        /// Remove a topology from the mineable whitelist. Root only. Refuses
+        /// to remove the current `DefaultTopology` so the default is always
+        /// mineable.
+        #[pallet::call_index(7)]
+        #[pallet::weight(<T as Config>::WeightInfo::remove_mineable_topology())]
+        pub fn remove_mineable_topology(
+            origin: OriginFor<T>,
+            topology_hash: H256,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            ensure!(
+                DefaultTopology::<T>::get() != Some(topology_hash),
+                Error::<T>::TopologyIsDefault
+            );
+            if MineableTopologies::<T>::contains_key(topology_hash) {
+                MineableTopologies::<T>::remove(topology_hash);
+                Self::deposit_event(Event::TopologyMineableRemoved { topology_hash });
+            }
+            Ok(())
+        }
     }
 
     impl<T: Config> Pallet<T> {
@@ -805,8 +944,21 @@ pub mod pallet {
             Miners::<T>::get(account)
         }
 
-        pub fn current_difficulty_for(block_number: BlockNumberFor<T>) -> types::DifficultyConfig {
-            Self::current_difficulty(block_number)
+        /// Active (decay-applied) difficulty a miner must clear for
+        /// `topology_hash` at `block_number`. Reads the per-topology baseline
+        /// (`Difficulties[hash]`, defaulting when unset) and applies global
+        /// block-based decay since the last winning proof.
+        pub fn current_difficulty_for(
+            topology_hash: H256,
+            block_number: BlockNumberFor<T>,
+        ) -> types::DifficultyConfig {
+            crate::difficulty::current_difficulty(
+                block_number.saturated_into::<u32>(),
+                Difficulties::<T>::get(topology_hash).unwrap_or_default(),
+                LastProofBlock::<T>::get().saturated_into::<u32>(),
+                T::EpochLength::get().saturated_into::<u32>(),
+                Self::energy_curve_for(topology_hash),
+            )
         }
 
         pub fn latest_qblock_id() -> Option<u64> {
@@ -838,7 +990,7 @@ pub mod pallet {
 
             Some(types::MiningSnapshot {
                 last_proof_block_hash,
-                difficulty: Self::current_difficulty_for(block_number),
+                difficulty: Self::current_difficulty_for(topology_hash, block_number),
                 topology_hash,
                 nodes: topology.nodes,
                 edges: topology.edges,
@@ -846,6 +998,22 @@ pub mod pallet {
                 allowed_j_values: topology.allowed_j_values,
                 allowed_spin_values: topology.allowed_spin_values,
             })
+        }
+
+        /// Per-topology live difficulty (decay applied). Returns `None` if
+        /// `topology_hash` has never been registered.
+        pub fn difficulty_for_api(topology_hash: H256) -> Option<types::DifficultyConfig> {
+            RegisteredTopologies::<T>::contains_key(topology_hash).then(|| {
+                Self::current_difficulty_for(
+                    topology_hash,
+                    frame_system::Pallet::<T>::block_number(),
+                )
+            })
+        }
+
+        /// Hashes of every topology currently on the mineable whitelist.
+        pub fn mineable_topologies() -> Vec<H256> {
+            MineableTopologies::<T>::iter_keys().collect()
         }
 
         /// 32-byte representation of an account, suitable for use as a fixed-size
@@ -928,30 +1096,22 @@ pub mod pallet {
             }
         }
 
-        /// Build the energy curve used by `adjust_on_proof` and
-        /// `apply_decay`.
+        /// Build the difficulty energy curve for a specific topology.
         ///
-        /// CRITICAL INVARIANT (see GitLab issue #5 and the topology-registry
-        /// fix that addressed `h_values`-in-proof): the curve depends only
-        /// on chain state. It must never be derived from any field of a
-        /// submitted proof.
+        /// Historically this was hard-pinned to `DefaultTopology` so a miner
+        /// could not shift difficulty by choosing a different *registered*
+        /// topology to mine against (the old anti-gaming invariant). That
+        /// guard is now provided by the **mineable-topology whitelist**: only
+        /// whitelisted topologies can be mined, and each owns its own
+        /// root-set `Difficulties` entry. Deriving the curve from the proof's
+        /// own topology is therefore safe — there is no shared difficulty to
+        /// pin.
         ///
-        /// Specifically: even though `submit_proof` accepts proofs against
-        /// any hash in `RegisteredTopologies`, the curve is calibrated
-        /// against `DefaultTopology::<T>::get()`. Miners cannot shift
-        /// difficulty by choosing a different registered topology to mine
-        /// against.
-        ///
-        /// Returns `None` when `DefaultTopology` is unset (no topology has
-        /// been registered yet). Callers treat that as a defensive no-op —
-        /// in practice the case is unreachable during mining because
-        /// `submit_proof` requires the proof's topology to be registered
-        /// first, and the first registration also seeds `DefaultTopology`.
-        fn current_energy_curve() -> Option<crate::difficulty::EnergyCurve> {
-            let (_, topology) = Self::default_topology_meta()?;
-            // `.ok()` is defensive only: registered topologies passed
-            // `check_spec`, so their specs are never empty/inverted and the
-            // curve construction cannot fail for chain state.
+        /// Returns `None` when the topology is not registered (defensive: a
+        /// proof would not validate, and `set_difficulty` requires
+        /// registration).
+        fn energy_curve_for(topology_hash: H256) -> Option<crate::difficulty::EnergyCurve> {
+            let topology = RegisteredTopologies::<T>::get(topology_hash)?;
             crate::difficulty::EnergyCurve::new(
                 topology.nodes.len() as u32,
                 topology.edges.len() as u32,
@@ -964,16 +1124,6 @@ pub mod pallet {
                 &topology.allowed_j_values.as_slice(),
             )
             .ok()
-        }
-
-        fn current_difficulty(block_number: BlockNumberFor<T>) -> types::DifficultyConfig {
-            crate::difficulty::current_difficulty(
-                block_number.saturated_into::<u32>(),
-                Difficulty::<T>::get(),
-                LastProofBlock::<T>::get().saturated_into::<u32>(),
-                T::EpochLength::get().saturated_into::<u32>(),
-                Self::current_energy_curve(),
-            )
         }
 
         fn update_winner_streak(miner: &T::AccountId) -> WinnerStreakOf<T> {
@@ -1096,6 +1246,60 @@ pub mod pallet {
                 diversity_milli,
                 valid_solution_count: energy_valid_solutions.len() as u32,
             })
+        }
+    }
+}
+
+pub(crate) mod migration {
+    pub(crate) mod v3 {
+        use crate::pallet::{Config, Difficulties, MineableTopologies, Pallet};
+        use crate::{types, BlockBestProof, DefaultTopology};
+        use frame_support::traits::{Get, PalletInfoAccess};
+        use frame_support::weights::Weight;
+        use frame_support::{StorageHasher, Twox128};
+
+        /// Raw storage key of the pre-v3 global `Difficulty` StorageValue:
+        /// `twox128(pallet_name) ++ twox128("Difficulty")`.
+        pub(crate) fn old_difficulty_key<T: Config>() -> [u8; 32] {
+            let mut key = [0u8; 32];
+            key[..16].copy_from_slice(&Twox128::hash(
+                <Pallet<T> as PalletInfoAccess>::name().as_bytes(),
+            ));
+            key[16..].copy_from_slice(&Twox128::hash(b"Difficulty"));
+            key
+        }
+
+        /// 2 → 3: carry the global difficulty into the per-topology map keyed
+        /// by the default topology, whitelist the default, drop the old value.
+        pub(crate) fn carry_forward<T: Config>() -> Weight {
+            let key = old_difficulty_key::<T>();
+            let old: types::DifficultyConfig =
+                frame_support::storage::unhashed::get(&key).unwrap_or_default();
+            let reads = 2u64; // DefaultTopology + old Difficulty
+            let mut writes = 0u64;
+            if let Some(default_hash) = DefaultTopology::<T>::get() {
+                Difficulties::<T>::insert(default_hash, old);
+                MineableTopologies::<T>::insert(default_hash, ());
+                writes = writes.saturating_add(2);
+            }
+            // Drop the old global value. Also kill any transient pre-v3
+            // `BlockBestProof`: `ProofRecord` gains a `topology_hash` field in
+            // v3, so a stale entry would be a different shape. It is always
+            // empty across an upgrade boundary (`on_finalize` take()s it every
+            // block) and `BlockBestProof` is `OptionQuery` (decode failure ⇒
+            // `None`, never a panic) — `kill()` removes all doubt for free.
+            frame_support::storage::unhashed::kill(&key);
+            BlockBestProof::<T>::kill();
+            writes = writes.saturating_add(2);
+            T::DbWeight::get().reads_writes(reads, writes)
+        }
+
+        /// `< 2`: clear the whole pallet prefix (legacy v0.2 encodings).
+        pub(crate) fn wipe<T: Config>() -> Weight {
+            let pallet_prefix = Twox128::hash(<Pallet<T> as PalletInfoAccess>::name().as_bytes());
+            let cleared =
+                frame_support::storage::unhashed::clear_prefix(&pallet_prefix, None, None).backend;
+            T::DbWeight::get().reads_writes(1, u64::from(cleared))
         }
     }
 }

@@ -123,6 +123,9 @@ pub struct ProofRecord<AccountId, BlockNumber> {
     /// it into `QBlocks` without re-reading the (PQ-signed)
     /// extrinsic body.
     pub salt: [u8; 32],
+    /// Topology the winning proof was mined against. `on_finalize` adjusts
+    /// the difficulty entry for *this* topology only — never another's.
+    pub topology_hash: H256,
 }
 
 #[derive(

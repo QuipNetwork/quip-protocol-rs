@@ -2,9 +2,9 @@ use super::mock::*;
 use crate::{
     difficulty, topology,
     types::{DifficultyConfig, ProofRecord, QuantumProof},
-    AllowedValueSetOf, BlockBestProof, BlockProofCount, DefaultTopology, Difficulty,
-    LastProofBlock, LastProofBlockHash, Miners, PackedSpinBytesOf, QBlockBlockById, QBlockCount,
-    QBlockIdByBlock, QBlocks, RegisteredTopologies, WinnerStreak,
+    AllowedValueSetOf, BlockBestProof, BlockProofCount, DefaultTopology, Difficulties,
+    LastProofBlock, LastProofBlockHash, MineableTopologies, Miners, PackedSpinBytesOf,
+    QBlockBlockById, QBlockCount, QBlockIdByBlock, QBlocks, RegisteredTopologies, WinnerStreak,
 };
 use frame_support::{
     assert_noop, assert_ok,
@@ -43,6 +43,24 @@ fn easy_difficulty() -> DifficultyConfig {
         max_energy_milli: i64::MAX,
         min_diversity_milli: 0,
     }
+}
+
+fn default_hash() -> sp_core::H256 {
+    DefaultTopology::<Test>::get().expect("a default topology is registered")
+}
+
+/// Set the difficulty baseline for the current default topology.
+fn set_difficulty_default(difficulty: DifficultyConfig) {
+    assert_ok!(QuantumPow::set_difficulty(
+        RuntimeOrigin::root(),
+        default_hash(),
+        difficulty
+    ));
+}
+
+/// Read the (raw, pre-decay) difficulty baseline for the default topology.
+fn difficulty_default() -> DifficultyConfig {
+    Difficulties::<Test>::get(default_hash()).unwrap_or_default()
 }
 
 fn test_curve_c() -> crate::difficulty::CurveC {
@@ -163,6 +181,7 @@ fn registered_topology() -> (
         allowed_j_spec(),
         allowed_spin_spec(),
     ));
+    MineableTopologies::<Test>::insert(hash, ());
     (nodes, edges, hash)
 }
 
@@ -180,6 +199,7 @@ fn finalize_winner(miner: u64, block_number: u64) {
         submitted_at: block_number,
         energy_milli: 0,
         salt: [0u8; 32],
+        topology_hash: DefaultTopology::<Test>::get().unwrap_or_default(),
     });
     QuantumPow::on_finalize(block_number);
 }
@@ -288,6 +308,35 @@ fn register_topology_works() {
 }
 
 #[test]
+fn first_registration_whitelists_default() {
+    new_test_ext().execute_with(|| {
+        // RAW register (not the auto-whitelisting helper). The first
+        // registration must claim the default AND be auto-whitelisted so a
+        // fresh chain can mine it immediately.
+        let nodes = bounded::<_, MaxNodes>(vec![0, 1]);
+        let edges = bounded::<_, MaxEdges>(vec![(0, 1)]);
+        let hash = topology::hash_topology(
+            &nodes,
+            &edges,
+            &allowed_h_spec().as_slice(),
+            &allowed_j_spec().as_slice(),
+            &allowed_spin_spec().as_slice(),
+        );
+        assert_ok!(QuantumPow::register_topology(
+            RuntimeOrigin::root(),
+            nodes,
+            edges,
+            allowed_h_spec(),
+            allowed_j_spec(),
+            allowed_spin_spec(),
+        ));
+
+        assert_eq!(DefaultTopology::<Test>::get(), Some(hash));
+        assert!(MineableTopologies::<Test>::contains_key(hash));
+    });
+}
+
+#[test]
 fn register_topology_rejects_small_graph() {
     new_test_ext().execute_with(|| {
         assert_noop!(
@@ -323,6 +372,32 @@ fn registered_zero_field_topology() -> sp_core::H256 {
         nodes,
         edges,
         zero_h,
+        allowed_j_spec(),
+        allowed_spin_spec(),
+    ));
+    MineableTopologies::<Test>::insert(hash, ());
+    hash
+}
+
+/// Registers a distinct 2-node topology (nodes `[a, b]`, single edge) WITHOUT
+/// whitelisting it, returning its hash. Distinct node ids yield a distinct
+/// `hash_topology`, so callers get a registered-but-un-mineable topology to
+/// drive the whitelist extrinsics through `add_mineable_topology`.
+fn register_unwhitelisted(a: u32, b: u32) -> sp_core::H256 {
+    let nodes = bounded::<_, MaxNodes>(vec![a, b]);
+    let edges = bounded::<_, MaxEdges>(vec![(a, b)]);
+    let hash = topology::hash_topology(
+        &nodes,
+        &edges,
+        &allowed_h_spec().as_slice(),
+        &allowed_j_spec().as_slice(),
+        &allowed_spin_spec().as_slice(),
+    );
+    assert_ok!(QuantumPow::register_topology(
+        RuntimeOrigin::root(),
+        nodes,
+        edges,
+        allowed_h_spec(),
         allowed_j_spec(),
         allowed_spin_spec(),
     ));
@@ -376,7 +451,7 @@ fn set_default_topology_repoints_default_and_curve() {
             max_energy_milli: -10_000,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
         System::set_block_number(101); // (101 - 1) / 20 = 5 decay steps
 
@@ -439,15 +514,34 @@ fn register_topology_rejects_empty_spin_spec() {
 #[test]
 fn set_difficulty_requires_root() {
     new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
         let difficulty = DifficultyConfig {
             min_solutions: 2,
             max_energy_milli: -1_000,
             min_diversity_milli: 500,
         };
-
         assert_noop!(
-            QuantumPow::set_difficulty(RuntimeOrigin::signed(1), difficulty),
+            QuantumPow::set_difficulty(RuntimeOrigin::signed(1), hash, difficulty),
             sp_runtime::DispatchError::BadOrigin
+        );
+    });
+}
+
+#[test]
+fn set_difficulty_rejects_unregistered_topology() {
+    new_test_ext().execute_with(|| {
+        let difficulty = DifficultyConfig {
+            min_solutions: 3,
+            max_energy_milli: -2_000,
+            min_diversity_milli: 800,
+        };
+        assert_noop!(
+            QuantumPow::set_difficulty(
+                RuntimeOrigin::root(),
+                sp_core::H256::repeat_byte(5),
+                difficulty
+            ),
+            crate::Error::<Test>::TopologyNotRegistered
         );
     });
 }
@@ -455,17 +549,18 @@ fn set_difficulty_requires_root() {
 #[test]
 fn set_difficulty_works() {
     new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
         let difficulty = DifficultyConfig {
             min_solutions: 3,
             max_energy_milli: -2_000,
             min_diversity_milli: 800,
         };
-
         assert_ok!(QuantumPow::set_difficulty(
             RuntimeOrigin::root(),
+            hash,
             difficulty
         ));
-        assert_eq!(Difficulty::<Test>::get(), difficulty);
+        assert_eq!(Difficulties::<Test>::get(hash), Some(difficulty));
     });
 }
 
@@ -473,11 +568,8 @@ fn set_difficulty_works() {
 fn submit_proof_accepts_valid_proof() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
         let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
 
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
@@ -491,11 +583,8 @@ fn submit_proof_accepts_valid_proof() {
 fn submit_proof_rejects_invalid_nonce() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
         let mut proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
         proof.nonce = proof.nonce.saturating_add(sp_core::U256::one());
 
@@ -510,11 +599,8 @@ fn submit_proof_rejects_invalid_nonce() {
 fn submit_proof_rejects_solution_with_wrong_byte_length() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
         let mut proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
         // Replace the packed solution with one byte too many for a 2-spin
         // binary-encoded solution (1 byte is enough; we send 2 bytes).
@@ -532,11 +618,8 @@ fn better_proof_replaces_worse_proof() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(2)));
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
 
         let worse = proof_for(1, &nodes, &edges, topology_hash, &[3]);
         let better = proof_for(2, &nodes, &edges, topology_hash, &[0]);
@@ -556,11 +639,8 @@ fn better_proof_replaces_worse_proof() {
 fn on_finalize_pays_block_reward_for_best_proof() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
         let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
         let initial_balance = pallet_balances::Pallet::<Test>::free_balance(1);
 
@@ -582,7 +662,7 @@ fn on_finalize_pays_block_reward_for_best_proof() {
 fn submit_proof_uses_decayed_difficulty_after_block_gap() {
     new_test_ext().execute_with(|| {
         // Regression: submit_proof must validate against the *decayed*
-        // Self::current_difficulty(), not the raw Difficulty::<T>::get().
+        // current_difficulty_for(topology), not the raw Difficulties entry.
         // Under the new curve policy, only max_energy_milli decays — so we
         // build the discriminator out of energy: set the threshold to exactly
         // the proof's best energy (validation requires strict-less-than) so
@@ -616,14 +696,11 @@ fn submit_proof_uses_decayed_difficulty_after_block_gap() {
 
         // Threshold == best energy: validation's strict-less-than gate
         // rejects same-block submissions (no decay yet).
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            DifficultyConfig {
-                min_solutions: 1,
-                max_energy_milli: best_energy_milli,
-                min_diversity_milli: 0,
-            },
-        ));
+        set_difficulty_default(DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: best_energy_milli,
+            min_diversity_milli: 0,
+        });
         let early_proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
         assert_noop!(
             QuantumPow::submit_proof(RuntimeOrigin::signed(1), early_proof),
@@ -649,8 +726,8 @@ fn on_finalize_fast_proof_hardens_difficulty() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
         let initial = easy_difficulty();
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(initial);
 
         LastProofBlock::<Test>::put(1);
         System::set_block_number(10);
@@ -659,7 +736,7 @@ fn on_finalize_fast_proof_hardens_difficulty() {
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
         QuantumPow::on_finalize(System::block_number());
 
-        let next = Difficulty::<Test>::get();
+        let next = difficulty_default();
         // Only the energy threshold moves; the chain-static fields stay put.
         assert!(next.max_energy_milli < initial.max_energy_milli);
         assert_eq!(next.min_solutions, initial.min_solutions);
@@ -681,8 +758,8 @@ fn on_finalize_slow_proof_by_new_winner_hardens_from_decayed_base() {
             max_energy_milli: 0,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(initial);
 
         LastProofBlock::<Test>::put(1);
         System::set_block_number(250);
@@ -697,7 +774,7 @@ fn on_finalize_slow_proof_by_new_winner_hardens_from_decayed_base() {
         );
         QuantumPow::on_finalize(System::block_number());
 
-        let next = Difficulty::<Test>::get();
+        let next = difficulty_default();
         // A slow proof by a non-dominant winner hardens the threshold below
         // the decayed value (gentle 5%±4% band — v0.1 different/new-winner
         // rule). Decay remains the easing pressure between wins.
@@ -729,30 +806,43 @@ fn curve_constants_are_recalibrated() {
 }
 
 #[test]
-fn network_upgrade_wipes_pow_state_and_bumps_version() {
+fn migration_v2_to_v3_carries_difficulty_and_whitelists_default() {
     new_test_ext().execute_with(|| {
-        // Seed v0.2-style state.
-        let (.., hash) = registered_topology();
-        assert!(RegisteredTopologies::<Test>::contains_key(hash));
-        assert_eq!(DefaultTopology::<Test>::get(), Some(hash));
-        Difficulty::<Test>::put(DifficultyConfig {
+        let (_, _, hash) = registered_topology(); // also whitelists in the helper
+                                                  // Simulate a pre-v3 chain: remove the per-topology entry + whitelist
+                                                  // the helper added, write the OLD global value at its raw key, drop to v2.
+        Difficulties::<Test>::remove(hash);
+        MineableTopologies::<Test>::remove(hash);
+        let old = DifficultyConfig {
             min_solutions: 7,
-            max_energy_milli: 12_345,
+            max_energy_milli: -14_620,
             min_diversity_milli: 300,
-        });
-        QBlockCount::<Test>::put(9);
-        // Simulate the on-chain v0.2 storage version so the guard fires.
-        StorageVersion::new(1).put::<QuantumPow>();
+        };
+        let old_key = crate::migration::v3::old_difficulty_key::<Test>();
+        frame_support::storage::unhashed::put(&old_key, &old);
+        StorageVersion::new(2).put::<QuantumPow>();
 
         QuantumPow::on_runtime_upgrade();
 
-        // All PoW state is dropped rather than carried forward.
-        assert!(RegisteredTopologies::<Test>::iter().next().is_none());
-        assert_eq!(DefaultTopology::<Test>::get(), None);
-        assert_eq!(QBlockCount::<Test>::get(), 0);
-        // `Difficulty` reads back at its Default, identical to a fresh chain.
-        assert_eq!(Difficulty::<Test>::get(), DifficultyConfig::default());
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(2));
+        assert_eq!(
+            Difficulties::<Test>::get(hash),
+            Some(old),
+            "global difficulty carried to default topology"
+        );
+        assert!(
+            MineableTopologies::<Test>::contains_key(hash),
+            "default topology whitelisted"
+        );
+        assert!(
+            frame_support::storage::unhashed::get::<DifficultyConfig>(&old_key).is_none(),
+            "old global value removed"
+        );
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(3));
+        // The live threshold for the default now equals the carried value.
+        assert_eq!(
+            QuantumPow::current_difficulty_for(hash, System::block_number()),
+            old
+        );
     });
 }
 
@@ -769,7 +859,7 @@ fn dominant_winner_eases_at_fast_cutoff_but_hardens_below_it() {
             max_energy_milli: curve.knee_milli,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
         // Seed a streak one short of the threshold (3); the next win makes
         // the miner dominant.
@@ -777,7 +867,7 @@ fn dominant_winner_eases_at_fast_cutoff_but_hardens_below_it() {
 
         finalize_winner(1, 61); // elapsed 60 == cutoff -> slow, dominant
 
-        let next = Difficulty::<Test>::get();
+        let next = difficulty_default();
         assert!(
             next.max_energy_milli > initial.max_energy_milli,
             "a dominant winner at 60 elapsed blocks must ease"
@@ -792,13 +882,13 @@ fn dominant_winner_eases_at_fast_cutoff_but_hardens_below_it() {
             max_energy_milli: curve.knee_milli,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
         WinnerStreak::<Test>::put(crate::types::WinnerStreak { miner: 1, count: 2 });
 
         finalize_winner(1, 60); // elapsed 59 < cutoff -> fast, dominance ignored
 
-        let next = Difficulty::<Test>::get();
+        let next = difficulty_default();
         assert!(
             next.max_energy_milli < initial.max_energy_milli,
             "a fast win must harden even for a dominant winner"
@@ -818,7 +908,7 @@ fn slow_win_by_different_miner_hardens() {
             max_energy_milli: curve.knee_milli,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
 
         // Make miner 1 dominant so its slow win eases the threshold up to
@@ -826,12 +916,12 @@ fn slow_win_by_different_miner_hardens() {
         // strict hardening move.
         WinnerStreak::<Test>::put(crate::types::WinnerStreak { miner: 1, count: 2 });
         finalize_winner(1, 100);
-        let after_dominant = Difficulty::<Test>::get();
+        let after_dominant = difficulty_default();
         assert!(after_dominant.max_energy_milli > initial.max_energy_milli);
 
         finalize_winner(2, 200); // different miner, slow win
 
-        let after_switch = Difficulty::<Test>::get();
+        let after_switch = difficulty_default();
         let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
         assert_eq!(streak.miner, 2);
         assert_eq!(streak.count, 1);
@@ -852,17 +942,17 @@ fn repeated_same_winner_forces_easing() {
             max_energy_milli: curve.knee_milli,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
 
         // Slow wins (elapsed >= 60 blocks): dominance easing only applies
         // past the fast cutoff, so space the wins ~100 blocks apart.
         finalize_winner(1, 100);
-        let after_first = Difficulty::<Test>::get();
+        let after_first = difficulty_default();
         assert!(after_first.max_energy_milli < initial.max_energy_milli);
 
         finalize_winner(1, 200);
-        let after_second = Difficulty::<Test>::get();
+        let after_second = difficulty_default();
         // Streak count 2 is still below the threshold (3): slow wins by a
         // non-dominant winner must keep hardening (or hold at the clamp
         // floor) — easing here would fire one win early and raise the value.
@@ -872,7 +962,7 @@ fn repeated_same_winner_forces_easing() {
         );
 
         finalize_winner(1, 300);
-        let after_third = Difficulty::<Test>::get();
+        let after_third = difficulty_default();
         let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
 
         assert_eq!(streak.miner, 1);
@@ -885,26 +975,41 @@ fn repeated_same_winner_forces_easing() {
 }
 
 #[test]
-fn network_upgrade_is_noop_once_at_v2() {
+fn migration_below_v2_wipes_then_bumps_to_v3() {
     new_test_ext().execute_with(|| {
-        // Already at the post-upgrade version (e.g. a fresh genesis chain):
-        // the guard must keep the wipe from re-running and nuking live state.
-        let (.., hash) = registered_topology();
-        let difficulty = DifficultyConfig {
+        let (_, _, hash) = registered_topology();
+        QBlockCount::<Test>::put(9);
+        StorageVersion::new(1).put::<QuantumPow>();
+
+        QuantumPow::on_runtime_upgrade();
+
+        assert!(RegisteredTopologies::<Test>::iter().next().is_none());
+        assert_eq!(DefaultTopology::<Test>::get(), None);
+        assert_eq!(QBlockCount::<Test>::get(), 0);
+        assert!(!MineableTopologies::<Test>::contains_key(hash));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(3));
+    });
+}
+
+#[test]
+fn migration_noop_at_v3() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        let d = DifficultyConfig {
             min_solutions: 7,
-            max_energy_milli: 12_345,
+            max_energy_milli: -1_000,
             min_diversity_milli: 300,
         };
-        Difficulty::<Test>::put(difficulty);
+        Difficulties::<Test>::insert(hash, d);
         QBlockCount::<Test>::put(9);
-        StorageVersion::new(2).put::<QuantumPow>();
+        StorageVersion::new(3).put::<QuantumPow>();
 
         QuantumPow::on_runtime_upgrade();
 
         assert!(RegisteredTopologies::<Test>::contains_key(hash));
-        assert_eq!(Difficulty::<Test>::get(), difficulty);
+        assert_eq!(Difficulties::<Test>::get(hash), Some(d));
         assert_eq!(QBlockCount::<Test>::get(), 9);
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(2));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(3));
     });
 }
 
@@ -919,16 +1024,16 @@ fn zero_easing_threshold_disables_forced_easing() {
             max_energy_milli: curve.knee_milli,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
 
         // Slow wins: with the default threshold (3) the third one would
         // ease for the dominant winner, so this spacing discriminates.
         finalize_winner(1, 100);
         finalize_winner(1, 200);
-        let after_second = Difficulty::<Test>::get();
+        let after_second = difficulty_default();
         finalize_winner(1, 300);
-        let after_third = Difficulty::<Test>::get();
+        let after_third = difficulty_default();
 
         // Without the `threshold > 0` guard, `count >= 0` would force
         // easing on every slow win. A threshold of 0 must mean "disabled":
@@ -992,15 +1097,15 @@ fn winner_streak_resets_for_different_miner() {
             max_energy_milli: curve.knee_milli,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
 
         finalize_winner(1, 10);
         finalize_winner(1, 20);
-        let before_reset = Difficulty::<Test>::get();
+        let before_reset = difficulty_default();
 
         finalize_winner(2, 30);
-        let after_reset = Difficulty::<Test>::get();
+        let after_reset = difficulty_default();
         let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
 
         assert_eq!(streak.miner, 2);
@@ -1024,11 +1129,8 @@ fn winner_streak_resets_for_different_miner() {
 fn on_finalize_persists_qblock_with_recoverable_nonce() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
         // Capture the seed the round will use, before submit_proof, so the
         // assertion below pins the chain-stored value against the value
         // the helper actually fed into derive_nonce.
@@ -1119,12 +1221,8 @@ fn qblock_ids_increment_only_for_winning_qblocks() {
 #[test]
 fn mining_snapshot_returns_default_and_selected_topology_views() {
     new_test_ext().execute_with(|| {
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
-
         let (default_nodes, default_edges, default_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
 
         let other_nodes = bounded::<_, MaxNodes>(vec![10, 11, 12]);
         let other_edges = bounded::<_, MaxEdges>(vec![(10, 11), (11, 12)]);
@@ -1184,8 +1282,8 @@ fn qblock_records_active_difficulty_threshold() {
             max_energy_milli: i64::MAX,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(initial);
 
         LastProofBlock::<Test>::put(1);
         System::set_block_number(45); // (45 - 1) / 20 = 2 decay steps
@@ -1203,7 +1301,7 @@ fn qblock_records_active_difficulty_threshold() {
         // Mining time blocks = 45 - 1 = 44 < harden cutoff (60), so the
         // adjustment hardens. Only the energy threshold moves now; chain-static
         // fields stay put.
-        let next = Difficulty::<Test>::get();
+        let next = difficulty_default();
         assert!(
             next.max_energy_milli < expected_active.max_energy_milli,
             "post-adjust energy must be harder (more negative) than the active threshold"
@@ -1227,8 +1325,8 @@ fn mining_snapshot_returns_decayed_difficulty_after_epochs() {
             max_energy_milli: 0,
             min_diversity_milli: 100,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
         let _ = registered_topology();
+        set_difficulty_default(initial);
 
         LastProofBlock::<Test>::put(1);
         System::set_block_number(121); // (121 - 1) / 20 = 6 decay steps
@@ -1244,7 +1342,7 @@ fn mining_snapshot_returns_decayed_difficulty_after_epochs() {
         // Direct storage query (the polkadot.js default path) must still
         // return the undecayed baseline — this is the visibility gap that the
         // runtime API closes.
-        assert_eq!(Difficulty::<Test>::get(), initial);
+        assert_eq!(difficulty_default(), initial);
     });
 }
 
@@ -1257,11 +1355,8 @@ fn submit_proof_survives_long_block_gap() {
     // this scenario produced InvalidNonce.
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
 
         // Derive at block 1 (default after new_test_ext).
         let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
@@ -1285,11 +1380,8 @@ fn submit_proof_rejected_after_intervening_win() {
     // across rounds.
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
 
         // Derive against the current last proof block hash (`block_hash(0)` in the
         // test env — defaults to zero, but the value itself is incidental
@@ -1522,7 +1614,7 @@ fn energy_curve_uses_default_topology_not_other_registered() {
             max_energy_milli: curve_a.knee_milli,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
         System::set_block_number(101); // (101 - 1) / 20 = 5 decay steps
 
@@ -1705,4 +1797,347 @@ fn difficulty_adjust_applies_min_delta_for_small_positive_floats() {
         result, current,
         "difficulty must advance by min_delta_milli when raw float delta is small but positive"
     );
+}
+
+#[test]
+fn submit_proof_records_topology_hash() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+
+        assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
+
+        let record = BlockBestProof::<Test>::get().expect("best proof recorded");
+        assert_eq!(record.topology_hash, topology_hash);
+    });
+}
+
+#[test]
+fn winning_topology_does_not_move_other_topology_difficulty() {
+    new_test_ext().execute_with(|| {
+        // Topology A (ternary-h) is default; topology B (zero-field) is a
+        // second registered topology. Each gets its own difficulty entry.
+        let (_, _, hash_a) = registered_topology();
+        let hash_b = registered_zero_field_topology();
+
+        let diff_a = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: -10_000,
+            min_diversity_milli: 0,
+        };
+        let diff_b = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: -20_000,
+            min_diversity_milli: 0,
+        };
+        Difficulties::<Test>::insert(hash_a, diff_a);
+        Difficulties::<Test>::insert(hash_b, diff_b);
+
+        // A wins (finalize against A). B's difficulty must be untouched.
+        LastProofBlock::<Test>::put(1);
+        System::set_block_number(80);
+        BlockBestProof::<Test>::put(ProofRecord {
+            miner: 1,
+            submitted_at: 80,
+            energy_milli: -10_000,
+            salt: [0u8; 32],
+            topology_hash: hash_a,
+        });
+        QuantumPow::on_finalize(80);
+
+        assert_ne!(
+            Difficulties::<Test>::get(hash_a),
+            Some(diff_a),
+            "A's difficulty must have been adjusted"
+        );
+        assert_eq!(
+            Difficulties::<Test>::get(hash_b),
+            Some(diff_b),
+            "B's difficulty must NOT move when A wins"
+        );
+    });
+}
+
+#[test]
+fn submit_proof_rejects_non_mineable_topology() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        // Register topology A FIRST via the helper so it claims the
+        // auto-whitelisted default. The topology-under-test must NOT be the
+        // first registration — otherwise it would be auto-whitelisted too.
+        let (nodes, edges, _) = registered_topology();
+
+        // Register topology B WITHOUT whitelisting (raw call, not the helper),
+        // with a distinct two-node graph so it gets a distinct hash and stays
+        // un-mineable. Distinct node ids ([5, 6] vs A's [0, 1]) → distinct
+        // `hash_topology` output; same value specs as A so the proof we build
+        // against it is well-formed up to the mineable check.
+        let nodes_b = bounded::<_, MaxNodes>(vec![5, 6]);
+        let edges_b = bounded::<_, MaxEdges>(vec![(5, 6)]);
+        let topology_hash = topology::hash_topology(
+            &nodes_b,
+            &edges_b,
+            &allowed_h_spec().as_slice(),
+            &allowed_j_spec().as_slice(),
+            &allowed_spin_spec().as_slice(),
+        );
+        assert_ok!(QuantumPow::register_topology(
+            RuntimeOrigin::root(),
+            nodes_b,
+            edges_b,
+            allowed_h_spec(),
+            allowed_j_spec(),
+            allowed_spin_spec(),
+        ));
+        assert!(
+            !MineableTopologies::<Test>::contains_key(topology_hash),
+            "second registration must not be auto-whitelisted"
+        );
+        Difficulties::<Test>::insert(topology_hash, easy_difficulty());
+        // Build the proof against A's graph (so `proof_for`'s two-spin
+        // candidate set is consistent) but claim B's un-mineable hash. The
+        // mineable-whitelist check fires before any solution validation, so
+        // the rejection is `TopologyNotMineable` regardless of proof contents.
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof),
+            crate::Error::<Test>::TopologyNotMineable
+        );
+    });
+}
+
+#[test]
+fn add_mineable_topology_requires_root() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        assert_noop!(
+            QuantumPow::add_mineable_topology(RuntimeOrigin::signed(1), hash),
+            sp_runtime::DispatchError::BadOrigin
+        );
+    });
+}
+
+#[test]
+fn add_mineable_topology_rejects_unregistered() {
+    new_test_ext().execute_with(|| {
+        assert_noop!(
+            QuantumPow::add_mineable_topology(RuntimeOrigin::root(), sp_core::H256::repeat_byte(9)),
+            crate::Error::<Test>::TopologyNotRegistered
+        );
+    });
+}
+
+#[test]
+fn remove_mineable_topology_refuses_default() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology(); // becomes default + whitelisted
+        assert_noop!(
+            QuantumPow::remove_mineable_topology(RuntimeOrigin::root(), hash),
+            crate::Error::<Test>::TopologyIsDefault
+        );
+        assert!(MineableTopologies::<Test>::contains_key(hash));
+    });
+}
+
+#[test]
+fn remove_mineable_topology_works_for_non_default() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology(); // default A
+        let hash_b = registered_zero_field_topology(); // whitelisted, not default
+        assert_ok!(QuantumPow::remove_mineable_topology(
+            RuntimeOrigin::root(),
+            hash_b
+        ));
+        assert!(!MineableTopologies::<Test>::contains_key(hash_b));
+    });
+}
+
+#[test]
+fn add_mineable_topology_works_and_is_idempotent() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology(); // A: default + whitelisted
+        let hash_b = register_unwhitelisted(5, 6);
+        assert!(!MineableTopologies::<Test>::contains_key(hash_b));
+
+        // First add whitelists B (the core mechanism: membership here is what
+        // makes a topology mineable).
+        assert_ok!(QuantumPow::add_mineable_topology(
+            RuntimeOrigin::root(),
+            hash_b
+        ));
+        assert!(MineableTopologies::<Test>::contains_key(hash_b));
+
+        // Re-adding the same topology is a no-op success that hits the
+        // `!contains_key` skip branch; B stays mineable.
+        assert_ok!(QuantumPow::add_mineable_topology(
+            RuntimeOrigin::root(),
+            hash_b
+        ));
+        assert!(MineableTopologies::<Test>::contains_key(hash_b));
+    });
+}
+
+#[test]
+fn add_mineable_topology_rejects_second_non_default() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology(); // A: default + whitelisted
+        let hash_b = register_unwhitelisted(5, 6);
+        let hash_c = register_unwhitelisted(7, 8);
+
+        // One non-default topology may be whitelisted: the model-A switch
+        // window of {default, one incoming}.
+        assert_ok!(QuantumPow::add_mineable_topology(
+            RuntimeOrigin::root(),
+            hash_b
+        ));
+
+        // A second concurrent non-default topology is refused — the global
+        // decay anchor only supports one active topology at a time.
+        assert_noop!(
+            QuantumPow::add_mineable_topology(RuntimeOrigin::root(), hash_c),
+            crate::Error::<Test>::MineableTopologyConflict
+        );
+
+        // Remove-old-before-switch: dropping B frees the slot for C.
+        assert_ok!(QuantumPow::remove_mineable_topology(
+            RuntimeOrigin::root(),
+            hash_b
+        ));
+        assert_ok!(QuantumPow::add_mineable_topology(
+            RuntimeOrigin::root(),
+            hash_c
+        ));
+        assert!(MineableTopologies::<Test>::contains_key(hash_c));
+        assert!(!MineableTopologies::<Test>::contains_key(hash_b));
+    });
+}
+
+#[test]
+fn remove_mineable_topology_is_noop_for_non_whitelisted() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology(); // A: default + whitelisted
+        let hash_b = register_unwhitelisted(5, 6); // registered, not mineable
+        assert!(!MineableTopologies::<Test>::contains_key(hash_b));
+
+        // Removing a registered-but-not-whitelisted (non-default) topology is
+        // a silent success that hits the `contains_key` skip branch.
+        assert_ok!(QuantumPow::remove_mineable_topology(
+            RuntimeOrigin::root(),
+            hash_b
+        ));
+        assert!(!MineableTopologies::<Test>::contains_key(hash_b));
+    });
+}
+
+#[test]
+fn set_default_topology_rejects_non_mineable() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology(); // default A, whitelisted
+                                       // Register B without whitelisting.
+        let nodes = bounded::<_, MaxNodes>(vec![0u32, 1, 2, 3]);
+        let edges = bounded::<_, MaxEdges>(vec![(0u32, 1), (1, 2), (2, 3), (0, 3)]);
+        let zero_h: AllowedValueSpec<AllowedValueSetOf<Test>> =
+            AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![0]));
+        let hash_b = topology::hash_topology(
+            &nodes,
+            &edges,
+            &zero_h.as_slice(),
+            &allowed_j_spec().as_slice(),
+            &allowed_spin_spec().as_slice(),
+        );
+        assert_ok!(QuantumPow::register_topology(
+            RuntimeOrigin::root(),
+            nodes,
+            edges,
+            zero_h,
+            allowed_j_spec(),
+            allowed_spin_spec(),
+        ));
+        assert_noop!(
+            QuantumPow::set_default_topology(RuntimeOrigin::root(), hash_b),
+            crate::Error::<Test>::TopologyNotMineable
+        );
+    });
+}
+
+#[test]
+fn difficulty_for_api_returns_per_topology() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash_a) = registered_topology();
+        let hash_b = registered_zero_field_topology();
+        let da = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: -10_000,
+            min_diversity_milli: 0,
+        };
+        let db = DifficultyConfig {
+            min_solutions: 2,
+            max_energy_milli: -20_000,
+            min_diversity_milli: 5,
+        };
+        set_difficulty_default(da); // A is the default
+        assert_ok!(QuantumPow::set_difficulty(
+            RuntimeOrigin::root(),
+            hash_b,
+            db
+        ));
+
+        assert_eq!(QuantumPow::difficulty_for_api(hash_a), Some(da));
+        assert_eq!(QuantumPow::difficulty_for_api(hash_b), Some(db));
+        assert_eq!(
+            QuantumPow::difficulty_for_api(sp_core::H256::repeat_byte(3)),
+            None
+        );
+    });
+}
+
+#[test]
+fn mining_snapshot_some_returns_that_topology_difficulty() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology();
+        let hash_b = registered_zero_field_topology();
+        let db = DifficultyConfig {
+            min_solutions: 2,
+            max_energy_milli: -20_000,
+            min_diversity_milli: 5,
+        };
+        assert_ok!(QuantumPow::set_difficulty(
+            RuntimeOrigin::root(),
+            hash_b,
+            db
+        ));
+
+        let snap = QuantumPow::mining_snapshot(Some(hash_b)).expect("snapshot exists");
+        assert_eq!(snap.topology_hash, hash_b);
+        assert_eq!(snap.difficulty, db); // B's difficulty, not the default's
+    });
+}
+
+#[test]
+fn mineable_topologies_enumerates_whitelist() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash_a) = registered_topology(); // whitelisted (default)
+        let hash_b = registered_zero_field_topology(); // whitelisted
+        let mut got = QuantumPow::mineable_topologies();
+        got.sort();
+        let mut want = vec![hash_a, hash_b];
+        want.sort();
+        assert_eq!(got, want);
+    });
+}
+
+#[test]
+fn unset_whitelisted_topology_reads_default_hard_difficulty() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology();
+        let hash_b = registered_zero_field_topology(); // whitelisted, no set_difficulty
+                                                       // Fails closed: returns the conservative (hard) default until calibrated.
+        assert_eq!(
+            QuantumPow::current_difficulty_for(hash_b, System::block_number()),
+            DifficultyConfig::default()
+        );
+    });
 }

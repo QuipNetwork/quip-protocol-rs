@@ -12,6 +12,8 @@ pub trait WeightInfo {
 	fn set_default_topology() -> Weight;
 	fn set_difficulty() -> Weight;
 	fn submit_proof() -> Weight;
+	fn add_mineable_topology() -> Weight;
+	fn remove_mineable_topology() -> Weight;
 }
 
 // TODO: Generate these weights from the pallet benchmark output now that the
@@ -40,12 +42,13 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 
 	fn set_default_topology() -> Weight {
 		Weight::from_parts(10_000_000, 0)
-			.saturating_add(T::DbWeight::get().reads(1_u64))
+			.saturating_add(T::DbWeight::get().reads(2_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
 
 	fn set_difficulty() -> Weight {
 		Weight::from_parts(10_000_000, 0)
+			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
 
@@ -53,6 +56,18 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 		Weight::from_parts(60_000_000, 0)
 			.saturating_add(T::DbWeight::get().reads(5_u64))
 			.saturating_add(T::DbWeight::get().writes(4_u64))
+	}
+
+	fn add_mineable_topology() -> Weight {
+		Weight::from_parts(10_000_000, 0)
+			.saturating_add(T::DbWeight::get().reads(5_u64))
+			.saturating_add(T::DbWeight::get().writes(1_u64))
+	}
+
+	fn remove_mineable_topology() -> Weight {
+		Weight::from_parts(10_000_000, 0)
+			.saturating_add(T::DbWeight::get().reads(2_u64))
+			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
 }
 
@@ -77,12 +92,13 @@ impl WeightInfo for () {
 
 	fn set_default_topology() -> Weight {
 		Weight::from_parts(10_000_000, 0)
-			.saturating_add(RocksDbWeight::get().reads(1_u64))
+			.saturating_add(RocksDbWeight::get().reads(2_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
 
 	fn set_difficulty() -> Weight {
 		Weight::from_parts(10_000_000, 0)
+			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
 
@@ -90,5 +106,17 @@ impl WeightInfo for () {
 		Weight::from_parts(60_000_000, 0)
 			.saturating_add(RocksDbWeight::get().reads(5_u64))
 			.saturating_add(RocksDbWeight::get().writes(4_u64))
+	}
+
+	fn add_mineable_topology() -> Weight {
+		Weight::from_parts(10_000_000, 0)
+			.saturating_add(RocksDbWeight::get().reads(5_u64))
+			.saturating_add(RocksDbWeight::get().writes(1_u64))
+	}
+
+	fn remove_mineable_topology() -> Weight {
+		Weight::from_parts(10_000_000, 0)
+			.saturating_add(RocksDbWeight::get().reads(2_u64))
+			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
 }

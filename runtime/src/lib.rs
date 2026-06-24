@@ -96,10 +96,18 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // (`ParticipantsByQBlock`, `ParticipantCountByQBlock`) and the
     // `MinerRegistryApi` runtime API. Call encodings are unchanged, so
     // `transaction_version` stays at 3.
-    spec_version: 107,
+    // Bumped to 108 for per-topology difficulty + the mineable-topology
+    // whitelist: `QuantumPow.Difficulty` (global StorageValue) becomes
+    // `Difficulties` (StorageMap keyed by topology hash), `MineableTopologies`
+    // is added, `set_difficulty` gains a `topology_hash` argument, and
+    // `add_mineable_topology`/`remove_mineable_topology` (call_index 6/7) are
+    // added. `set_difficulty`'s argument encoding changed, so
+    // `transaction_version` moves to 4. Pallet storage version 2 → 3 with a
+    // carry-forward migration.
+    spec_version: 108,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
-    transaction_version: 3,
+    transaction_version: 4,
     system_version: 1,
 };
 
