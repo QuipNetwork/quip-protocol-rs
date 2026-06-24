@@ -223,9 +223,9 @@ pub mod pallet {
     pub type Difficulties<T: Config> =
         StorageMap<_, Blake2_128Concat, H256, types::DifficultyConfig>;
 
-    /// Root-controlled set of topologies that may be mined. Registration adds
-    /// a topology to the catalog (`RegisteredTopologies`); membership here is
-    /// what makes it mineable. Steady state is `{ DefaultTopology }`.
+    /// Root-controlled whitelist of topologies that may be mined: a topology
+    /// must have an entry here for `submit_proof` to accept its solutions.
+    /// Steady state is `{ DefaultTopology }`.
     #[pallet::storage]
     pub type MineableTopologies<T: Config> = StorageMap<_, Blake2_128Concat, H256, ()>;
 
