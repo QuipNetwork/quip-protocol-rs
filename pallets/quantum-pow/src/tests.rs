@@ -51,7 +51,10 @@ fn default_hash() -> sp_core::H256 {
 
 /// Set the difficulty baseline for the current default topology.
 fn set_difficulty_default(difficulty: DifficultyConfig) {
-    assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), difficulty));
+    assert_ok!(QuantumPow::set_difficulty(
+        RuntimeOrigin::root(),
+        difficulty
+    ));
 }
 
 /// Read the (raw, pre-decay) difficulty baseline for the default topology.
@@ -1719,8 +1722,16 @@ fn winning_topology_does_not_move_other_topology_difficulty() {
         let (_, _, hash_a) = registered_topology();
         let hash_b = registered_zero_field_topology();
 
-        let diff_a = DifficultyConfig { min_solutions: 1, max_energy_milli: -10_000, min_diversity_milli: 0 };
-        let diff_b = DifficultyConfig { min_solutions: 1, max_energy_milli: -20_000, min_diversity_milli: 0 };
+        let diff_a = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: -10_000,
+            min_diversity_milli: 0,
+        };
+        let diff_b = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: -20_000,
+            min_diversity_milli: 0,
+        };
         Difficulties::<Test>::insert(hash_a, diff_a);
         Difficulties::<Test>::insert(hash_b, diff_b);
 
@@ -1728,11 +1739,23 @@ fn winning_topology_does_not_move_other_topology_difficulty() {
         LastProofBlock::<Test>::put(1);
         System::set_block_number(80);
         BlockBestProof::<Test>::put(ProofRecord {
-            miner: 1, submitted_at: 80, energy_milli: -10_000, salt: [0u8; 32], topology_hash: hash_a,
+            miner: 1,
+            submitted_at: 80,
+            energy_milli: -10_000,
+            salt: [0u8; 32],
+            topology_hash: hash_a,
         });
         QuantumPow::on_finalize(80);
 
-        assert_ne!(Difficulties::<Test>::get(hash_a), Some(diff_a), "A's difficulty must have been adjusted");
-        assert_eq!(Difficulties::<Test>::get(hash_b), Some(diff_b), "B's difficulty must NOT move when A wins");
+        assert_ne!(
+            Difficulties::<Test>::get(hash_a),
+            Some(diff_a),
+            "A's difficulty must have been adjusted"
+        );
+        assert_eq!(
+            Difficulties::<Test>::get(hash_b),
+            Some(diff_b),
+            "B's difficulty must NOT move when A wins"
+        );
     });
 }

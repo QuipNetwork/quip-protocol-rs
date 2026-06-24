@@ -736,8 +736,10 @@ pub mod pallet {
             )
             .map_err(|_| Error::<T>::InvalidTopology)?;
 
-            let current =
-                Self::current_difficulty_for(proof.topology_hash, frame_system::Pallet::<T>::block_number());
+            let current = Self::current_difficulty_for(
+                proof.topology_hash,
+                frame_system::Pallet::<T>::block_number(),
+            );
             let validation = Self::validate_proof(&proof, &topology, &h, &j, &current)?;
 
             ensure!(
