@@ -132,7 +132,7 @@ pub mod pallet {
     use sp_core::H256;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
 
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(3);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -391,53 +391,68 @@ pub mod pallet {
             <T as Config>::WeightInfo::register_miner()
         }
 
-        /// Network upgrade (v0.2 → v2): drop all PoW state instead of carrying
-        /// it forward.
+        /// v2 → v3: difficulty becomes per-topology and a mineable whitelist
+        /// is introduced.
         ///
-        /// The v0.2 storage layout (legacy `WinningSolutions` prefix, old
-        /// `QBlock`/miner encodings, difficulty, topologies) is intentionally
-        /// not migrated. Rather than translate stale encodings we clear the
-        /// entire pallet prefix — which also reaps the renamed `WinningSolutions`
-        /// entries that the current `QBlocks` type no longer references — and
-        /// let the chain repopulate from mining. `Difficulty` reads back at its
-        /// `Default`, identical to a fresh genesis.
-        ///
-        /// The version guard makes this run exactly once: v0.2 chains sit at
-        /// version 1, fresh chains are seeded at version 2 by genesis and skip.
+        /// - on-chain `>= 3`: nothing to do.
+        /// - on-chain `== 2`: carry the single global `Difficulty` into
+        ///   `Difficulties[DefaultTopology]`, seed `MineableTopologies` with
+        ///   the default, and remove the old global value.
+        /// - on-chain `< 2`: legacy v0.2 wipe (old encodings cannot be
+        ///   carried), then proceed to v3 with empty per-topology state.
         fn on_runtime_upgrade() -> Weight {
-            use frame_support::{traits::PalletInfoAccess, StorageHasher};
-
             let on_chain = Pallet::<T>::on_chain_storage_version();
             if on_chain >= STORAGE_VERSION {
                 return T::DbWeight::get().reads(1);
             }
 
-            let pallet_prefix =
-                frame_support::Twox128::hash(<Pallet<T> as PalletInfoAccess>::name().as_bytes());
-            let cleared =
-                frame_support::storage::unhashed::clear_prefix(&pallet_prefix, None, None).backend;
+            let weight = if on_chain == StorageVersion::new(2) {
+                crate::migration::v3::carry_forward::<T>()
+            } else {
+                crate::migration::v3::wipe::<T>()
+            };
 
             STORAGE_VERSION.put::<Pallet<T>>();
-
-            // 1 read (version) + 1 write per cleared key + 1 write (version).
-            T::DbWeight::get().reads_writes(1, u64::from(cleared).saturating_add(1))
+            weight.saturating_add(T::DbWeight::get().reads_writes(1, 1))
         }
 
         #[cfg(feature = "try-runtime")]
         fn pre_upgrade() -> Result<Vec<u8>, sp_runtime::TryRuntimeError> {
-            Ok(Vec::new())
+            // Capture the pre-upgrade version (as a plain u16 to avoid any
+            // StorageVersion codec ambiguity) + the default topology so
+            // post_upgrade can assert the carry-forward preserved it.
+            let prev: u16 = Pallet::<T>::on_chain_storage_version().into();
+            Ok((prev, DefaultTopology::<T>::get()).encode())
         }
 
         #[cfg(feature = "try-runtime")]
-        fn post_upgrade(_state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
+        fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
             ensure!(
                 Pallet::<T>::on_chain_storage_version() >= STORAGE_VERSION,
-                "storage version must be bumped by the network upgrade"
+                "storage version must be >= 3 after upgrade"
             );
-            ensure!(
-                QBlockCount::<T>::get() == 0 && Miners::<T>::iter().next().is_none(),
-                "network upgrade must leave PoW state wiped"
-            );
+            let (prev, default): (u16, Option<H256>) =
+                Decode::decode(&mut &state[..]).map_err(|_| "pre_upgrade state decode failed")?;
+            if prev == 2 {
+                // The old global `Difficulty` value must be gone.
+                ensure!(
+                    frame_support::storage::unhashed::get::<types::DifficultyConfig>(
+                        &crate::migration::v3::old_difficulty_key::<T>()
+                    )
+                    .is_none(),
+                    "v2→v3 must remove the old global Difficulty value"
+                );
+                if let Some(hash) = default {
+                    ensure!(
+                        Difficulties::<T>::contains_key(hash),
+                        "v2→v3 must seed Difficulties[DefaultTopology]"
+                    );
+                    ensure!(
+                        MineableTopologies::<T>::contains_key(hash),
+                        "v2→v3 must whitelist the default topology"
+                    );
+                }
+            }
             Ok(())
         }
 
@@ -699,16 +714,22 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Set the difficulty baseline for a specific registered topology.
+        /// Root only. The topology must be registered so no orphan difficulty
+        /// entries can be created.
         #[pallet::call_index(3)]
         #[pallet::weight(<T as Config>::WeightInfo::set_difficulty())]
         pub fn set_difficulty(
             origin: OriginFor<T>,
+            topology_hash: H256,
             difficulty: types::DifficultyConfig,
         ) -> DispatchResult {
             ensure_root(origin)?;
-            if let Some(hash) = DefaultTopology::<T>::get() {
-                Difficulties::<T>::insert(hash, difficulty);
-            }
+            ensure!(
+                RegisteredTopologies::<T>::contains_key(topology_hash),
+                Error::<T>::TopologyNotRegistered
+            );
+            Difficulties::<T>::insert(topology_hash, difficulty);
             Self::deposit_event(Event::DifficultyUpdated { difficulty });
             Ok(())
         }
@@ -1162,6 +1183,60 @@ pub mod pallet {
                 diversity_milli,
                 valid_solution_count: energy_valid_solutions.len() as u32,
             })
+        }
+    }
+}
+
+pub(crate) mod migration {
+    pub(crate) mod v3 {
+        use crate::pallet::{Config, Difficulties, MineableTopologies, Pallet};
+        use crate::{types, BlockBestProof, DefaultTopology};
+        use frame_support::traits::{Get, PalletInfoAccess};
+        use frame_support::weights::Weight;
+        use frame_support::{StorageHasher, Twox128};
+
+        /// Raw storage key of the pre-v3 global `Difficulty` StorageValue:
+        /// `twox128(pallet_name) ++ twox128("Difficulty")`.
+        pub(crate) fn old_difficulty_key<T: Config>() -> [u8; 32] {
+            let mut key = [0u8; 32];
+            key[..16].copy_from_slice(&Twox128::hash(
+                <Pallet<T> as PalletInfoAccess>::name().as_bytes(),
+            ));
+            key[16..].copy_from_slice(&Twox128::hash(b"Difficulty"));
+            key
+        }
+
+        /// 2 → 3: carry the global difficulty into the per-topology map keyed
+        /// by the default topology, whitelist the default, drop the old value.
+        pub(crate) fn carry_forward<T: Config>() -> Weight {
+            let key = old_difficulty_key::<T>();
+            let old: types::DifficultyConfig =
+                frame_support::storage::unhashed::get(&key).unwrap_or_default();
+            let reads = 2u64; // DefaultTopology + old Difficulty
+            let mut writes = 0u64;
+            if let Some(default_hash) = DefaultTopology::<T>::get() {
+                Difficulties::<T>::insert(default_hash, old);
+                MineableTopologies::<T>::insert(default_hash, ());
+                writes = writes.saturating_add(2);
+            }
+            // Drop the old global value. Also kill any transient pre-v3
+            // `BlockBestProof`: `ProofRecord` gains a `topology_hash` field in
+            // v3, so a stale entry would be a different shape. It is always
+            // empty across an upgrade boundary (`on_finalize` take()s it every
+            // block) and `BlockBestProof` is `OptionQuery` (decode failure ⇒
+            // `None`, never a panic) — `kill()` removes all doubt for free.
+            frame_support::storage::unhashed::kill(&key);
+            BlockBestProof::<T>::kill();
+            writes = writes.saturating_add(2);
+            T::DbWeight::get().reads_writes(reads, writes)
+        }
+
+        /// `< 2`: clear the whole pallet prefix (legacy v0.2 encodings).
+        pub(crate) fn wipe<T: Config>() -> Weight {
+            let pallet_prefix = Twox128::hash(<Pallet<T> as PalletInfoAccess>::name().as_bytes());
+            let cleared =
+                frame_support::storage::unhashed::clear_prefix(&pallet_prefix, None, None).backend;
+            T::DbWeight::get().reads_writes(1, u64::from(cleared))
         }
     }
 }

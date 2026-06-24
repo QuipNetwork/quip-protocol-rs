@@ -170,12 +170,13 @@ mod benchmarks {
 
     #[benchmark]
     fn set_difficulty() {
+        let (_nodes, _edges, topology_hash) = register_topology_for::<T>();
         let difficulty = easy_difficulty();
 
         #[extrinsic_call]
-        QuantumPow::set_difficulty(RawOrigin::Root, difficulty);
+        QuantumPow::set_difficulty(RawOrigin::Root, topology_hash, difficulty);
 
-        assert_eq!(Difficulty::<T>::get(), difficulty);
+        assert_eq!(Difficulties::<T>::get(topology_hash), Some(difficulty));
     }
 
     #[benchmark]

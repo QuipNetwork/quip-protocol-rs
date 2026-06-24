@@ -53,6 +53,7 @@ fn default_hash() -> sp_core::H256 {
 fn set_difficulty_default(difficulty: DifficultyConfig) {
     assert_ok!(QuantumPow::set_difficulty(
         RuntimeOrigin::root(),
+        default_hash(),
         difficulty
     ));
 }
@@ -459,15 +460,34 @@ fn register_topology_rejects_empty_spin_spec() {
 #[test]
 fn set_difficulty_requires_root() {
     new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
         let difficulty = DifficultyConfig {
             min_solutions: 2,
             max_energy_milli: -1_000,
             min_diversity_milli: 500,
         };
-
         assert_noop!(
-            QuantumPow::set_difficulty(RuntimeOrigin::signed(1), difficulty),
+            QuantumPow::set_difficulty(RuntimeOrigin::signed(1), hash, difficulty),
             sp_runtime::DispatchError::BadOrigin
+        );
+    });
+}
+
+#[test]
+fn set_difficulty_rejects_unregistered_topology() {
+    new_test_ext().execute_with(|| {
+        let difficulty = DifficultyConfig {
+            min_solutions: 3,
+            max_energy_milli: -2_000,
+            min_diversity_milli: 800,
+        };
+        assert_noop!(
+            QuantumPow::set_difficulty(
+                RuntimeOrigin::root(),
+                sp_core::H256::repeat_byte(5),
+                difficulty
+            ),
+            crate::Error::<Test>::TopologyNotRegistered
         );
     });
 }
@@ -475,18 +495,18 @@ fn set_difficulty_requires_root() {
 #[test]
 fn set_difficulty_works() {
     new_test_ext().execute_with(|| {
-        // Interim shape for Task 2: `set_difficulty` writes the default
-        // topology's `Difficulties` entry. Task 4 gives it an explicit
-        // `topology_hash` argument and this test changes shape accordingly.
-        let _ = registered_topology();
+        let (_, _, hash) = registered_topology();
         let difficulty = DifficultyConfig {
             min_solutions: 3,
             max_energy_milli: -2_000,
             min_diversity_milli: 800,
         };
-
-        set_difficulty_default(difficulty);
-        assert_eq!(difficulty_default(), difficulty);
+        assert_ok!(QuantumPow::set_difficulty(
+            RuntimeOrigin::root(),
+            hash,
+            difficulty
+        ));
+        assert_eq!(Difficulties::<Test>::get(hash), Some(difficulty));
     });
 }
 
@@ -732,34 +752,43 @@ fn curve_constants_are_recalibrated() {
 }
 
 #[test]
-fn network_upgrade_wipes_pow_state_and_bumps_version() {
+fn migration_v2_to_v3_carries_difficulty_and_whitelists_default() {
     new_test_ext().execute_with(|| {
-        // Seed v0.2-style state.
-        let (.., hash) = registered_topology();
-        assert!(RegisteredTopologies::<Test>::contains_key(hash));
-        assert_eq!(DefaultTopology::<Test>::get(), Some(hash));
-        Difficulties::<Test>::insert(
-            hash,
-            DifficultyConfig {
-                min_solutions: 7,
-                max_energy_milli: 12_345,
-                min_diversity_milli: 300,
-            },
-        );
-        QBlockCount::<Test>::put(9);
-        // Simulate the on-chain v0.2 storage version so the guard fires.
-        StorageVersion::new(1).put::<QuantumPow>();
+        let (_, _, hash) = registered_topology(); // also whitelists in the helper
+                                                  // Simulate a pre-v3 chain: remove the per-topology entry + whitelist
+                                                  // the helper added, write the OLD global value at its raw key, drop to v2.
+        Difficulties::<Test>::remove(hash);
+        MineableTopologies::<Test>::remove(hash);
+        let old = DifficultyConfig {
+            min_solutions: 7,
+            max_energy_milli: -14_620,
+            min_diversity_milli: 300,
+        };
+        let old_key = crate::migration::v3::old_difficulty_key::<Test>();
+        frame_support::storage::unhashed::put(&old_key, &old);
+        StorageVersion::new(2).put::<QuantumPow>();
 
         QuantumPow::on_runtime_upgrade();
 
-        // All PoW state is dropped rather than carried forward.
-        assert!(RegisteredTopologies::<Test>::iter().next().is_none());
-        assert_eq!(DefaultTopology::<Test>::get(), None);
-        assert_eq!(QBlockCount::<Test>::get(), 0);
-        // The per-topology difficulty entry is wiped along with the rest of
-        // the pallet prefix, identical to a fresh chain.
-        assert_eq!(Difficulties::<Test>::get(hash), None);
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(2));
+        assert_eq!(
+            Difficulties::<Test>::get(hash),
+            Some(old),
+            "global difficulty carried to default topology"
+        );
+        assert!(
+            MineableTopologies::<Test>::contains_key(hash),
+            "default topology whitelisted"
+        );
+        assert!(
+            frame_support::storage::unhashed::get::<DifficultyConfig>(&old_key).is_none(),
+            "old global value removed"
+        );
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(3));
+        // The live threshold for the default now equals the carried value.
+        assert_eq!(
+            QuantumPow::current_difficulty_for(hash, System::block_number()),
+            old
+        );
     });
 }
 
@@ -892,26 +921,41 @@ fn repeated_same_winner_forces_easing() {
 }
 
 #[test]
-fn network_upgrade_is_noop_once_at_v2() {
+fn migration_below_v2_wipes_then_bumps_to_v3() {
     new_test_ext().execute_with(|| {
-        // Already at the post-upgrade version (e.g. a fresh genesis chain):
-        // the guard must keep the wipe from re-running and nuking live state.
-        let (.., hash) = registered_topology();
-        let difficulty = DifficultyConfig {
+        let (_, _, hash) = registered_topology();
+        QBlockCount::<Test>::put(9);
+        StorageVersion::new(1).put::<QuantumPow>();
+
+        QuantumPow::on_runtime_upgrade();
+
+        assert!(RegisteredTopologies::<Test>::iter().next().is_none());
+        assert_eq!(DefaultTopology::<Test>::get(), None);
+        assert_eq!(QBlockCount::<Test>::get(), 0);
+        assert!(!MineableTopologies::<Test>::contains_key(hash));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(3));
+    });
+}
+
+#[test]
+fn migration_noop_at_v3() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        let d = DifficultyConfig {
             min_solutions: 7,
-            max_energy_milli: 12_345,
+            max_energy_milli: -1_000,
             min_diversity_milli: 300,
         };
-        Difficulties::<Test>::insert(hash, difficulty);
+        Difficulties::<Test>::insert(hash, d);
         QBlockCount::<Test>::put(9);
-        StorageVersion::new(2).put::<QuantumPow>();
+        StorageVersion::new(3).put::<QuantumPow>();
 
         QuantumPow::on_runtime_upgrade();
 
         assert!(RegisteredTopologies::<Test>::contains_key(hash));
-        assert_eq!(Difficulties::<Test>::get(hash), Some(difficulty));
+        assert_eq!(Difficulties::<Test>::get(hash), Some(d));
         assert_eq!(QBlockCount::<Test>::get(), 9);
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(2));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(3));
     });
 }
 
