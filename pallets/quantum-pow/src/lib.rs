@@ -46,6 +46,10 @@ type QBlockOf<T> = types::QBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>
 type QBlockWithNonceOf<T> = types::QBlockWithNonce<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>;
 
 sp_api::decl_runtime_apis! {
+    /// Version 2 adds the per-topology `difficulty_for` and the
+    /// `mineable_topologies` whitelist query. Clients can feature-detect
+    /// these via the reported API version against older runtimes.
+    #[api_version(2)]
     pub trait QuantumPowApi<BlockNumber, AccountId, Balance, Nodes, Edges, AllowedValues>
     where
         BlockNumber: codec::Codec,
@@ -299,6 +303,9 @@ pub mod pallet {
             edge_count: u32,
         },
         DifficultyUpdated {
+            /// The topology whose difficulty baseline changed. Difficulty is
+            /// per-topology, so consumers need this to attribute the update.
+            topology_hash: H256,
             difficulty: types::DifficultyConfig,
         },
         /// `DefaultTopology` was repointed by root. The difficulty energy
@@ -368,6 +375,13 @@ pub mod pallet {
         /// Refused to remove the current `DefaultTopology` from the mineable
         /// whitelist; repoint the default first.
         TopologyIsDefault,
+        /// Refused to whitelist a second non-default topology while one is
+        /// already mineable. The difficulty decay anchor (`LastProofBlock`)
+        /// is global (model A: single active topology), so concurrent mining
+        /// of two non-default topologies would let one topology's wins
+        /// mis-drive the other's difficulty. Remove the existing non-default
+        /// mineable topology before adding another.
+        MineableTopologyConflict,
     }
 
     #[pallet::hooks]
@@ -537,7 +551,10 @@ pub mod pallet {
             QBlockBlockById::<T>::insert(qblock_id, n);
             QBlockIdByBlock::<T>::insert(n, qblock_id);
 
-            Self::deposit_event(Event::DifficultyUpdated { difficulty: next });
+            Self::deposit_event(Event::DifficultyUpdated {
+                topology_hash,
+                difficulty: next,
+            });
             Self::deposit_event(Event::BlockWinner {
                 qblock_id,
                 block_number: n,
@@ -742,7 +759,10 @@ pub mod pallet {
                 Error::<T>::TopologyNotRegistered
             );
             Difficulties::<T>::insert(topology_hash, difficulty);
-            Self::deposit_event(Event::DifficultyUpdated { difficulty });
+            Self::deposit_event(Event::DifficultyUpdated {
+                topology_hash,
+                difficulty,
+            });
             Ok(())
         }
 
@@ -866,6 +886,17 @@ pub mod pallet {
                 Error::<T>::TopologyNotRegistered
             );
             if !MineableTopologies::<T>::contains_key(topology_hash) {
+                // Model A: enforce at most one non-default mineable topology
+                // at a time, so the global decay anchor stays correct. The
+                // default is always mineable; this caps the whitelist at
+                // {default, one incoming} during a switch. The scan is
+                // therefore bounded to <=2 keys by this very invariant.
+                let default = DefaultTopology::<T>::get();
+                if Some(topology_hash) != default {
+                    let has_other_non_default =
+                        MineableTopologies::<T>::iter_keys().any(|h| Some(h) != default);
+                    ensure!(!has_other_non_default, Error::<T>::MineableTopologyConflict);
+                }
                 MineableTopologies::<T>::insert(topology_hash, ());
                 Self::deposit_event(Event::TopologyMineableAdded { topology_hash });
             }

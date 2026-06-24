@@ -379,6 +379,31 @@ fn registered_zero_field_topology() -> sp_core::H256 {
     hash
 }
 
+/// Registers a distinct 2-node topology (nodes `[a, b]`, single edge) WITHOUT
+/// whitelisting it, returning its hash. Distinct node ids yield a distinct
+/// `hash_topology`, so callers get a registered-but-un-mineable topology to
+/// drive the whitelist extrinsics through `add_mineable_topology`.
+fn register_unwhitelisted(a: u32, b: u32) -> sp_core::H256 {
+    let nodes = bounded::<_, MaxNodes>(vec![a, b]);
+    let edges = bounded::<_, MaxEdges>(vec![(a, b)]);
+    let hash = topology::hash_topology(
+        &nodes,
+        &edges,
+        &allowed_h_spec().as_slice(),
+        &allowed_j_spec().as_slice(),
+        &allowed_spin_spec().as_slice(),
+    );
+    assert_ok!(QuantumPow::register_topology(
+        RuntimeOrigin::root(),
+        nodes,
+        edges,
+        allowed_h_spec(),
+        allowed_j_spec(),
+        allowed_spin_spec(),
+    ));
+    hash
+}
+
 #[test]
 fn set_default_topology_requires_root() {
     new_test_ext().execute_with(|| {
@@ -1922,6 +1947,83 @@ fn remove_mineable_topology_works_for_non_default() {
     new_test_ext().execute_with(|| {
         let _ = registered_topology(); // default A
         let hash_b = registered_zero_field_topology(); // whitelisted, not default
+        assert_ok!(QuantumPow::remove_mineable_topology(
+            RuntimeOrigin::root(),
+            hash_b
+        ));
+        assert!(!MineableTopologies::<Test>::contains_key(hash_b));
+    });
+}
+
+#[test]
+fn add_mineable_topology_works_and_is_idempotent() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology(); // A: default + whitelisted
+        let hash_b = register_unwhitelisted(5, 6);
+        assert!(!MineableTopologies::<Test>::contains_key(hash_b));
+
+        // First add whitelists B (the core mechanism: membership here is what
+        // makes a topology mineable).
+        assert_ok!(QuantumPow::add_mineable_topology(
+            RuntimeOrigin::root(),
+            hash_b
+        ));
+        assert!(MineableTopologies::<Test>::contains_key(hash_b));
+
+        // Re-adding the same topology is a no-op success that hits the
+        // `!contains_key` skip branch; B stays mineable.
+        assert_ok!(QuantumPow::add_mineable_topology(
+            RuntimeOrigin::root(),
+            hash_b
+        ));
+        assert!(MineableTopologies::<Test>::contains_key(hash_b));
+    });
+}
+
+#[test]
+fn add_mineable_topology_rejects_second_non_default() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology(); // A: default + whitelisted
+        let hash_b = register_unwhitelisted(5, 6);
+        let hash_c = register_unwhitelisted(7, 8);
+
+        // One non-default topology may be whitelisted: the model-A switch
+        // window of {default, one incoming}.
+        assert_ok!(QuantumPow::add_mineable_topology(
+            RuntimeOrigin::root(),
+            hash_b
+        ));
+
+        // A second concurrent non-default topology is refused — the global
+        // decay anchor only supports one active topology at a time.
+        assert_noop!(
+            QuantumPow::add_mineable_topology(RuntimeOrigin::root(), hash_c),
+            crate::Error::<Test>::MineableTopologyConflict
+        );
+
+        // Remove-old-before-switch: dropping B frees the slot for C.
+        assert_ok!(QuantumPow::remove_mineable_topology(
+            RuntimeOrigin::root(),
+            hash_b
+        ));
+        assert_ok!(QuantumPow::add_mineable_topology(
+            RuntimeOrigin::root(),
+            hash_c
+        ));
+        assert!(MineableTopologies::<Test>::contains_key(hash_c));
+        assert!(!MineableTopologies::<Test>::contains_key(hash_b));
+    });
+}
+
+#[test]
+fn remove_mineable_topology_is_noop_for_non_whitelisted() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology(); // A: default + whitelisted
+        let hash_b = register_unwhitelisted(5, 6); // registered, not mineable
+        assert!(!MineableTopologies::<Test>::contains_key(hash_b));
+
+        // Removing a registered-but-not-whitelisted (non-default) topology is
+        // a silent success that hits the `contains_key` skip branch.
         assert_ok!(QuantumPow::remove_mineable_topology(
             RuntimeOrigin::root(),
             hash_b

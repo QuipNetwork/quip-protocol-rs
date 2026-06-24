@@ -85,6 +85,31 @@ fn register_topology_for<T: Config>() -> (NodesOf<T>, EdgesOf<T>, sp_core::H256)
     (nodes, edges, topology_hash)
 }
 
+/// Registers a second, distinct (non-default) topology with node ids
+/// `[a, b]`, returning its hash. Used to drive whitelist benchmarks that need
+/// a topology other than the auto-whitelisted first registration.
+fn register_extra_topology_for<T: Config>(a: u32, b: u32) -> sp_core::H256 {
+    let nodes = bounded::<_, T::MaxNodes>(vec![a, b]);
+    let edges = bounded::<_, T::MaxEdges>(vec![(a, b)]);
+    let topology_hash = crate::topology::hash_topology(
+        &nodes,
+        &edges,
+        &allowed_h_set::<T>().as_slice(),
+        &allowed_j_set::<T>().as_slice(),
+        &allowed_spin_set::<T>().as_slice(),
+    );
+    assert!(QuantumPow::<T>::register_topology(
+        RawOrigin::Root.into(),
+        nodes,
+        edges,
+        allowed_h_set::<T>(),
+        allowed_j_set::<T>(),
+        allowed_spin_set::<T>(),
+    )
+    .is_ok());
+    topology_hash
+}
+
 fn valid_proof_for<T: Config>(
     miner: &T::AccountId,
     topology_hash: sp_core::H256,
@@ -203,8 +228,12 @@ mod benchmarks {
 
     #[benchmark]
     fn add_mineable_topology() {
-        let (_nodes, _edges, topology_hash) = register_topology_for::<T>();
-        MineableTopologies::<T>::remove(topology_hash);
+        // First registration becomes the auto-whitelisted default. Adding a
+        // distinct, non-default topology exercises the worst case: the
+        // single-active-topology guard scans the (default-only) whitelist
+        // before inserting.
+        let _ = register_topology_for::<T>();
+        let topology_hash = register_extra_topology_for::<T>(5, 6);
 
         #[extrinsic_call]
         QuantumPow::add_mineable_topology(RawOrigin::Root, topology_hash);

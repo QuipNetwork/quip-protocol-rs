@@ -42,7 +42,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 
 	fn set_default_topology() -> Weight {
 		Weight::from_parts(10_000_000, 0)
-			.saturating_add(T::DbWeight::get().reads(1_u64))
+			.saturating_add(T::DbWeight::get().reads(2_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
 
@@ -60,7 +60,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 
 	fn add_mineable_topology() -> Weight {
 		Weight::from_parts(10_000_000, 0)
-			.saturating_add(T::DbWeight::get().reads(1_u64))
+			.saturating_add(T::DbWeight::get().reads(5_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
 
@@ -92,7 +92,7 @@ impl WeightInfo for () {
 
 	fn set_default_topology() -> Weight {
 		Weight::from_parts(10_000_000, 0)
-			.saturating_add(RocksDbWeight::get().reads(1_u64))
+			.saturating_add(RocksDbWeight::get().reads(2_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
 
@@ -110,7 +110,7 @@ impl WeightInfo for () {
 
 	fn add_mineable_topology() -> Weight {
 		Weight::from_parts(10_000_000, 0)
-			.saturating_add(RocksDbWeight::get().reads(1_u64))
+			.saturating_add(RocksDbWeight::get().reads(5_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
 
