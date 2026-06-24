@@ -212,6 +212,12 @@ pub mod pallet {
     pub type Difficulties<T: Config> =
         StorageMap<_, Blake2_128Concat, H256, types::DifficultyConfig>;
 
+    /// Root-controlled set of topologies that may be mined. Registration adds
+    /// a topology to the catalog (`RegisteredTopologies`); membership here is
+    /// what makes it mineable. Steady state is `{ DefaultTopology }`.
+    #[pallet::storage]
+    pub type MineableTopologies<T: Config> = StorageMap<_, Blake2_128Concat, H256, ()>;
+
     #[pallet::storage]
     pub type Miners<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, MinerInfoOf<T>>;
 
@@ -293,6 +299,12 @@ pub mod pallet {
         DefaultTopologySet {
             topology_hash: H256,
         },
+        TopologyMineableAdded {
+            topology_hash: H256,
+        },
+        TopologyMineableRemoved {
+            topology_hash: H256,
+        },
         ProofAccepted {
             miner: T::AccountId,
             energy_milli: i64,
@@ -343,6 +355,12 @@ pub mod pallet {
         /// (32 bits per spin) is paired with more than `MaxNodes / 4` nodes,
         /// which would leave the topology accepted but unmineable.
         PackedSolutionTooLarge,
+        /// The proof's topology is registered but not on the mineable
+        /// whitelist (`MineableTopologies`).
+        TopologyNotMineable,
+        /// Refused to remove the current `DefaultTopology` from the mineable
+        /// whitelist; repoint the default first.
+        TopologyIsDefault,
     }
 
     #[pallet::hooks]
@@ -664,6 +682,18 @@ pub mod pallet {
                 RegisteredTopologies::<T>::contains_key(topology_hash),
                 Error::<T>::TopologyNotRegistered
             );
+            ensure!(
+                MineableTopologies::<T>::contains_key(topology_hash),
+                Error::<T>::TopologyNotMineable
+            );
+            // NOTE (model A): `LastProofBlock` (global decay anchor) is NOT
+            // reset here. Under single-active-topology mining this is fine —
+            // the new default's difficulty reads through decay anchored to the
+            // previous win, which on an actively-mining chain is ~one win old.
+            // If concurrent multi-topology mining (model B) is added, reset
+            // hardness/round state at the switch (see "Future work").
+            // Operators should re-baseline via `set_difficulty(hash, …)` before
+            // repointing when the curves differ materially.
             DefaultTopology::<T>::put(topology_hash);
             Self::deposit_event(Event::DefaultTopologySet { topology_hash });
             Ok(())
@@ -706,6 +736,10 @@ pub mod pallet {
             // cross-check.
             let topology = RegisteredTopologies::<T>::get(proof.topology_hash)
                 .ok_or(Error::<T>::TopologyNotRegistered)?;
+            ensure!(
+                MineableTopologies::<T>::contains_key(proof.topology_hash),
+                Error::<T>::TopologyNotMineable
+            );
             ensure!(
                 topology.nodes.len() >= T::MinNodes::get() as usize,
                 Error::<T>::GraphTooSmall
@@ -786,6 +820,39 @@ pub mod pallet {
                 valid_solution_count: validation.valid_solution_count,
             });
 
+            Ok(())
+        }
+
+        /// Add a registered topology to the mineable whitelist. Root only.
+        #[pallet::call_index(6)]
+        #[pallet::weight(<T as Config>::WeightInfo::add_mineable_topology())]
+        pub fn add_mineable_topology(origin: OriginFor<T>, topology_hash: H256) -> DispatchResult {
+            ensure_root(origin)?;
+            ensure!(
+                RegisteredTopologies::<T>::contains_key(topology_hash),
+                Error::<T>::TopologyNotRegistered
+            );
+            MineableTopologies::<T>::insert(topology_hash, ());
+            Self::deposit_event(Event::TopologyMineableAdded { topology_hash });
+            Ok(())
+        }
+
+        /// Remove a topology from the mineable whitelist. Root only. Refuses
+        /// to remove the current `DefaultTopology` so the default is always
+        /// mineable.
+        #[pallet::call_index(7)]
+        #[pallet::weight(<T as Config>::WeightInfo::remove_mineable_topology())]
+        pub fn remove_mineable_topology(
+            origin: OriginFor<T>,
+            topology_hash: H256,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            ensure!(
+                DefaultTopology::<T>::get() != Some(topology_hash),
+                Error::<T>::TopologyIsDefault
+            );
+            MineableTopologies::<T>::remove(topology_hash);
+            Self::deposit_event(Event::TopologyMineableRemoved { topology_hash });
             Ok(())
         }
     }

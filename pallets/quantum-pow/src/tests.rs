@@ -3,8 +3,8 @@ use crate::{
     difficulty, topology,
     types::{DifficultyConfig, ProofRecord, QuantumProof},
     AllowedValueSetOf, BlockBestProof, BlockProofCount, DefaultTopology, Difficulties,
-    LastProofBlock, LastProofBlockHash, Miners, PackedSpinBytesOf, QBlockBlockById, QBlockCount,
-    QBlockIdByBlock, QBlocks, RegisteredTopologies, WinnerStreak,
+    LastProofBlock, LastProofBlockHash, MineableTopologies, Miners, PackedSpinBytesOf,
+    QBlockBlockById, QBlockCount, QBlockIdByBlock, QBlocks, RegisteredTopologies, WinnerStreak,
 };
 use frame_support::{
     assert_noop, assert_ok,
@@ -180,6 +180,7 @@ fn registered_topology() -> (
         allowed_j_spec(),
         allowed_spin_spec(),
     ));
+    MineableTopologies::<Test>::insert(hash, ());
     (nodes, edges, hash)
 }
 
@@ -344,6 +345,7 @@ fn registered_zero_field_topology() -> sp_core::H256 {
         allowed_j_spec(),
         allowed_spin_spec(),
     ));
+    MineableTopologies::<Test>::insert(hash, ());
     hash
 }
 
@@ -1756,6 +1758,115 @@ fn winning_topology_does_not_move_other_topology_difficulty() {
             Difficulties::<Test>::get(hash_b),
             Some(diff_b),
             "B's difficulty must NOT move when A wins"
+        );
+    });
+}
+
+#[test]
+fn submit_proof_rejects_non_mineable_topology() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        // Register WITHOUT whitelisting (raw call, not the helper).
+        let nodes = bounded::<_, MaxNodes>(vec![0, 1]);
+        let edges = bounded::<_, MaxEdges>(vec![(0, 1)]);
+        let topology_hash = topology::hash_topology(
+            &nodes,
+            &edges,
+            &allowed_h_spec().as_slice(),
+            &allowed_j_spec().as_slice(),
+            &allowed_spin_spec().as_slice(),
+        );
+        assert_ok!(QuantumPow::register_topology(
+            RuntimeOrigin::root(),
+            nodes.clone(),
+            edges.clone(),
+            allowed_h_spec(),
+            allowed_j_spec(),
+            allowed_spin_spec(),
+        ));
+        Difficulties::<Test>::insert(topology_hash, easy_difficulty());
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof),
+            crate::Error::<Test>::TopologyNotMineable
+        );
+    });
+}
+
+#[test]
+fn add_mineable_topology_requires_root() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        assert_noop!(
+            QuantumPow::add_mineable_topology(RuntimeOrigin::signed(1), hash),
+            sp_runtime::DispatchError::BadOrigin
+        );
+    });
+}
+
+#[test]
+fn add_mineable_topology_rejects_unregistered() {
+    new_test_ext().execute_with(|| {
+        assert_noop!(
+            QuantumPow::add_mineable_topology(RuntimeOrigin::root(), sp_core::H256::repeat_byte(9)),
+            crate::Error::<Test>::TopologyNotRegistered
+        );
+    });
+}
+
+#[test]
+fn remove_mineable_topology_refuses_default() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology(); // becomes default + whitelisted
+        assert_noop!(
+            QuantumPow::remove_mineable_topology(RuntimeOrigin::root(), hash),
+            crate::Error::<Test>::TopologyIsDefault
+        );
+        assert!(MineableTopologies::<Test>::contains_key(hash));
+    });
+}
+
+#[test]
+fn remove_mineable_topology_works_for_non_default() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology(); // default A
+        let hash_b = registered_zero_field_topology(); // whitelisted, not default
+        assert_ok!(QuantumPow::remove_mineable_topology(
+            RuntimeOrigin::root(),
+            hash_b
+        ));
+        assert!(!MineableTopologies::<Test>::contains_key(hash_b));
+    });
+}
+
+#[test]
+fn set_default_topology_rejects_non_mineable() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology(); // default A, whitelisted
+                                       // Register B without whitelisting.
+        let nodes = bounded::<_, MaxNodes>(vec![0u32, 1, 2, 3]);
+        let edges = bounded::<_, MaxEdges>(vec![(0u32, 1), (1, 2), (2, 3), (0, 3)]);
+        let zero_h: AllowedValueSpec<AllowedValueSetOf<Test>> =
+            AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![0]));
+        let hash_b = topology::hash_topology(
+            &nodes,
+            &edges,
+            &zero_h.as_slice(),
+            &allowed_j_spec().as_slice(),
+            &allowed_spin_spec().as_slice(),
+        );
+        assert_ok!(QuantumPow::register_topology(
+            RuntimeOrigin::root(),
+            nodes,
+            edges,
+            zero_h,
+            allowed_j_spec(),
+            allowed_spin_spec(),
+        ));
+        assert_noop!(
+            QuantumPow::set_default_topology(RuntimeOrigin::root(), hash_b),
+            crate::Error::<Test>::TopologyNotMineable
         );
     });
 }
