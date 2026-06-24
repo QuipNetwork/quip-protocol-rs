@@ -48,6 +48,7 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 
 	fn set_difficulty() -> Weight {
 		Weight::from_parts(10_000_000, 0)
+			.saturating_add(T::DbWeight::get().reads(1_u64))
 			.saturating_add(T::DbWeight::get().writes(1_u64))
 	}
 
@@ -97,6 +98,7 @@ impl WeightInfo for () {
 
 	fn set_difficulty() -> Weight {
 		Weight::from_parts(10_000_000, 0)
+			.saturating_add(RocksDbWeight::get().reads(1_u64))
 			.saturating_add(RocksDbWeight::get().writes(1_u64))
 	}
 

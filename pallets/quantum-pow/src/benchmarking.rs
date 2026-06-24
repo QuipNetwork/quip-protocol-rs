@@ -158,6 +158,10 @@ mod benchmarks {
     #[benchmark]
     fn set_default_topology() {
         let (_nodes, _edges, topology_hash) = register_topology_for::<T>();
+        // Ensure the topology is on the mineable whitelist (register_topology
+        // does not seed MineableTopologies; only add_mineable_topology and the
+        // v3 migration do).
+        MineableTopologies::<T>::insert(topology_hash, ());
         // Clear the first-registration seeding so the call exercises the
         // repointing write, not a no-op.
         DefaultTopology::<T>::kill();
@@ -184,6 +188,7 @@ mod benchmarks {
         let caller: T::AccountId = whitelisted_caller();
         register_miner_for::<T>(&caller);
         let (_nodes, _edges, topology_hash) = register_topology_for::<T>();
+        MineableTopologies::<T>::insert(topology_hash, ());
         Difficulties::<T>::insert(topology_hash, easy_difficulty());
         let proof = valid_proof_for::<T>(&caller, topology_hash);
 
@@ -194,6 +199,31 @@ mod benchmarks {
         assert_eq!(miner.proofs_submitted, 1);
         assert_eq!(BlockProofCount::<T>::get(), 1);
         assert!(BlockBestProof::<T>::get().is_some());
+    }
+
+    #[benchmark]
+    fn add_mineable_topology() {
+        let (_nodes, _edges, topology_hash) = register_topology_for::<T>();
+        MineableTopologies::<T>::remove(topology_hash);
+
+        #[extrinsic_call]
+        QuantumPow::add_mineable_topology(RawOrigin::Root, topology_hash);
+
+        assert!(MineableTopologies::<T>::contains_key(topology_hash));
+    }
+
+    #[benchmark]
+    fn remove_mineable_topology() {
+        let (_nodes, _edges, topology_hash) = register_topology_for::<T>();
+        MineableTopologies::<T>::insert(topology_hash, ());
+        // Clear the first-registration default so the remove is not blocked
+        // by the default-topology guard.
+        DefaultTopology::<T>::kill();
+
+        #[extrinsic_call]
+        QuantumPow::remove_mineable_topology(RawOrigin::Root, topology_hash);
+
+        assert!(!MineableTopologies::<T>::contains_key(topology_hash));
     }
 
     impl_benchmark_test_suite!(QuantumPow, crate::mock::new_test_ext(), crate::mock::Test);
