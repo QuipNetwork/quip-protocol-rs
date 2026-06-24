@@ -33,11 +33,9 @@
 //! resistance. Do not change [`account_id_from_public`] without preserving
 //! the property that the full pubkey bytes feed the hash.
 
-extern crate alloc;
-
-use alloc::vec::Vec;
 use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use quip_crypto_primitives::substrate::sr25519_mldsa44;
+use quip_transaction_crypto_core::{account_id_from_public_bytes, HybridTxSignatureBytes};
 use scale_info::TypeInfo;
 use sp_core::Pair as _;
 use sp_runtime::{
@@ -56,13 +54,6 @@ pub type HybridPair = sr25519_mldsa44::Pair;
 
 /// Compact account id used by the runtime for transaction signers.
 pub type DerivedAccountId = AccountId32;
-
-/// Domain separator for account-id derivation from the hybrid public key.
-///
-/// The trailing version (`v1`) is part of the domain string, not a runtime
-/// field — changing this constant re-keys every existing account, which is
-/// why `account_id_domain_is_pinned` asserts its exact value.
-pub const ACCOUNT_ID_DOMAIN: &[u8] = b"quip-account-v1";
 
 /// Derives the compact runtime account id from the H3 hybrid public key.
 ///
@@ -83,10 +74,7 @@ pub fn account_id_from_public(public: &HybridPublic) -> DerivedAccountId {
     // implements both `AsRef<[u8]>` and `AsRef<InnerPublic>`, so the bare
     // `public.as_ref()` is ambiguous; we explicitly select the byte slice.
     let pub_bytes: &[u8] = public.as_ref();
-    let mut input = Vec::with_capacity(ACCOUNT_ID_DOMAIN.len() + pub_bytes.len());
-    input.extend_from_slice(ACCOUNT_ID_DOMAIN);
-    input.extend_from_slice(pub_bytes);
-    DerivedAccountId::new(sp_io::hashing::blake2_256(&input))
+    DerivedAccountId::new(account_id_from_public_bytes(pub_bytes))
 }
 
 /// Signer identity wrapper for runtime transaction verification.
@@ -171,9 +159,15 @@ impl HybridTxSignature {
     /// transaction signature envelope.
     #[cfg(feature = "std")]
     pub fn sign(pair: &HybridPair, message: &[u8]) -> Self {
+        let envelope =
+            HybridTxSignatureBytes::new(pair.public().as_ref(), pair.sign(message).as_ref())
+                .expect("pair-produced public/signature bytes are valid");
+
         Self {
-            public: pair.public(),
-            signature: pair.sign(message),
+            public: HybridPublic::decode(&mut &envelope.public[..])
+                .expect("validated public bytes decode into runtime wrapper"),
+            signature: HybridSignatureBytes::decode(&mut &envelope.signature[..])
+                .expect("validated signature bytes decode into runtime wrapper"),
         }
     }
 
@@ -215,6 +209,13 @@ impl Verify for HybridTxSignature {
 mod tests {
     use super::*;
     use codec::Decode;
+    use quip_transaction_crypto_core::{
+        master_seed_from_mnemonic, master_seed_from_secret_uri, public_key_from_seed,
+        sign_payload_from_seed,
+    };
+
+    const TEST_PHRASE: &str =
+        "bottom drive obey lake curtain smoke basket hold race lonely fit walk";
 
     #[test]
     fn same_public_key_derives_same_account_id() {
@@ -246,6 +247,71 @@ mod tests {
     }
 
     #[test]
+    fn runtime_signature_scale_matches_core_envelope() {
+        let pair = HybridPair::from_string("//Alice", None).unwrap();
+        let seed = pair.to_raw_vec();
+        let message = b"quip-signer-fixture";
+
+        let runtime_signature = HybridTxSignature::sign(&pair, message);
+        let core_envelope = sign_payload_from_seed(&seed, message).unwrap();
+
+        assert_eq!(runtime_signature.encode(), core_envelope.encode_envelope());
+        assert_eq!(runtime_signature.public.encode(), core_envelope.public);
+        assert_eq!(
+            runtime_signature.signature.encode(),
+            core_envelope.signature
+        );
+    }
+
+    #[test]
+    fn mnemonic_seed_matches_substrate_from_phrase() {
+        let core_seed = master_seed_from_secret_uri(TEST_PHRASE).unwrap();
+        let (pair, substrate_seed) = HybridPair::from_phrase(TEST_PHRASE, None).unwrap();
+
+        // The browser-derived master seed must equal the node's master seed...
+        assert_eq!(core_seed.to_vec(), substrate_seed.to_vec());
+        // ...and therefore produce the same public key and account id.
+        let public = public_key_from_seed(&core_seed).unwrap();
+        assert_eq!(pair.public().encode(), public);
+    }
+
+    #[test]
+    fn mnemonic_password_seed_matches_substrate() {
+        let core_seed = master_seed_from_mnemonic(TEST_PHRASE, Some("hunter2")).unwrap();
+        let (_pair, substrate_seed) =
+            HybridPair::from_phrase(TEST_PHRASE, Some("hunter2")).unwrap();
+
+        assert_eq!(core_seed.to_vec(), substrate_seed.to_vec());
+    }
+
+    #[test]
+    fn secret_uri_password_matches_substrate_from_string() {
+        let uri = format!("{TEST_PHRASE}///hunter2");
+        let core_seed = master_seed_from_secret_uri(&uri).unwrap();
+        let (_pair, substrate_seed) = HybridPair::from_string_with_seed(&uri, None).unwrap();
+
+        assert_eq!(
+            core_seed.to_vec(),
+            substrate_seed
+                .expect("phrase without junctions yields a seed")
+                .to_vec()
+        );
+    }
+
+    #[test]
+    fn account_id_helper_matches_core_public_derivation() {
+        let pair = HybridPair::from_string("//Alice", None).unwrap();
+        let seed = pair.to_raw_vec();
+        let public = public_key_from_seed(&seed).unwrap();
+
+        assert_eq!(pair.public().encode(), public);
+        assert_eq!(
+            account_id_from_public(&pair.public()).as_ref(),
+            account_id_from_public_bytes(&public)
+        );
+    }
+
+    #[test]
     fn hybrid_tx_signature_rejects_wrong_account() {
         let pair = HybridPair::from_string("//Alice", None).unwrap();
         let wrong_pair = HybridPair::from_string("//Bob", None).unwrap();
@@ -269,7 +335,10 @@ mod tests {
         // Changing this string re-keys every account at genesis. If that's
         // really the intent, bump the version segment ("v1" -> "v2") in
         // lockstep with the migration plan.
-        assert_eq!(ACCOUNT_ID_DOMAIN, b"quip-account-v1");
+        assert_eq!(
+            quip_transaction_crypto_core::ACCOUNT_ID_DOMAIN,
+            b"quip-account-v1"
+        );
     }
 
     #[test]
