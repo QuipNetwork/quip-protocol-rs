@@ -308,6 +308,35 @@ fn register_topology_works() {
 }
 
 #[test]
+fn first_registration_whitelists_default() {
+    new_test_ext().execute_with(|| {
+        // RAW register (not the auto-whitelisting helper). The first
+        // registration must claim the default AND be auto-whitelisted so a
+        // fresh chain can mine it immediately.
+        let nodes = bounded::<_, MaxNodes>(vec![0, 1]);
+        let edges = bounded::<_, MaxEdges>(vec![(0, 1)]);
+        let hash = topology::hash_topology(
+            &nodes,
+            &edges,
+            &allowed_h_spec().as_slice(),
+            &allowed_j_spec().as_slice(),
+            &allowed_spin_spec().as_slice(),
+        );
+        assert_ok!(QuantumPow::register_topology(
+            RuntimeOrigin::root(),
+            nodes,
+            edges,
+            allowed_h_spec(),
+            allowed_j_spec(),
+            allowed_spin_spec(),
+        ));
+
+        assert_eq!(DefaultTopology::<Test>::get(), Some(hash));
+        assert!(MineableTopologies::<Test>::contains_key(hash));
+    });
+}
+
+#[test]
 fn register_topology_rejects_small_graph() {
     new_test_ext().execute_with(|| {
         assert_noop!(
@@ -1810,25 +1839,42 @@ fn winning_topology_does_not_move_other_topology_difficulty() {
 fn submit_proof_rejects_non_mineable_topology() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        // Register WITHOUT whitelisting (raw call, not the helper).
-        let nodes = bounded::<_, MaxNodes>(vec![0, 1]);
-        let edges = bounded::<_, MaxEdges>(vec![(0, 1)]);
+        // Register topology A FIRST via the helper so it claims the
+        // auto-whitelisted default. The topology-under-test must NOT be the
+        // first registration — otherwise it would be auto-whitelisted too.
+        let (nodes, edges, _) = registered_topology();
+
+        // Register topology B WITHOUT whitelisting (raw call, not the helper),
+        // with a distinct two-node graph so it gets a distinct hash and stays
+        // un-mineable. Distinct node ids ([5, 6] vs A's [0, 1]) → distinct
+        // `hash_topology` output; same value specs as A so the proof we build
+        // against it is well-formed up to the mineable check.
+        let nodes_b = bounded::<_, MaxNodes>(vec![5, 6]);
+        let edges_b = bounded::<_, MaxEdges>(vec![(5, 6)]);
         let topology_hash = topology::hash_topology(
-            &nodes,
-            &edges,
+            &nodes_b,
+            &edges_b,
             &allowed_h_spec().as_slice(),
             &allowed_j_spec().as_slice(),
             &allowed_spin_spec().as_slice(),
         );
         assert_ok!(QuantumPow::register_topology(
             RuntimeOrigin::root(),
-            nodes.clone(),
-            edges.clone(),
+            nodes_b,
+            edges_b,
             allowed_h_spec(),
             allowed_j_spec(),
             allowed_spin_spec(),
         ));
+        assert!(
+            !MineableTopologies::<Test>::contains_key(topology_hash),
+            "second registration must not be auto-whitelisted"
+        );
         Difficulties::<Test>::insert(topology_hash, easy_difficulty());
+        // Build the proof against A's graph (so `proof_for`'s two-spin
+        // candidate set is consistent) but claim B's un-mineable hash. The
+        // mineable-whitelist check fires before any solution validation, so
+        // the rejection is `TopologyNotMineable` regardless of proof contents.
         let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
 
         assert_noop!(

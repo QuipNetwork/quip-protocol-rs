@@ -678,6 +678,10 @@ pub mod pallet {
 
             if DefaultTopology::<T>::get().is_none() {
                 DefaultTopology::<T>::put(topology_hash);
+                // The default topology must always be mineable (the invariant
+                // set_default_topology enforces). Auto-whitelist the first-registered
+                // default so a fresh chain can mine it immediately.
+                MineableTopologies::<T>::insert(topology_hash, ());
             }
 
             Self::deposit_event(Event::TopologyRegistered {
@@ -861,8 +865,10 @@ pub mod pallet {
                 RegisteredTopologies::<T>::contains_key(topology_hash),
                 Error::<T>::TopologyNotRegistered
             );
-            MineableTopologies::<T>::insert(topology_hash, ());
-            Self::deposit_event(Event::TopologyMineableAdded { topology_hash });
+            if !MineableTopologies::<T>::contains_key(topology_hash) {
+                MineableTopologies::<T>::insert(topology_hash, ());
+                Self::deposit_event(Event::TopologyMineableAdded { topology_hash });
+            }
             Ok(())
         }
 
@@ -880,8 +886,10 @@ pub mod pallet {
                 DefaultTopology::<T>::get() != Some(topology_hash),
                 Error::<T>::TopologyIsDefault
             );
-            MineableTopologies::<T>::remove(topology_hash);
-            Self::deposit_event(Event::TopologyMineableRemoved { topology_hash });
+            if MineableTopologies::<T>::contains_key(topology_hash) {
+                MineableTopologies::<T>::remove(topology_hash);
+                Self::deposit_event(Event::TopologyMineableRemoved { topology_hash });
+            }
             Ok(())
         }
     }
