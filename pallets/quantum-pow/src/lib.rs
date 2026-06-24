@@ -418,11 +418,12 @@ pub mod pallet {
 
         #[cfg(feature = "try-runtime")]
         fn pre_upgrade() -> Result<Vec<u8>, sp_runtime::TryRuntimeError> {
-            // Capture the pre-upgrade version (as a plain u16 to avoid any
-            // StorageVersion codec ambiguity) + the default topology so
-            // post_upgrade can assert the carry-forward preserved it.
-            let prev: u16 = Pallet::<T>::on_chain_storage_version().into();
-            Ok((prev, DefaultTopology::<T>::get()).encode())
+            // Capture whether the chain was at v2 (as a bool) + the default
+            // topology so post_upgrade can assert the carry-forward preserved
+            // it. StorageVersion has no Into<u16> in this SDK fork; == is
+            // available and a bool is Encode/Decode, so we use that.
+            let was_v2 = Pallet::<T>::on_chain_storage_version() == StorageVersion::new(2);
+            Ok((was_v2, DefaultTopology::<T>::get()).encode())
         }
 
         #[cfg(feature = "try-runtime")]
@@ -431,9 +432,9 @@ pub mod pallet {
                 Pallet::<T>::on_chain_storage_version() >= STORAGE_VERSION,
                 "storage version must be >= 3 after upgrade"
             );
-            let (prev, default): (u16, Option<H256>) =
+            let (was_v2, default): (bool, Option<H256>) =
                 Decode::decode(&mut &state[..]).map_err(|_| "pre_upgrade state decode failed")?;
-            if prev == 2 {
+            if was_v2 {
                 // The old global `Difficulty` value must be gone.
                 ensure!(
                     frame_support::storage::unhashed::get::<types::DifficultyConfig>(
