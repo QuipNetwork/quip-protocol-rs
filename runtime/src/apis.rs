@@ -261,11 +261,15 @@ impl_runtime_apis! {
         }
 
         fn current_difficulty() -> pallet_quantum_pow::types::DifficultyConfig {
-            QuantumPow::current_difficulty_for(System::block_number())
+            QuantumPow::default_topology()
+                .map(|h| QuantumPow::current_difficulty_for(h, System::block_number()))
+                .unwrap_or_default()
         }
 
         fn current_hardness() -> pallet_quantum_pow::types::DifficultyConfig {
-            QuantumPow::current_difficulty_for(System::block_number())
+            QuantumPow::default_topology()
+                .map(|h| QuantumPow::current_difficulty_for(h, System::block_number()))
+                .unwrap_or_default()
         }
     }
 

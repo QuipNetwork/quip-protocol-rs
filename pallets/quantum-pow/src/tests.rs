@@ -2,7 +2,7 @@ use super::mock::*;
 use crate::{
     difficulty, topology,
     types::{DifficultyConfig, ProofRecord, QuantumProof},
-    AllowedValueSetOf, BlockBestProof, BlockProofCount, DefaultTopology, Difficulty,
+    AllowedValueSetOf, BlockBestProof, BlockProofCount, DefaultTopology, Difficulties,
     LastProofBlock, LastProofBlockHash, Miners, PackedSpinBytesOf, QBlockBlockById, QBlockCount,
     QBlockIdByBlock, QBlocks, RegisteredTopologies, WinnerStreak,
 };
@@ -43,6 +43,20 @@ fn easy_difficulty() -> DifficultyConfig {
         max_energy_milli: i64::MAX,
         min_diversity_milli: 0,
     }
+}
+
+fn default_hash() -> sp_core::H256 {
+    DefaultTopology::<Test>::get().expect("a default topology is registered")
+}
+
+/// Set the difficulty baseline for the current default topology.
+fn set_difficulty_default(difficulty: DifficultyConfig) {
+    assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), difficulty));
+}
+
+/// Read the (raw, pre-decay) difficulty baseline for the default topology.
+fn difficulty_default() -> DifficultyConfig {
+    Difficulties::<Test>::get(default_hash()).unwrap_or_default()
 }
 
 fn test_curve_c() -> crate::difficulty::CurveC {
@@ -377,7 +391,7 @@ fn set_default_topology_repoints_default_and_curve() {
             max_energy_milli: -10_000,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
         System::set_block_number(101); // (101 - 1) / 20 = 5 decay steps
 
@@ -456,17 +470,18 @@ fn set_difficulty_requires_root() {
 #[test]
 fn set_difficulty_works() {
     new_test_ext().execute_with(|| {
+        // Interim shape for Task 2: `set_difficulty` writes the default
+        // topology's `Difficulties` entry. Task 4 gives it an explicit
+        // `topology_hash` argument and this test changes shape accordingly.
+        let _ = registered_topology();
         let difficulty = DifficultyConfig {
             min_solutions: 3,
             max_energy_milli: -2_000,
             min_diversity_milli: 800,
         };
 
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            difficulty
-        ));
-        assert_eq!(Difficulty::<Test>::get(), difficulty);
+        set_difficulty_default(difficulty);
+        assert_eq!(difficulty_default(), difficulty);
     });
 }
 
@@ -474,11 +489,8 @@ fn set_difficulty_works() {
 fn submit_proof_accepts_valid_proof() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
         let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
 
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
@@ -492,11 +504,8 @@ fn submit_proof_accepts_valid_proof() {
 fn submit_proof_rejects_invalid_nonce() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
         let mut proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
         proof.nonce = proof.nonce.saturating_add(sp_core::U256::one());
 
@@ -511,11 +520,8 @@ fn submit_proof_rejects_invalid_nonce() {
 fn submit_proof_rejects_solution_with_wrong_byte_length() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
         let mut proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
         // Replace the packed solution with one byte too many for a 2-spin
         // binary-encoded solution (1 byte is enough; we send 2 bytes).
@@ -533,11 +539,8 @@ fn better_proof_replaces_worse_proof() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(2)));
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
 
         let worse = proof_for(1, &nodes, &edges, topology_hash, &[3]);
         let better = proof_for(2, &nodes, &edges, topology_hash, &[0]);
@@ -557,11 +560,8 @@ fn better_proof_replaces_worse_proof() {
 fn on_finalize_pays_block_reward_for_best_proof() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
         let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
         let initial_balance = pallet_balances::Pallet::<Test>::free_balance(1);
 
@@ -583,7 +583,7 @@ fn on_finalize_pays_block_reward_for_best_proof() {
 fn submit_proof_uses_decayed_difficulty_after_block_gap() {
     new_test_ext().execute_with(|| {
         // Regression: submit_proof must validate against the *decayed*
-        // Self::current_difficulty(), not the raw Difficulty::<T>::get().
+        // current_difficulty_for(topology), not the raw Difficulties entry.
         // Under the new curve policy, only max_energy_milli decays — so we
         // build the discriminator out of energy: set the threshold to exactly
         // the proof's best energy (validation requires strict-less-than) so
@@ -617,14 +617,11 @@ fn submit_proof_uses_decayed_difficulty_after_block_gap() {
 
         // Threshold == best energy: validation's strict-less-than gate
         // rejects same-block submissions (no decay yet).
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            DifficultyConfig {
-                min_solutions: 1,
-                max_energy_milli: best_energy_milli,
-                min_diversity_milli: 0,
-            },
-        ));
+        set_difficulty_default(DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: best_energy_milli,
+            min_diversity_milli: 0,
+        });
         let early_proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
         assert_noop!(
             QuantumPow::submit_proof(RuntimeOrigin::signed(1), early_proof),
@@ -650,8 +647,8 @@ fn on_finalize_fast_proof_hardens_difficulty() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
         let initial = easy_difficulty();
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(initial);
 
         LastProofBlock::<Test>::put(1);
         System::set_block_number(10);
@@ -660,7 +657,7 @@ fn on_finalize_fast_proof_hardens_difficulty() {
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
         QuantumPow::on_finalize(System::block_number());
 
-        let next = Difficulty::<Test>::get();
+        let next = difficulty_default();
         // Only the energy threshold moves; the chain-static fields stay put.
         assert!(next.max_energy_milli < initial.max_energy_milli);
         assert_eq!(next.min_solutions, initial.min_solutions);
@@ -682,8 +679,8 @@ fn on_finalize_slow_proof_by_new_winner_hardens_from_decayed_base() {
             max_energy_milli: 0,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(initial);
 
         LastProofBlock::<Test>::put(1);
         System::set_block_number(250);
@@ -698,7 +695,7 @@ fn on_finalize_slow_proof_by_new_winner_hardens_from_decayed_base() {
         );
         QuantumPow::on_finalize(System::block_number());
 
-        let next = Difficulty::<Test>::get();
+        let next = difficulty_default();
         // A slow proof by a non-dominant winner hardens the threshold below
         // the decayed value (gentle 5%±4% band — v0.1 different/new-winner
         // rule). Decay remains the easing pressure between wins.
@@ -736,11 +733,14 @@ fn network_upgrade_wipes_pow_state_and_bumps_version() {
         let (.., hash) = registered_topology();
         assert!(RegisteredTopologies::<Test>::contains_key(hash));
         assert_eq!(DefaultTopology::<Test>::get(), Some(hash));
-        Difficulty::<Test>::put(DifficultyConfig {
-            min_solutions: 7,
-            max_energy_milli: 12_345,
-            min_diversity_milli: 300,
-        });
+        Difficulties::<Test>::insert(
+            hash,
+            DifficultyConfig {
+                min_solutions: 7,
+                max_energy_milli: 12_345,
+                min_diversity_milli: 300,
+            },
+        );
         QBlockCount::<Test>::put(9);
         // Simulate the on-chain v0.2 storage version so the guard fires.
         StorageVersion::new(1).put::<QuantumPow>();
@@ -751,8 +751,9 @@ fn network_upgrade_wipes_pow_state_and_bumps_version() {
         assert!(RegisteredTopologies::<Test>::iter().next().is_none());
         assert_eq!(DefaultTopology::<Test>::get(), None);
         assert_eq!(QBlockCount::<Test>::get(), 0);
-        // `Difficulty` reads back at its Default, identical to a fresh chain.
-        assert_eq!(Difficulty::<Test>::get(), DifficultyConfig::default());
+        // The per-topology difficulty entry is wiped along with the rest of
+        // the pallet prefix, identical to a fresh chain.
+        assert_eq!(Difficulties::<Test>::get(hash), None);
         assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(2));
     });
 }
@@ -770,7 +771,7 @@ fn dominant_winner_eases_at_fast_cutoff_but_hardens_below_it() {
             max_energy_milli: curve.knee_milli,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
         // Seed a streak one short of the threshold (3); the next win makes
         // the miner dominant.
@@ -778,7 +779,7 @@ fn dominant_winner_eases_at_fast_cutoff_but_hardens_below_it() {
 
         finalize_winner(1, 61); // elapsed 60 == cutoff -> slow, dominant
 
-        let next = Difficulty::<Test>::get();
+        let next = difficulty_default();
         assert!(
             next.max_energy_milli > initial.max_energy_milli,
             "a dominant winner at 60 elapsed blocks must ease"
@@ -793,13 +794,13 @@ fn dominant_winner_eases_at_fast_cutoff_but_hardens_below_it() {
             max_energy_milli: curve.knee_milli,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
         WinnerStreak::<Test>::put(crate::types::WinnerStreak { miner: 1, count: 2 });
 
         finalize_winner(1, 60); // elapsed 59 < cutoff -> fast, dominance ignored
 
-        let next = Difficulty::<Test>::get();
+        let next = difficulty_default();
         assert!(
             next.max_energy_milli < initial.max_energy_milli,
             "a fast win must harden even for a dominant winner"
@@ -819,7 +820,7 @@ fn slow_win_by_different_miner_hardens() {
             max_energy_milli: curve.knee_milli,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
 
         // Make miner 1 dominant so its slow win eases the threshold up to
@@ -827,12 +828,12 @@ fn slow_win_by_different_miner_hardens() {
         // strict hardening move.
         WinnerStreak::<Test>::put(crate::types::WinnerStreak { miner: 1, count: 2 });
         finalize_winner(1, 100);
-        let after_dominant = Difficulty::<Test>::get();
+        let after_dominant = difficulty_default();
         assert!(after_dominant.max_energy_milli > initial.max_energy_milli);
 
         finalize_winner(2, 200); // different miner, slow win
 
-        let after_switch = Difficulty::<Test>::get();
+        let after_switch = difficulty_default();
         let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
         assert_eq!(streak.miner, 2);
         assert_eq!(streak.count, 1);
@@ -853,17 +854,17 @@ fn repeated_same_winner_forces_easing() {
             max_energy_milli: curve.knee_milli,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
 
         // Slow wins (elapsed >= 60 blocks): dominance easing only applies
         // past the fast cutoff, so space the wins ~100 blocks apart.
         finalize_winner(1, 100);
-        let after_first = Difficulty::<Test>::get();
+        let after_first = difficulty_default();
         assert!(after_first.max_energy_milli < initial.max_energy_milli);
 
         finalize_winner(1, 200);
-        let after_second = Difficulty::<Test>::get();
+        let after_second = difficulty_default();
         // Streak count 2 is still below the threshold (3): slow wins by a
         // non-dominant winner must keep hardening (or hold at the clamp
         // floor) — easing here would fire one win early and raise the value.
@@ -873,7 +874,7 @@ fn repeated_same_winner_forces_easing() {
         );
 
         finalize_winner(1, 300);
-        let after_third = Difficulty::<Test>::get();
+        let after_third = difficulty_default();
         let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
 
         assert_eq!(streak.miner, 1);
@@ -896,14 +897,14 @@ fn network_upgrade_is_noop_once_at_v2() {
             max_energy_milli: 12_345,
             min_diversity_milli: 300,
         };
-        Difficulty::<Test>::put(difficulty);
+        Difficulties::<Test>::insert(hash, difficulty);
         QBlockCount::<Test>::put(9);
         StorageVersion::new(2).put::<QuantumPow>();
 
         QuantumPow::on_runtime_upgrade();
 
         assert!(RegisteredTopologies::<Test>::contains_key(hash));
-        assert_eq!(Difficulty::<Test>::get(), difficulty);
+        assert_eq!(Difficulties::<Test>::get(hash), Some(difficulty));
         assert_eq!(QBlockCount::<Test>::get(), 9);
         assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(2));
     });
@@ -920,16 +921,16 @@ fn zero_easing_threshold_disables_forced_easing() {
             max_energy_milli: curve.knee_milli,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
 
         // Slow wins: with the default threshold (3) the third one would
         // ease for the dominant winner, so this spacing discriminates.
         finalize_winner(1, 100);
         finalize_winner(1, 200);
-        let after_second = Difficulty::<Test>::get();
+        let after_second = difficulty_default();
         finalize_winner(1, 300);
-        let after_third = Difficulty::<Test>::get();
+        let after_third = difficulty_default();
 
         // Without the `threshold > 0` guard, `count >= 0` would force
         // easing on every slow win. A threshold of 0 must mean "disabled":
@@ -993,15 +994,15 @@ fn winner_streak_resets_for_different_miner() {
             max_energy_milli: curve.knee_milli,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
 
         finalize_winner(1, 10);
         finalize_winner(1, 20);
-        let before_reset = Difficulty::<Test>::get();
+        let before_reset = difficulty_default();
 
         finalize_winner(2, 30);
-        let after_reset = Difficulty::<Test>::get();
+        let after_reset = difficulty_default();
         let streak = WinnerStreak::<Test>::get().expect("winner streak tracked");
 
         assert_eq!(streak.miner, 2);
@@ -1025,11 +1026,8 @@ fn winner_streak_resets_for_different_miner() {
 fn on_finalize_persists_qblock_with_recoverable_nonce() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
         // Capture the seed the round will use, before submit_proof, so the
         // assertion below pins the chain-stored value against the value
         // the helper actually fed into derive_nonce.
@@ -1120,12 +1118,8 @@ fn qblock_ids_increment_only_for_winning_qblocks() {
 #[test]
 fn mining_snapshot_returns_default_and_selected_topology_views() {
     new_test_ext().execute_with(|| {
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
-
         let (default_nodes, default_edges, default_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
 
         let other_nodes = bounded::<_, MaxNodes>(vec![10, 11, 12]);
         let other_edges = bounded::<_, MaxEdges>(vec![(10, 11), (11, 12)]);
@@ -1185,8 +1179,8 @@ fn qblock_records_active_difficulty_threshold() {
             max_energy_milli: i64::MAX,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(initial);
 
         LastProofBlock::<Test>::put(1);
         System::set_block_number(45); // (45 - 1) / 20 = 2 decay steps
@@ -1204,7 +1198,7 @@ fn qblock_records_active_difficulty_threshold() {
         // Mining time blocks = 45 - 1 = 44 < harden cutoff (60), so the
         // adjustment hardens. Only the energy threshold moves now; chain-static
         // fields stay put.
-        let next = Difficulty::<Test>::get();
+        let next = difficulty_default();
         assert!(
             next.max_energy_milli < expected_active.max_energy_milli,
             "post-adjust energy must be harder (more negative) than the active threshold"
@@ -1228,8 +1222,8 @@ fn mining_snapshot_returns_decayed_difficulty_after_epochs() {
             max_energy_milli: 0,
             min_diversity_milli: 100,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
         let _ = registered_topology();
+        set_difficulty_default(initial);
 
         LastProofBlock::<Test>::put(1);
         System::set_block_number(121); // (121 - 1) / 20 = 6 decay steps
@@ -1245,7 +1239,7 @@ fn mining_snapshot_returns_decayed_difficulty_after_epochs() {
         // Direct storage query (the polkadot.js default path) must still
         // return the undecayed baseline — this is the visibility gap that the
         // runtime API closes.
-        assert_eq!(Difficulty::<Test>::get(), initial);
+        assert_eq!(difficulty_default(), initial);
     });
 }
 
@@ -1258,11 +1252,8 @@ fn submit_proof_survives_long_block_gap() {
     // this scenario produced InvalidNonce.
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
 
         // Derive at block 1 (default after new_test_ext).
         let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
@@ -1286,11 +1277,8 @@ fn submit_proof_rejected_after_intervening_win() {
     // across rounds.
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
-        assert_ok!(QuantumPow::set_difficulty(
-            RuntimeOrigin::root(),
-            easy_difficulty()
-        ));
         let (nodes, edges, topology_hash) = registered_topology();
+        set_difficulty_default(easy_difficulty());
 
         // Derive against the current last proof block hash (`block_hash(0)` in the
         // test env — defaults to zero, but the value itself is incidental
@@ -1523,7 +1511,7 @@ fn energy_curve_uses_default_topology_not_other_registered() {
             max_energy_milli: curve_a.knee_milli,
             min_diversity_milli: 0,
         };
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), initial));
+        set_difficulty_default(initial);
         LastProofBlock::<Test>::put(1);
         System::set_block_number(101); // (101 - 1) / 20 = 5 decay steps
 
@@ -1713,12 +1701,38 @@ fn submit_proof_records_topology_hash() {
     new_test_ext().execute_with(|| {
         assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
         let (nodes, edges, topology_hash) = registered_topology();
-        assert_ok!(QuantumPow::set_difficulty(RuntimeOrigin::root(), easy_difficulty()));
+        set_difficulty_default(easy_difficulty());
         let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
 
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
 
         let record = BlockBestProof::<Test>::get().expect("best proof recorded");
         assert_eq!(record.topology_hash, topology_hash);
+    });
+}
+
+#[test]
+fn winning_topology_does_not_move_other_topology_difficulty() {
+    new_test_ext().execute_with(|| {
+        // Topology A (ternary-h) is default; topology B (zero-field) is a
+        // second registered topology. Each gets its own difficulty entry.
+        let (_, _, hash_a) = registered_topology();
+        let hash_b = registered_zero_field_topology();
+
+        let diff_a = DifficultyConfig { min_solutions: 1, max_energy_milli: -10_000, min_diversity_milli: 0 };
+        let diff_b = DifficultyConfig { min_solutions: 1, max_energy_milli: -20_000, min_diversity_milli: 0 };
+        Difficulties::<Test>::insert(hash_a, diff_a);
+        Difficulties::<Test>::insert(hash_b, diff_b);
+
+        // A wins (finalize against A). B's difficulty must be untouched.
+        LastProofBlock::<Test>::put(1);
+        System::set_block_number(80);
+        BlockBestProof::<Test>::put(ProofRecord {
+            miner: 1, submitted_at: 80, energy_milli: -10_000, salt: [0u8; 32], topology_hash: hash_a,
+        });
+        QuantumPow::on_finalize(80);
+
+        assert_ne!(Difficulties::<Test>::get(hash_a), Some(diff_a), "A's difficulty must have been adjusted");
+        assert_eq!(Difficulties::<Test>::get(hash_b), Some(diff_b), "B's difficulty must NOT move when A wins");
     });
 }

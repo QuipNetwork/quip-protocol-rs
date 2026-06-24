@@ -203,8 +203,14 @@ pub mod pallet {
     #[pallet::storage]
     pub type DefaultTopology<T: Config> = StorageValue<_, H256>;
 
+    /// Per-topology difficulty baseline (post-last-adjust; decay is applied
+    /// on read by `current_difficulty_for`). Keyed by `topology_hash` so a
+    /// `DefaultTopology` switch is clean and one topology's winners can never
+    /// pin another's difficulty. Unset entries read back as
+    /// `DifficultyConfig::default()`.
     #[pallet::storage]
-    pub type Difficulty<T: Config> = StorageValue<_, types::DifficultyConfig, ValueQuery>;
+    pub type Difficulties<T: Config> =
+        StorageMap<_, Blake2_128Concat, H256, types::DifficultyConfig>;
 
     #[pallet::storage]
     pub type Miners<T: Config> = StorageMap<_, Blake2_128Concat, T::AccountId, MinerInfoOf<T>>;
@@ -449,17 +455,14 @@ pub mod pallet {
                     .saturated_into::<u64>()
             };
 
+            let topology_hash = record.topology_hash;
             // Snapshot the live (decay-applied) threshold this proof had to
-            // clear before adjust_on_proof rewrites it. QBlocks stores
-            // this so explorers and miners can answer "what difficulty did
-            // block N actually clear?" without replaying decay client-side.
-            let active = Self::current_difficulty(n);
+            // clear before adjustment rewrites it.
+            let active = Self::current_difficulty_for(topology_hash, n);
             let winner_streak = Self::update_winner_streak(&record.miner);
             let dominant_winner = Self::is_dominant_streak(&winner_streak);
-            // Curve calibration MUST come from chain state (DefaultTopology),
-            // not from the winning proof. See `current_energy_curve` docs and
-            // GitLab issue #5 for the invariant rationale.
-            let next = match Self::current_energy_curve() {
+            // Adjust ONLY the winning topology's difficulty, using ITS curve.
+            let next = match Self::energy_curve_for(topology_hash) {
                 Some(curve) => crate::difficulty::adjust_on_proof_with_dominance(
                     active,
                     mining_time_blocks,
@@ -467,11 +470,6 @@ pub mod pallet {
                     &(frame_system::Pallet::<T>::parent_hash(), &record.miner, n).encode(),
                     dominant_winner,
                 ),
-                // Unreachable in normal operation: a proof would not have
-                // been submitted without a registered topology, and the
-                // first registration also seeds `DefaultTopology`. The
-                // defensive trips tests/try-runtime and logs in production
-                // so a frozen difficulty is diagnosable, not silent.
                 None => {
                     frame_support::defensive!(
                         "energy curve missing during on_finalize difficulty adjustment"
@@ -479,7 +477,7 @@ pub mod pallet {
                     active
                 }
             };
-            Difficulty::<T>::put(next);
+            Difficulties::<T>::insert(topology_hash, next);
             LastProofBlock::<T>::put(n);
             let qblock_id = Self::next_qblock_id();
 
@@ -678,7 +676,9 @@ pub mod pallet {
             difficulty: types::DifficultyConfig,
         ) -> DispatchResult {
             ensure_root(origin)?;
-            Difficulty::<T>::put(difficulty);
+            if let Some(hash) = DefaultTopology::<T>::get() {
+                Difficulties::<T>::insert(hash, difficulty);
+            }
             Self::deposit_event(Event::DifficultyUpdated { difficulty });
             Ok(())
         }
@@ -736,7 +736,8 @@ pub mod pallet {
             )
             .map_err(|_| Error::<T>::InvalidTopology)?;
 
-            let current = Self::current_difficulty(frame_system::Pallet::<T>::block_number());
+            let current =
+                Self::current_difficulty_for(proof.topology_hash, frame_system::Pallet::<T>::block_number());
             let validation = Self::validate_proof(&proof, &topology, &h, &j, &current)?;
 
             ensure!(
@@ -806,8 +807,21 @@ pub mod pallet {
             Miners::<T>::get(account)
         }
 
-        pub fn current_difficulty_for(block_number: BlockNumberFor<T>) -> types::DifficultyConfig {
-            Self::current_difficulty(block_number)
+        /// Active (decay-applied) difficulty a miner must clear for
+        /// `topology_hash` at `block_number`. Reads the per-topology baseline
+        /// (`Difficulties[hash]`, defaulting when unset) and applies global
+        /// block-based decay since the last winning proof.
+        pub fn current_difficulty_for(
+            topology_hash: H256,
+            block_number: BlockNumberFor<T>,
+        ) -> types::DifficultyConfig {
+            crate::difficulty::current_difficulty(
+                block_number.saturated_into::<u32>(),
+                Difficulties::<T>::get(topology_hash).unwrap_or_default(),
+                LastProofBlock::<T>::get().saturated_into::<u32>(),
+                T::EpochLength::get().saturated_into::<u32>(),
+                Self::energy_curve_for(topology_hash),
+            )
         }
 
         pub fn latest_qblock_id() -> Option<u64> {
@@ -839,7 +853,7 @@ pub mod pallet {
 
             Some(types::MiningSnapshot {
                 last_proof_block_hash,
-                difficulty: Self::current_difficulty_for(block_number),
+                difficulty: Self::current_difficulty_for(topology_hash, block_number),
                 topology_hash,
                 nodes: topology.nodes,
                 edges: topology.edges,
@@ -929,30 +943,22 @@ pub mod pallet {
             }
         }
 
-        /// Build the energy curve used by `adjust_on_proof` and
-        /// `apply_decay`.
+        /// Build the difficulty energy curve for a specific topology.
         ///
-        /// CRITICAL INVARIANT (see GitLab issue #5 and the topology-registry
-        /// fix that addressed `h_values`-in-proof): the curve depends only
-        /// on chain state. It must never be derived from any field of a
-        /// submitted proof.
+        /// Historically this was hard-pinned to `DefaultTopology` so a miner
+        /// could not shift difficulty by choosing a different *registered*
+        /// topology to mine against (the old anti-gaming invariant). That
+        /// guard is now provided by the **mineable-topology whitelist**: only
+        /// whitelisted topologies can be mined, and each owns its own
+        /// root-set `Difficulties` entry. Deriving the curve from the proof's
+        /// own topology is therefore safe — there is no shared difficulty to
+        /// pin.
         ///
-        /// Specifically: even though `submit_proof` accepts proofs against
-        /// any hash in `RegisteredTopologies`, the curve is calibrated
-        /// against `DefaultTopology::<T>::get()`. Miners cannot shift
-        /// difficulty by choosing a different registered topology to mine
-        /// against.
-        ///
-        /// Returns `None` when `DefaultTopology` is unset (no topology has
-        /// been registered yet). Callers treat that as a defensive no-op —
-        /// in practice the case is unreachable during mining because
-        /// `submit_proof` requires the proof's topology to be registered
-        /// first, and the first registration also seeds `DefaultTopology`.
-        fn current_energy_curve() -> Option<crate::difficulty::EnergyCurve> {
-            let (_, topology) = Self::default_topology_meta()?;
-            // `.ok()` is defensive only: registered topologies passed
-            // `check_spec`, so their specs are never empty/inverted and the
-            // curve construction cannot fail for chain state.
+        /// Returns `None` when the topology is not registered (defensive: a
+        /// proof would not validate, and `set_difficulty` requires
+        /// registration).
+        fn energy_curve_for(topology_hash: H256) -> Option<crate::difficulty::EnergyCurve> {
+            let topology = RegisteredTopologies::<T>::get(topology_hash)?;
             crate::difficulty::EnergyCurve::new(
                 topology.nodes.len() as u32,
                 topology.edges.len() as u32,
@@ -965,16 +971,6 @@ pub mod pallet {
                 &topology.allowed_j_values.as_slice(),
             )
             .ok()
-        }
-
-        fn current_difficulty(block_number: BlockNumberFor<T>) -> types::DifficultyConfig {
-            crate::difficulty::current_difficulty(
-                block_number.saturated_into::<u32>(),
-                Difficulty::<T>::get(),
-                LastProofBlock::<T>::get().saturated_into::<u32>(),
-                T::EpochLength::get().saturated_into::<u32>(),
-                Self::current_energy_curve(),
-            )
         }
 
         fn update_winner_streak(miner: &T::AccountId) -> WinnerStreakOf<T> {

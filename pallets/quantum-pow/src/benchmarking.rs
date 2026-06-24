@@ -183,7 +183,7 @@ mod benchmarks {
         let caller: T::AccountId = whitelisted_caller();
         register_miner_for::<T>(&caller);
         let (_nodes, _edges, topology_hash) = register_topology_for::<T>();
-        Difficulty::<T>::put(easy_difficulty());
+        Difficulties::<T>::insert(topology_hash, easy_difficulty());
         let proof = valid_proof_for::<T>(&caller, topology_hash);
 
         #[extrinsic_call]
