@@ -271,6 +271,16 @@ impl_runtime_apis! {
                 .map(|h| QuantumPow::current_difficulty_for(h, System::block_number()))
                 .unwrap_or_default()
         }
+
+        fn difficulty_for(
+            topology_hash: sp_core::H256,
+        ) -> Option<pallet_quantum_pow::types::DifficultyConfig> {
+            QuantumPow::difficulty_for_api(topology_hash)
+        }
+
+        fn mineable_topologies() -> alloc::vec::Vec<sp_core::H256> {
+            QuantumPow::mineable_topologies()
+        }
     }
 
     impl pallet_quantum_compute_mempool::QuantumComputeMempoolApi<

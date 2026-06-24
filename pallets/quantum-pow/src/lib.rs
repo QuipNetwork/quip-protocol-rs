@@ -109,6 +109,13 @@ sp_api::decl_runtime_apis! {
 
         /// Client-facing alias for the live difficulty threshold.
         fn current_hardness() -> crate::types::DifficultyConfig;
+
+        /// Per-topology live difficulty (decay applied), or `None` if the
+        /// topology is not registered.
+        fn difficulty_for(topology_hash: sp_core::H256) -> Option<crate::types::DifficultyConfig>;
+
+        /// Hashes of every topology currently on the mineable whitelist.
+        fn mineable_topologies() -> alloc::vec::Vec<sp_core::H256>;
     }
 }
 
@@ -952,6 +959,22 @@ pub mod pallet {
                 allowed_j_values: topology.allowed_j_values,
                 allowed_spin_values: topology.allowed_spin_values,
             })
+        }
+
+        /// Per-topology live difficulty (decay applied). Returns `None` if
+        /// `topology_hash` has never been registered.
+        pub fn difficulty_for_api(topology_hash: H256) -> Option<types::DifficultyConfig> {
+            RegisteredTopologies::<T>::contains_key(topology_hash).then(|| {
+                Self::current_difficulty_for(
+                    topology_hash,
+                    frame_system::Pallet::<T>::block_number(),
+                )
+            })
+        }
+
+        /// Hashes of every topology currently on the mineable whitelist.
+        pub fn mineable_topologies() -> Vec<H256> {
+            MineableTopologies::<T>::iter_keys().collect()
         }
 
         /// 32-byte representation of an account, suitable for use as a fixed-size

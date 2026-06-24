@@ -1914,3 +1914,82 @@ fn set_default_topology_rejects_non_mineable() {
         );
     });
 }
+
+#[test]
+fn difficulty_for_api_returns_per_topology() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash_a) = registered_topology();
+        let hash_b = registered_zero_field_topology();
+        let da = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: -10_000,
+            min_diversity_milli: 0,
+        };
+        let db = DifficultyConfig {
+            min_solutions: 2,
+            max_energy_milli: -20_000,
+            min_diversity_milli: 5,
+        };
+        set_difficulty_default(da); // A is the default
+        assert_ok!(QuantumPow::set_difficulty(
+            RuntimeOrigin::root(),
+            hash_b,
+            db
+        ));
+
+        assert_eq!(QuantumPow::difficulty_for_api(hash_a), Some(da));
+        assert_eq!(QuantumPow::difficulty_for_api(hash_b), Some(db));
+        assert_eq!(
+            QuantumPow::difficulty_for_api(sp_core::H256::repeat_byte(3)),
+            None
+        );
+    });
+}
+
+#[test]
+fn mining_snapshot_some_returns_that_topology_difficulty() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology();
+        let hash_b = registered_zero_field_topology();
+        let db = DifficultyConfig {
+            min_solutions: 2,
+            max_energy_milli: -20_000,
+            min_diversity_milli: 5,
+        };
+        assert_ok!(QuantumPow::set_difficulty(
+            RuntimeOrigin::root(),
+            hash_b,
+            db
+        ));
+
+        let snap = QuantumPow::mining_snapshot(Some(hash_b)).expect("snapshot exists");
+        assert_eq!(snap.topology_hash, hash_b);
+        assert_eq!(snap.difficulty, db); // B's difficulty, not the default's
+    });
+}
+
+#[test]
+fn mineable_topologies_enumerates_whitelist() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash_a) = registered_topology(); // whitelisted (default)
+        let hash_b = registered_zero_field_topology(); // whitelisted
+        let mut got = QuantumPow::mineable_topologies();
+        got.sort();
+        let mut want = vec![hash_a, hash_b];
+        want.sort();
+        assert_eq!(got, want);
+    });
+}
+
+#[test]
+fn unset_whitelisted_topology_reads_default_hard_difficulty() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology();
+        let hash_b = registered_zero_field_topology(); // whitelisted, no set_difficulty
+                                                       // Fails closed: returns the conservative (hard) default until calibrated.
+        assert_eq!(
+            QuantumPow::current_difficulty_for(hash_b, System::block_number()),
+            DifficultyConfig::default()
+        );
+    });
+}
