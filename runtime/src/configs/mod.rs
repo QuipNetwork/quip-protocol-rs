@@ -309,6 +309,14 @@ parameter_types! {
     pub const MinerRegistryMaxMinerLabelBytes: u32 = 64;
     pub const MinerRegistryMaxMinerBackendBytes: u32 = 32;
     pub const MinerRegistryMaxMinerDeviceIdBytes: u32 = 128;
+    // schema-v2 `system_info` bounds, sized off measured payloads (worst-case
+    // 8-GPU survey ~787 B), leaving generous headroom.
+    pub const MinerRegistryMaxOsStringBytes: u32 = 64;
+    pub const MinerRegistryMaxCpuBrandBytes: u32 = 96;
+    pub const MinerRegistryMaxArchBytes: u32 = 16;
+    pub const MinerRegistryMaxGpuVendorBytes: u32 = 16;
+    pub const MinerRegistryMaxGpuNameBytes: u32 = 96;
+    pub const MinerRegistryMaxGpus: u32 = 16;
     pub const MinerRegistryDescriptorDepositBase: Balance = MILLI_UNIT;
     pub const MinerRegistryDescriptorDepositPerByte: Balance = MICRO_UNIT;
 }
@@ -388,6 +396,12 @@ impl pallet_miner_registry::Config for Runtime {
     type MaxMinerLabelBytes = MinerRegistryMaxMinerLabelBytes;
     type MaxMinerBackendBytes = MinerRegistryMaxMinerBackendBytes;
     type MaxMinerDeviceIdBytes = MinerRegistryMaxMinerDeviceIdBytes;
+    type MaxOsStringBytes = MinerRegistryMaxOsStringBytes;
+    type MaxCpuBrandBytes = MinerRegistryMaxCpuBrandBytes;
+    type MaxArchBytes = MinerRegistryMaxArchBytes;
+    type MaxGpuVendorBytes = MinerRegistryMaxGpuVendorBytes;
+    type MaxGpuNameBytes = MinerRegistryMaxGpuNameBytes;
+    type MaxGpus = MinerRegistryMaxGpus;
     type DescriptorDepositBase = MinerRegistryDescriptorDepositBase;
     type DescriptorDepositPerByte = MinerRegistryDescriptorDepositPerByte;
     type WeightInfo = pallet_miner_registry::weights::SubstrateWeight<Runtime>;

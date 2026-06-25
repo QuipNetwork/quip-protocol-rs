@@ -104,7 +104,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // added. `set_difficulty`'s argument encoding changed, so
     // `transaction_version` moves to 4. Pallet storage version 2 → 3 with a
     // carry-forward migration.
-    spec_version: 108,
+    // Bumped to 109 to restore on-chain `system_info`: `MinerRegistry` adds a
+    // schema-v2 descriptor input (`NodeDescriptorInput::V2`) carrying an
+    // optional typed hardware survey, plus a v1 → v2 storage migration that
+    // drops existing descriptors (miners re-file on restart). The V1 call
+    // variant keeps index 0 and encodes identically, so `transaction_version`
+    // stays at 4. MinerRegistry pallet storage version 1 → 2.
+    spec_version: 109,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 4,
@@ -212,6 +218,10 @@ pub type UncheckedExtrinsic =
 /// The payload being signed in transactions.
 pub type SignedPayload = generic::SignedPayload<RuntimeCall, TxExtension>;
 
+/// Runtime storage migrations, run on upgrade before every pallet's
+/// `on_runtime_upgrade`.
+pub type Migrations = (pallet_miner_registry::migrations::v2::MigrateToV2<Runtime>,);
+
 /// Executive: handles dispatch to the various modules.
 pub type Executive = frame_executive::Executive<
     Runtime,
@@ -219,6 +229,7 @@ pub type Executive = frame_executive::Executive<
     frame_system::ChainContext<Runtime>,
     Runtime,
     AllPalletsWithSystem,
+    Migrations,
 >;
 
 #[cfg(test)]
