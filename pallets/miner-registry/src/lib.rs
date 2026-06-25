@@ -9,6 +9,7 @@ mod mock;
 #[cfg(test)]
 mod tests;
 
+pub mod migrations;
 pub mod weights;
 pub use weights::*;
 
@@ -31,6 +32,17 @@ type MinerBackendOf<T> = BoundedVec<u8, <T as Config>::MaxMinerBackendBytes>;
 type MinerDeviceIdOf<T> = BoundedVec<u8, <T as Config>::MaxMinerDeviceIdBytes>;
 type MinerSpecOf<T> = MinerSpec<MinerLabelOf<T>, MinerBackendOf<T>, MinerDeviceIdOf<T>>;
 type MinerSpecsOf<T> = BoundedVec<MinerSpecOf<T>, <T as Config>::MaxMinerSpecs>;
+
+// Bounded field aliases for the schema-v2 `system_info` hardware survey.
+type OsStringOf<T> = BoundedVec<u8, <T as Config>::MaxOsStringBytes>;
+type CpuBrandOf<T> = BoundedVec<u8, <T as Config>::MaxCpuBrandBytes>;
+type ArchOf<T> = BoundedVec<u8, <T as Config>::MaxArchBytes>;
+type GpuVendorOf<T> = BoundedVec<u8, <T as Config>::MaxGpuVendorBytes>;
+type GpuNameOf<T> = BoundedVec<u8, <T as Config>::MaxGpuNameBytes>;
+type GpuOf<T> = GpuInfo<GpuVendorOf<T>, GpuNameOf<T>>;
+type GpusOf<T> = BoundedVec<GpuOf<T>, <T as Config>::MaxGpus>;
+type SystemInfoOf<T> = SystemInfo<OsStringOf<T>, CpuBrandOf<T>, ArchOf<T>, GpusOf<T>>;
+
 type NodeDescriptorV1InputOf<T> = NodeDescriptorV1Input<
     NodeIdOf<T>,
     NodeNameOf<T>,
@@ -38,7 +50,16 @@ type NodeDescriptorV1InputOf<T> = NodeDescriptorV1Input<
     RpcEndpointsOf<T>,
     MinerSpecsOf<T>,
 >;
-type NodeDescriptorInputOf<T> = NodeDescriptorInput<NodeDescriptorV1InputOf<T>>;
+type NodeDescriptorV2InputOf<T> = NodeDescriptorV2Input<
+    NodeIdOf<T>,
+    NodeNameOf<T>,
+    PublicHostOf<T>,
+    RpcEndpointsOf<T>,
+    MinerSpecsOf<T>,
+    SystemInfoOf<T>,
+>;
+type NodeDescriptorInputOf<T> =
+    NodeDescriptorInput<NodeDescriptorV1InputOf<T>, NodeDescriptorV2InputOf<T>>;
 type NodeDescriptorOf<T> = NodeDescriptor<
     NodeIdOf<T>,
     NodeNameOf<T>,
@@ -47,11 +68,16 @@ type NodeDescriptorOf<T> = NodeDescriptor<
     MinerSpecsOf<T>,
     BlockNumberOf<T>,
     BalanceOf<T>,
+    SystemInfoOf<T>,
 >;
 type ParticipationRecordOf<T> = ParticipationRecord<BlockNumberOf<T>>;
 
 /// Schema version stamped onto every `NodeDescriptor::V1` stored by this pallet.
 pub const NODE_DESCRIPTOR_SCHEMA_V1: u16 = 1;
+
+/// Schema version stamped onto descriptors filed via the V2 input, which carry
+/// an optional typed `system_info` hardware survey.
+pub const NODE_DESCRIPTOR_SCHEMA_V2: u16 = 2;
 
 /// Read-only view into the proof-of-work pallet's qblock numbering.
 ///
@@ -117,7 +143,64 @@ pub enum MinerKind {
     Asic,
 }
 
-// add hardware spec blob
+#[derive(
+    Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
+)]
+/// Operating-system identity from a node's hardware survey. `S` is a bounded
+/// byte string (`OsStringOf<T>`).
+pub struct OsInfo<S> {
+    /// OS family, e.g. "Linux" / "Darwin" / "Windows".
+    pub system: S,
+    /// Kernel or build string.
+    pub release: S,
+    /// Machine architecture, e.g. "x86_64" / "arm64".
+    pub machine: S,
+}
+
+#[derive(
+    Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
+)]
+/// CPU identity from a node's hardware survey.
+pub struct CpuInfo<Brand, Arch> {
+    pub logical_cores: Option<u32>,
+    pub physical_cores: Option<u32>,
+    /// Marketing/brand string, e.g. "AMD EPYC 7763".
+    pub brand: Brand,
+    /// Instruction-set architecture, e.g. "x86_64".
+    pub arch: Arch,
+}
+
+#[derive(
+    Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
+)]
+/// A single GPU from a node's hardware survey.
+pub struct GpuInfo<Vendor, Name> {
+    /// Position in the node's GPU enumeration; rigs stay well under 256.
+    pub index: u8,
+    /// Vendor string, e.g. "NVIDIA" / "Apple" / "AMD".
+    pub vendor: Vendor,
+    /// Product name, e.g. "NVIDIA H100 80GB HBM3".
+    pub name: Name,
+    pub memory_mb: Option<u32>,
+    /// Utilization percentage, constrained to `0..=100` on store.
+    pub utilization_pct: Option<u8>,
+}
+
+#[derive(
+    Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
+)]
+/// Optional typed hardware survey carried by schema-v2 descriptors. Every
+/// variable-length field is a `BoundedVec`, so `MaxEncodedLen` stays finite.
+/// GPU vendor/name bounds live inside `Gpus` (`GpuOf<T>`), so they are not
+/// separate generics here.
+pub struct SystemInfo<OsStr, Brand, Arch, Gpus> {
+    pub os: OsInfo<OsStr>,
+    pub cpu: CpuInfo<Brand, Arch>,
+    pub memory_mb: Option<u32>,
+    /// `BoundedVec<GpuInfo<Vendor, Name>, MaxGpus>`.
+    pub gpus: Gpus,
+}
+
 #[derive(
     Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
 )]
@@ -147,10 +230,40 @@ pub struct NodeDescriptorV1Input<NodeId, NodeName, PublicHost, RpcEndpoints, Min
 #[derive(
     Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
 )]
+/// Caller-supplied descriptor payload for schema v2: identical to v1 plus an
+/// optional `system_info` hardware survey. Field order matches v1 so the shared
+/// prefix encodes the same way.
+pub struct NodeDescriptorV2Input<
+    NodeId,
+    NodeName,
+    PublicHost,
+    RpcEndpoints,
+    MinerSpecs,
+    SystemInfoInput,
+> {
+    pub node_id: NodeId,
+    pub node_name: NodeName,
+    pub public_host: Option<PublicHost>,
+    pub public_port: Option<u16>,
+    pub rpc_endpoints: RpcEndpoints,
+    pub auto_mine: bool,
+    pub log_level: LogLevel,
+    pub miners: MinerSpecs,
+    pub system_info: Option<SystemInfoInput>,
+}
+
+#[derive(
+    Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
+)]
 /// Versioned wrapper over descriptor inputs so future schemas can be added
-/// without breaking the extrinsic signature.
-pub enum NodeDescriptorInput<V1> {
+/// without breaking the extrinsic signature. The variant indices are pinned so
+/// that V1 always encodes to byte `0x00`: in-flight V1 signed extrinsics must
+/// keep decoding identically regardless of how variants are ordered in source.
+pub enum NodeDescriptorInput<V1, V2> {
+    #[codec(index = 0)]
     V1(V1),
+    #[codec(index = 1)]
+    V2(V2),
 }
 
 #[derive(
@@ -166,6 +279,7 @@ pub struct NodeDescriptor<
     MinerSpecs,
     BlockNumber,
     Balance,
+    SystemInfo,
 > {
     pub schema_version: u16,
     pub node_id: NodeId,
@@ -179,6 +293,8 @@ pub struct NodeDescriptor<
     pub payload_hash: sp_core::H256,
     pub updated_at: BlockNumber,
     pub deposit: Balance,
+    /// Hardware survey, present only for descriptors filed via the V2 input.
+    pub system_info: Option<SystemInfo>,
 }
 
 #[derive(
@@ -233,7 +349,7 @@ pub mod pallet {
     use frame_system::pallet_prelude::*;
     use sp_runtime::traits::{SaturatedConversion, Saturating, Zero};
 
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(1);
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(2);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -266,6 +382,18 @@ pub mod pallet {
         type MaxMinerBackendBytes: Get<u32>;
         #[pallet::constant]
         type MaxMinerDeviceIdBytes: Get<u32>;
+        #[pallet::constant]
+        type MaxOsStringBytes: Get<u32>;
+        #[pallet::constant]
+        type MaxCpuBrandBytes: Get<u32>;
+        #[pallet::constant]
+        type MaxArchBytes: Get<u32>;
+        #[pallet::constant]
+        type MaxGpuVendorBytes: Get<u32>;
+        #[pallet::constant]
+        type MaxGpuNameBytes: Get<u32>;
+        #[pallet::constant]
+        type MaxGpus: Get<u32>;
         #[pallet::constant]
         type DescriptorDepositBase: Get<BalanceOf<Self>>;
         #[pallet::constant]
@@ -333,6 +461,12 @@ pub mod pallet {
         EmptyMinerLabel,
         EmptyMinerBackend,
         EmptyMinerDeviceId,
+        EmptyOsSystem,
+        EmptyCpuBrand,
+        EmptyCpuArch,
+        EmptyGpuVendor,
+        EmptyGpuName,
+        InvalidGpuUtilization,
         NoMiners,
         InvalidPort,
         DescriptorNotFound,
@@ -481,26 +615,38 @@ pub mod pallet {
         ) -> Result<(NodeDescriptorOf<T>, u32), DispatchError> {
             match descriptor {
                 NodeDescriptorInput::V1(input) => Self::validate_and_store_v1(input),
+                NodeDescriptorInput::V2(input) => Self::validate_and_store_v2(input),
             }
         }
 
-        // likely best done as a method on the NodeDescriptorV1Input
-        fn validate_and_store_v1(
-            input: NodeDescriptorV1InputOf<T>,
-        ) -> Result<(NodeDescriptorOf<T>, u32), DispatchError> {
-            ensure!(!input.node_id.is_empty(), Error::<T>::EmptyNodeId);
-            ensure!(!input.node_name.is_empty(), Error::<T>::EmptyNodeName);
-            if let Some(host) = &input.public_host {
+        /// Reject empty required identity fields, a zero port, and empty RPC
+        /// endpoints. Shared by the V1 and V2 store paths.
+        fn validate_node_identity(
+            node_id: &NodeIdOf<T>,
+            node_name: &NodeNameOf<T>,
+            public_host: Option<&PublicHostOf<T>>,
+            public_port: Option<u16>,
+            rpc_endpoints: &RpcEndpointsOf<T>,
+        ) -> DispatchResult {
+            ensure!(!node_id.is_empty(), Error::<T>::EmptyNodeId);
+            ensure!(!node_name.is_empty(), Error::<T>::EmptyNodeName);
+            if let Some(host) = public_host {
                 ensure!(!host.is_empty(), Error::<T>::EmptyPublicHost);
             }
-            if let Some(port) = input.public_port {
+            if let Some(port) = public_port {
                 ensure!(port > 0, Error::<T>::InvalidPort);
             }
-            for endpoint in &input.rpc_endpoints {
+            for endpoint in rpc_endpoints {
                 ensure!(!endpoint.is_empty(), Error::<T>::EmptyRpcEndpoint);
             }
-            ensure!(!input.miners.is_empty(), Error::<T>::NoMiners);
-            for miner in &input.miners {
+            Ok(())
+        }
+
+        /// Require at least one miner and reject empty optional miner strings.
+        /// Shared by the V1 and V2 store paths.
+        fn validate_miners(miners: &MinerSpecsOf<T>) -> DispatchResult {
+            ensure!(!miners.is_empty(), Error::<T>::NoMiners);
+            for miner in miners {
                 if let Some(label) = &miner.label {
                     ensure!(!label.is_empty(), Error::<T>::EmptyMinerLabel);
                 }
@@ -511,6 +657,37 @@ pub mod pallet {
                     ensure!(!device_id.is_empty(), Error::<T>::EmptyMinerDeviceId);
                 }
             }
+            Ok(())
+        }
+
+        /// Reject empty required `system_info` strings and out-of-range GPU
+        /// utilization. Length caps are already enforced by `BoundedVec`
+        /// construction at decode time.
+        fn validate_system_info(system_info: &SystemInfoOf<T>) -> DispatchResult {
+            ensure!(!system_info.os.system.is_empty(), Error::<T>::EmptyOsSystem);
+            ensure!(!system_info.cpu.brand.is_empty(), Error::<T>::EmptyCpuBrand);
+            ensure!(!system_info.cpu.arch.is_empty(), Error::<T>::EmptyCpuArch);
+            for gpu in &system_info.gpus {
+                ensure!(!gpu.vendor.is_empty(), Error::<T>::EmptyGpuVendor);
+                ensure!(!gpu.name.is_empty(), Error::<T>::EmptyGpuName);
+                if let Some(util) = gpu.utilization_pct {
+                    ensure!(util <= 100, Error::<T>::InvalidGpuUtilization);
+                }
+            }
+            Ok(())
+        }
+
+        fn validate_and_store_v1(
+            input: NodeDescriptorV1InputOf<T>,
+        ) -> Result<(NodeDescriptorOf<T>, u32), DispatchError> {
+            Self::validate_node_identity(
+                &input.node_id,
+                &input.node_name,
+                input.public_host.as_ref(),
+                input.public_port,
+                &input.rpc_endpoints,
+            )?;
+            Self::validate_miners(&input.miners)?;
 
             let payload_len = Self::descriptor_payload_len(
                 &input.node_id,
@@ -521,7 +698,6 @@ pub mod pallet {
             );
             let deposit = Self::descriptor_deposit(payload_len);
 
-            // TODO: Consider a constructor instead
             let stored = NodeDescriptor {
                 schema_version: NODE_DESCRIPTOR_SCHEMA_V1,
                 node_id: input.node_id,
@@ -535,6 +711,57 @@ pub mod pallet {
                 payload_hash: sp_core::H256::zero(),
                 updated_at: frame_system::Pallet::<T>::block_number(),
                 deposit,
+                system_info: None,
+            };
+            Ok((stored, payload_len))
+        }
+
+        fn validate_and_store_v2(
+            input: NodeDescriptorV2InputOf<T>,
+        ) -> Result<(NodeDescriptorOf<T>, u32), DispatchError> {
+            Self::validate_node_identity(
+                &input.node_id,
+                &input.node_name,
+                input.public_host.as_ref(),
+                input.public_port,
+                &input.rpc_endpoints,
+            )?;
+            Self::validate_miners(&input.miners)?;
+
+            let mut payload_len = Self::descriptor_payload_len(
+                &input.node_id,
+                &input.node_name,
+                input.public_host.as_ref(),
+                &input.rpc_endpoints,
+                &input.miners,
+            );
+
+            let system_info = match input.system_info {
+                Some(system_info) => {
+                    Self::validate_system_info(&system_info)?;
+                    payload_len =
+                        payload_len.saturating_add(Self::system_info_payload_len(&system_info));
+                    Some(system_info)
+                }
+                None => None,
+            };
+
+            let deposit = Self::descriptor_deposit(payload_len);
+
+            let stored = NodeDescriptor {
+                schema_version: NODE_DESCRIPTOR_SCHEMA_V2,
+                node_id: input.node_id,
+                node_name: input.node_name,
+                public_host: input.public_host,
+                public_port: input.public_port,
+                rpc_endpoints: input.rpc_endpoints,
+                auto_mine: input.auto_mine,
+                log_level: input.log_level,
+                miners: input.miners,
+                payload_hash: sp_core::H256::zero(),
+                updated_at: frame_system::Pallet::<T>::block_number(),
+                deposit,
+                system_info,
             };
             Ok((stored, payload_len))
         }
@@ -588,6 +815,27 @@ pub mod pallet {
                 if let Some(device_id) = &miner.device_id {
                     bytes = bytes.saturating_add(device_id.len());
                 }
+            }
+            bytes.saturated_into::<u32>()
+        }
+
+        /// Variable-length byte count of a `system_info` survey, added to the
+        /// descriptor payload length so the deposit reflects the extra bytes.
+        /// Fixed-size fields (cores, memory, index, utilization) are excluded,
+        /// matching `descriptor_payload_len`.
+        fn system_info_payload_len(system_info: &SystemInfoOf<T>) -> u32 {
+            let mut bytes = system_info
+                .os
+                .system
+                .len()
+                .saturating_add(system_info.os.release.len())
+                .saturating_add(system_info.os.machine.len())
+                .saturating_add(system_info.cpu.brand.len())
+                .saturating_add(system_info.cpu.arch.len());
+            for gpu in &system_info.gpus {
+                bytes = bytes
+                    .saturating_add(gpu.vendor.len())
+                    .saturating_add(gpu.name.len());
             }
             bytes.saturated_into::<u32>()
         }

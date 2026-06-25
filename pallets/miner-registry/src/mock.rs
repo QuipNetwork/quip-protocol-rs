@@ -91,6 +91,12 @@ impl pallet_miner_registry::Config for Test {
     type MaxMinerLabelBytes = ConstU32<64>;
     type MaxMinerBackendBytes = ConstU32<32>;
     type MaxMinerDeviceIdBytes = ConstU32<64>;
+    type MaxOsStringBytes = ConstU32<64>;
+    type MaxCpuBrandBytes = ConstU32<96>;
+    type MaxArchBytes = ConstU32<16>;
+    type MaxGpuVendorBytes = ConstU32<16>;
+    type MaxGpuNameBytes = ConstU32<96>;
+    type MaxGpus = ConstU32<16>;
     type DescriptorDepositBase = ConstU128<10>;
     type DescriptorDepositPerByte = ConstU128<2>;
     type WeightInfo = ();
