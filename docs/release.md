@@ -26,6 +26,17 @@ The GitLab CI pipeline at `.gitlab-ci.yml` picks up the tag via the
 `$CI_COMMIT_TAG` rule and publishes
 `registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v<MAJOR>.<MINOR>.<PATCH>`.
 
+### Version-tag format (shared standard)
+
+Pre-release tags use **SemVer hyphenated** pre-releases —
+`v<MAJOR>.<MINOR>.<PATCH>-rcN` (e.g. `v0.2.1-rc18`), **never** the PEP 440
+no-hyphen form `v0.2.1rc18`. This is the cross-repo standard so `quip-node-manager`
+(and any SemVer consumer) can order release candidates correctly; see
+`quip-protocol/docs/VERSIONING.md` for the full rationale. This CI extracts the
+floating `v<MAJOR>.<MINOR>` series format-agnostically and gates `:latest` on a
+stable-only `^v[0-9]+\.[0-9]+\.[0-9]+$` match, so a hyphenated rc tag publishes
+`:<tag>` + `:v<MAJOR>.<MINOR>` and correctly skips `:latest`.
+
 ## Post-tag verification
 
 - [ ] CI pipeline on the tag completes green (`glab ci status --live`)
