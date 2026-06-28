@@ -182,7 +182,7 @@ kaniko-build-arm64:
 # (amd64 / arm64), matching the arch-suffixed tags the build jobs pushed, and
 # stamps the assembled index with the consumer-facing tags: PRIMARY_TAG, the
 # commit-sha tag, and (on release tags) the floating minor-series tag
-# (e.g. v0.2.0rc1 → :v0.2). kaniko's debug image ships busybox sh/grep with -oE.
+# (e.g. v0.2.1-rc18 → :v0.2). kaniko's debug image ships busybox sh/grep with -oE.
 manifest:
   stage: manifest
   needs: [kaniko-build-amd64, kaniko-build-arm64]
