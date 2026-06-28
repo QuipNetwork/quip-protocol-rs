@@ -229,11 +229,24 @@ round-trips `system_info`.
 4. Tests in `tests/test_miner_registry.py`: V2 call-params round-trip incl.
    GPUs and `None` system_info (CPU-only / `--no-system-info`).
 
-## Out of scope (note for later)
+## Runtime block (added to V2)
 
 The `Runtime` block (`python` / `quip_version` / `protocol_version` /
-`in_docker` / `docker_image`, `shared/system_info.py:140`) was dropped by the
-same migration. It is the same change shape (another optional typed field on
-V2). Not included here to keep the V2 surface focused on hardware `system_info`;
-add it as a second optional field on the V2 input if client-version visibility
-on-chain is wanted.
+`in_docker` / `docker_image`, `shared/system_info.py:140`) is the only other
+field the old `System.remark` survey carried that `system_info` itself does not.
+It is now included on V2 as a second optional typed field
+(`NodeDescriptorV2Input.runtime: Option<RuntimeInfo>`), the same additive shape
+as `system_info`:
+
+- `RuntimeInfo { python, quip_version, protocol_version: u32, in_docker: bool,
+  docker_image: Option<..> }`, with `python`/`quip_version` bounded by
+  `MaxRuntimeVersionBytes` (48) and `docker_image` by `MaxDockerImageBytes`
+  (256).
+- `validate_runtime` rejects empty `python`/`quip_version` and an empty
+  `docker_image` when present; `runtime_payload_len` adds the string bytes to the
+  deposit.
+- Folded into the same `STORAGE_VERSION 2` (no extra migration — the v1 → v2
+  migration already wipes descriptors); runtime `spec_version` 109 → 110.
+
+The Python client must therefore project `descriptor.runtime` into the V2 call
+params alongside `system_info`.

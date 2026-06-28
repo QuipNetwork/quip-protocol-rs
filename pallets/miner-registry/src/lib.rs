@@ -43,6 +43,11 @@ type GpuOf<T> = GpuInfo<GpuVendorOf<T>, GpuNameOf<T>>;
 type GpusOf<T> = BoundedVec<GpuOf<T>, <T as Config>::MaxGpus>;
 type SystemInfoOf<T> = SystemInfo<OsStringOf<T>, CpuBrandOf<T>, ArchOf<T>, GpusOf<T>>;
 
+// Bounded field aliases for the schema-v2 `runtime` (node software) block.
+type RuntimeVersionOf<T> = BoundedVec<u8, <T as Config>::MaxRuntimeVersionBytes>;
+type DockerImageOf<T> = BoundedVec<u8, <T as Config>::MaxDockerImageBytes>;
+type RuntimeInfoOf<T> = RuntimeInfo<RuntimeVersionOf<T>, DockerImageOf<T>>;
+
 type NodeDescriptorV1InputOf<T> = NodeDescriptorV1Input<
     NodeIdOf<T>,
     NodeNameOf<T>,
@@ -57,6 +62,7 @@ type NodeDescriptorV2InputOf<T> = NodeDescriptorV2Input<
     RpcEndpointsOf<T>,
     MinerSpecsOf<T>,
     SystemInfoOf<T>,
+    RuntimeInfoOf<T>,
 >;
 type NodeDescriptorInputOf<T> =
     NodeDescriptorInput<NodeDescriptorV1InputOf<T>, NodeDescriptorV2InputOf<T>>;
@@ -69,6 +75,7 @@ type NodeDescriptorOf<T> = NodeDescriptor<
     BlockNumberOf<T>,
     BalanceOf<T>,
     SystemInfoOf<T>,
+    RuntimeInfoOf<T>,
 >;
 type ParticipationRecordOf<T> = ParticipationRecord<BlockNumberOf<T>>;
 
@@ -204,6 +211,23 @@ pub struct SystemInfo<OsStr, Brand, Arch, Gpus> {
 #[derive(
     Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
 )]
+/// Optional node-software identity carried by schema-v2 descriptors: the
+/// interpreter/build versions and container context. `Ver` and `Image` are
+/// bounded byte strings (`RuntimeVersionOf<T>` / `DockerImageOf<T>`).
+pub struct RuntimeInfo<Ver, Image> {
+    /// Python interpreter version, e.g. "3.13.1".
+    pub python: Ver,
+    /// Node software version, e.g. "0.2.1".
+    pub quip_version: Ver,
+    pub protocol_version: u32,
+    pub in_docker: bool,
+    /// Container image identity, present only when running in a container.
+    pub docker_image: Option<Image>,
+}
+
+#[derive(
+    Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
+)]
 /// A single miner advertised within a node descriptor.
 pub struct MinerSpec<Label, Backend, DeviceId> {
     pub kind: MinerKind,
@@ -231,8 +255,8 @@ pub struct NodeDescriptorV1Input<NodeId, NodeName, PublicHost, RpcEndpoints, Min
     Clone, Debug, Decode, DecodeWithMemTracking, Encode, Eq, MaxEncodedLen, PartialEq, TypeInfo,
 )]
 /// Caller-supplied descriptor payload for schema v2: identical to v1 plus an
-/// optional `system_info` hardware survey. Field order matches v1 so the shared
-/// prefix encodes the same way.
+/// optional `system_info` hardware survey and an optional `runtime` block. Field
+/// order matches v1 so the shared prefix encodes the same way.
 pub struct NodeDescriptorV2Input<
     NodeId,
     NodeName,
@@ -240,6 +264,7 @@ pub struct NodeDescriptorV2Input<
     RpcEndpoints,
     MinerSpecs,
     SystemInfoInput,
+    RuntimeInfoInput,
 > {
     pub node_id: NodeId,
     pub node_name: NodeName,
@@ -250,6 +275,7 @@ pub struct NodeDescriptorV2Input<
     pub log_level: LogLevel,
     pub miners: MinerSpecs,
     pub system_info: Option<SystemInfoInput>,
+    pub runtime: Option<RuntimeInfoInput>,
 }
 
 #[derive(
@@ -280,6 +306,7 @@ pub struct NodeDescriptor<
     BlockNumber,
     Balance,
     SystemInfo,
+    RuntimeInfo,
 > {
     pub schema_version: u16,
     pub node_id: NodeId,
@@ -295,6 +322,9 @@ pub struct NodeDescriptor<
     pub deposit: Balance,
     /// Hardware survey, present only for descriptors filed via the V2 input.
     pub system_info: Option<SystemInfo>,
+    /// Node-software identity, present only for descriptors filed via the V2
+    /// input with a `runtime` block.
+    pub runtime: Option<RuntimeInfo>,
 }
 
 #[derive(
@@ -395,6 +425,10 @@ pub mod pallet {
         #[pallet::constant]
         type MaxGpus: Get<u32>;
         #[pallet::constant]
+        type MaxRuntimeVersionBytes: Get<u32>;
+        #[pallet::constant]
+        type MaxDockerImageBytes: Get<u32>;
+        #[pallet::constant]
         type DescriptorDepositBase: Get<BalanceOf<Self>>;
         #[pallet::constant]
         type DescriptorDepositPerByte: Get<BalanceOf<Self>>;
@@ -467,6 +501,9 @@ pub mod pallet {
         EmptyGpuVendor,
         EmptyGpuName,
         InvalidGpuUtilization,
+        EmptyPythonVersion,
+        EmptyQuipVersion,
+        EmptyDockerImage,
         NoMiners,
         InvalidPort,
         DescriptorNotFound,
@@ -677,6 +714,21 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Reject empty required `runtime` version strings and an empty
+        /// `docker_image` when present. Length caps are enforced by `BoundedVec`
+        /// construction at decode time.
+        fn validate_runtime(runtime: &RuntimeInfoOf<T>) -> DispatchResult {
+            ensure!(!runtime.python.is_empty(), Error::<T>::EmptyPythonVersion);
+            ensure!(
+                !runtime.quip_version.is_empty(),
+                Error::<T>::EmptyQuipVersion
+            );
+            if let Some(image) = &runtime.docker_image {
+                ensure!(!image.is_empty(), Error::<T>::EmptyDockerImage);
+            }
+            Ok(())
+        }
+
         fn validate_and_store_v1(
             input: NodeDescriptorV1InputOf<T>,
         ) -> Result<(NodeDescriptorOf<T>, u32), DispatchError> {
@@ -712,6 +764,7 @@ pub mod pallet {
                 updated_at: frame_system::Pallet::<T>::block_number(),
                 deposit,
                 system_info: None,
+                runtime: None,
             };
             Ok((stored, payload_len))
         }
@@ -746,6 +799,15 @@ pub mod pallet {
                 None => None,
             };
 
+            let runtime = match input.runtime {
+                Some(runtime) => {
+                    Self::validate_runtime(&runtime)?;
+                    payload_len = payload_len.saturating_add(Self::runtime_payload_len(&runtime));
+                    Some(runtime)
+                }
+                None => None,
+            };
+
             let deposit = Self::descriptor_deposit(payload_len);
 
             let stored = NodeDescriptor {
@@ -762,6 +824,7 @@ pub mod pallet {
                 updated_at: frame_system::Pallet::<T>::block_number(),
                 deposit,
                 system_info,
+                runtime,
             };
             Ok((stored, payload_len))
         }
@@ -836,6 +899,20 @@ pub mod pallet {
                 bytes = bytes
                     .saturating_add(gpu.vendor.len())
                     .saturating_add(gpu.name.len());
+            }
+            bytes.saturated_into::<u32>()
+        }
+
+        /// Variable-length byte count of a `runtime` block, added to the
+        /// descriptor payload length. Fixed-size fields (protocol_version,
+        /// in_docker) are excluded, matching `descriptor_payload_len`.
+        fn runtime_payload_len(runtime: &RuntimeInfoOf<T>) -> u32 {
+            let mut bytes = runtime
+                .python
+                .len()
+                .saturating_add(runtime.quip_version.len());
+            if let Some(image) = &runtime.docker_image {
+                bytes = bytes.saturating_add(image.len());
             }
             bytes.saturated_into::<u32>()
         }
