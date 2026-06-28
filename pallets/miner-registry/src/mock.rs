@@ -97,6 +97,8 @@ impl pallet_miner_registry::Config for Test {
     type MaxGpuVendorBytes = ConstU32<16>;
     type MaxGpuNameBytes = ConstU32<96>;
     type MaxGpus = ConstU32<16>;
+    type MaxRuntimeVersionBytes = ConstU32<48>;
+    type MaxDockerImageBytes = ConstU32<256>;
     type DescriptorDepositBase = ConstU128<10>;
     type DescriptorDepositPerByte = ConstU128<2>;
     type WeightInfo = ();

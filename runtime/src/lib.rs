@@ -110,7 +110,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // drops existing descriptors (miners re-file on restart). The V1 call
     // variant keeps index 0 and encodes identically, so `transaction_version`
     // stays at 4. MinerRegistry pallet storage version 1 → 2.
-    spec_version: 109,
+    // Bumped to 110 to add the optional `runtime` block (node software identity:
+    // python / quip_version / protocol_version / in_docker / docker_image) to
+    // the MinerRegistry V2 descriptor. Additive trailing field on the V2 input;
+    // V1 is unaffected and V2 was not yet deployed, so `transaction_version`
+    // stays at 4 and no new migration is needed (the v1 → v2 migration already
+    // wipes descriptors; pallet storage version stays 2).
+    spec_version: 110,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 4,
