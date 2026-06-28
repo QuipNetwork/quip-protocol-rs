@@ -317,6 +317,10 @@ parameter_types! {
     pub const MinerRegistryMaxGpuVendorBytes: u32 = 16;
     pub const MinerRegistryMaxGpuNameBytes: u32 = 96;
     pub const MinerRegistryMaxGpus: u32 = 16;
+    // schema-v2 `runtime` block: version strings run ~16 B; image refs with a
+    // registry path + digest can reach ~120 B.
+    pub const MinerRegistryMaxRuntimeVersionBytes: u32 = 48;
+    pub const MinerRegistryMaxDockerImageBytes: u32 = 256;
     pub const MinerRegistryDescriptorDepositBase: Balance = MILLI_UNIT;
     pub const MinerRegistryDescriptorDepositPerByte: Balance = MICRO_UNIT;
 }
@@ -402,6 +406,8 @@ impl pallet_miner_registry::Config for Runtime {
     type MaxGpuVendorBytes = MinerRegistryMaxGpuVendorBytes;
     type MaxGpuNameBytes = MinerRegistryMaxGpuNameBytes;
     type MaxGpus = MinerRegistryMaxGpus;
+    type MaxRuntimeVersionBytes = MinerRegistryMaxRuntimeVersionBytes;
+    type MaxDockerImageBytes = MinerRegistryMaxDockerImageBytes;
     type DescriptorDepositBase = MinerRegistryDescriptorDepositBase;
     type DescriptorDepositPerByte = MinerRegistryDescriptorDepositPerByte;
     type WeightInfo = pallet_miner_registry::weights::SubstrateWeight<Runtime>;

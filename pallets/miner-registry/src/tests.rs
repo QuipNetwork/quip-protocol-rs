@@ -1,7 +1,7 @@
 use crate::{
     mock::*, CpuInfo, Error, Event, GpuInfo, LatestParticipation, LogLevel, MinerKind, MinerSpec,
     NodeDescriptorInput, NodeDescriptorV1Input, NodeDescriptorV2Input, NodeDescriptors, OsInfo,
-    SystemInfo,
+    RuntimeInfo, SystemInfo,
 };
 use codec::{Decode, Encode};
 use frame_support::{assert_noop, assert_ok, BoundedVec};
@@ -67,6 +67,16 @@ fn system_info() -> crate::SystemInfoOf<Test> {
     }
 }
 
+fn runtime_info() -> crate::RuntimeInfoOf<Test> {
+    RuntimeInfo {
+        python: bytes::<48>(b"3.13.1"),
+        quip_version: bytes::<48>(b"0.2.1"),
+        protocol_version: 2,
+        in_docker: true,
+        docker_image: Some(bytes::<256>(b"quip-node:rc")),
+    }
+}
+
 fn v2_input() -> crate::NodeDescriptorV2InputOf<Test> {
     let v1 = v1_input();
     NodeDescriptorV2Input {
@@ -79,6 +89,7 @@ fn v2_input() -> crate::NodeDescriptorV2InputOf<Test> {
         log_level: v1.log_level,
         miners: v1.miners,
         system_info: Some(system_info()),
+        runtime: Some(runtime_info()),
     }
 }
 
@@ -524,6 +535,14 @@ fn system_info_bounds_reject_over_length_input() {
     assert!(crate::GpuNameOf::<Test>::decode(&mut &raw_name[..]).is_err());
     let raw_gpus = vec![gpu; 17].encode();
     assert!(crate::GpusOf::<Test>::decode(&mut &raw_gpus[..]).is_err());
+
+    // Runtime strings are capped at MaxRuntimeVersionBytes (48) and the docker
+    // image at MaxDockerImageBytes (256) — enforced at the decode boundary,
+    // since validate_runtime only checks emptiness.
+    let raw_version = vec![b'x'; 49].encode();
+    assert!(crate::RuntimeVersionOf::<Test>::decode(&mut &raw_version[..]).is_err());
+    let raw_image = vec![b'x'; 257].encode();
+    assert!(crate::DockerImageOf::<Test>::decode(&mut &raw_image[..]).is_err());
 }
 
 #[test]
@@ -532,20 +551,27 @@ fn node_descriptor_input_pins_variant_indices_and_round_trips() {
     // extrinsics keep decoding identically regardless of variant source order.
     let v1 = descriptor();
     assert_eq!(v1.encode()[0], 0);
-    let v2 = NodeDescriptorInput::V2(v2_input());
+    let v2: crate::NodeDescriptorInputOf<Test> = NodeDescriptorInput::V2(v2_input());
     assert_eq!(v2.encode()[0], 1);
 
-    // Full SCALE round-trip with system_info both Some and None.
-    let decoded =
-        crate::NodeDescriptorInputOf::<Test>::decode(&mut &v2.encode()[..]).expect("v2 decodes");
-    assert_eq!(decoded, v2);
-
-    let mut none_input = v2_input();
-    none_input.system_info = None;
-    let v2_none = NodeDescriptorInput::V2(none_input);
-    let decoded_none =
-        crate::NodeDescriptorInputOf::<Test>::decode(&mut &v2_none.encode()[..]).expect("decodes");
-    assert_eq!(decoded_none, v2_none);
+    // Full SCALE round-trip across both trailing Option fields. Exercise every
+    // combination of system_info / runtime being Some or None so the trailing
+    // 0x00 discriminant + end-of-buffer decode path is covered for each.
+    for (with_system_info, with_runtime) in
+        [(true, true), (true, false), (false, true), (false, false)]
+    {
+        let mut input = v2_input();
+        if !with_system_info {
+            input.system_info = None;
+        }
+        if !with_runtime {
+            input.runtime = None;
+        }
+        let v2: crate::NodeDescriptorInputOf<Test> = NodeDescriptorInput::V2(input);
+        let decoded = crate::NodeDescriptorInputOf::<Test>::decode(&mut &v2.encode()[..])
+            .expect("v2 decodes");
+        assert_eq!(decoded, v2);
+    }
 }
 
 #[test]
@@ -591,10 +617,11 @@ fn set_descriptor_v2_allows_empty_os_release_and_machine() {
 }
 
 #[test]
-fn v2_deposit_exceeds_v1_by_system_info_bytes() {
+fn v2_deposit_exceeds_v1_by_system_info_and_runtime_bytes() {
     new_test_ext().execute_with(|| {
-        // V1 baseline (account 1) and V2 with the same base + system_info
-        // (account 2) so the only deposit difference is the survey bytes.
+        // V1 baseline (account 1) and V2 with the same base + system_info +
+        // runtime (account 2) so the deposit difference is exactly the survey
+        // and runtime bytes.
         assert_ok!(MinerRegistry::set_descriptor(
             RuntimeOrigin::signed(1),
             descriptor()
@@ -607,8 +634,9 @@ fn v2_deposit_exceeds_v1_by_system_info_bytes() {
         ));
         let v2_stored = NodeDescriptors::<Test>::get(2).expect("v2 stored");
         let si = v2_stored.system_info.clone().expect("system_info stored");
+        let rt = v2_stored.runtime.clone().expect("runtime stored");
 
-        let si_bytes: u128 = (si.os.system.len()
+        let si_bytes: usize = si.os.system.len()
             + si.os.release.len()
             + si.os.machine.len()
             + si.cpu.brand.len()
@@ -616,10 +644,122 @@ fn v2_deposit_exceeds_v1_by_system_info_bytes() {
             + si.gpus
                 .iter()
                 .map(|g| g.vendor.len() + g.name.len())
-                .sum::<usize>()) as u128;
+                .sum::<usize>();
+        let rt_bytes: usize = rt.python.len()
+            + rt.quip_version.len()
+            + rt.docker_image.as_ref().map(|i| i.len()).unwrap_or(0);
 
         // mock DescriptorDepositPerByte = 2.
-        assert_eq!(v2_stored.deposit - v1_deposit, si_bytes * 2);
+        assert_eq!(
+            v2_stored.deposit - v1_deposit,
+            (si_bytes + rt_bytes) as u128 * 2
+        );
+    });
+}
+
+#[test]
+fn set_descriptor_v2_stores_and_returns_runtime() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(MinerRegistry::set_descriptor(
+            RuntimeOrigin::signed(1),
+            NodeDescriptorInput::V2(v2_input())
+        ));
+
+        let stored = NodeDescriptors::<Test>::get(1).expect("descriptor stored");
+        let rt = stored.runtime.expect("runtime stored");
+        assert_eq!(rt.python.as_slice(), b"3.13.1");
+        assert_eq!(rt.quip_version.as_slice(), b"0.2.1");
+        assert_eq!(rt.protocol_version, 2);
+        assert!(rt.in_docker);
+        assert_eq!(rt.docker_image.expect("image").as_slice(), b"quip-node:rc");
+    });
+}
+
+#[test]
+fn set_descriptor_v2_without_runtime_stores_none() {
+    new_test_ext().execute_with(|| {
+        let mut input = v2_input();
+        input.runtime = None;
+
+        assert_ok!(MinerRegistry::set_descriptor(
+            RuntimeOrigin::signed(1),
+            NodeDescriptorInput::V2(input)
+        ));
+
+        let stored = NodeDescriptors::<Test>::get(1).expect("descriptor stored");
+        assert!(stored.runtime.is_none());
+    });
+}
+
+#[test]
+fn set_descriptor_v2_stores_runtime_without_docker_image() {
+    // Bare-metal node: runtime present but no container. Exercises the None arm
+    // of validate_runtime and the skip-add path of runtime_payload_len.
+    new_test_ext().execute_with(|| {
+        // V1 baseline (account 1) to isolate the runtime deposit contribution.
+        assert_ok!(MinerRegistry::set_descriptor(
+            RuntimeOrigin::signed(1),
+            descriptor()
+        ));
+        let v1_deposit = NodeDescriptors::<Test>::get(1).expect("v1 stored").deposit;
+
+        let mut input = v2_input();
+        input.system_info = None;
+        input.runtime = Some(RuntimeInfo {
+            python: bytes::<48>(b"3.13.1"),
+            quip_version: bytes::<48>(b"0.2.1"),
+            protocol_version: 2,
+            in_docker: false,
+            docker_image: None,
+        });
+        assert_ok!(MinerRegistry::set_descriptor(
+            RuntimeOrigin::signed(2),
+            NodeDescriptorInput::V2(input)
+        ));
+
+        let stored = NodeDescriptors::<Test>::get(2).expect("descriptor stored");
+        let rt = stored.runtime.expect("runtime stored");
+        assert!(!rt.in_docker);
+        assert!(rt.docker_image.is_none());
+
+        // Deposit reflects only the version-string bytes (no image, no
+        // system_info); mock DescriptorDepositPerByte = 2.
+        let rt_bytes = (rt.python.len() + rt.quip_version.len()) as u128;
+        assert_eq!(stored.deposit - v1_deposit, rt_bytes * 2);
+    });
+}
+
+#[test]
+fn set_descriptor_v2_rejects_empty_runtime_fields() {
+    new_test_ext().execute_with(|| {
+        let cases: [(fn(&mut crate::RuntimeInfoOf<Test>), Error<Test>); 3] = [
+            (
+                |rt| rt.python = bytes::<48>(b""),
+                Error::<Test>::EmptyPythonVersion,
+            ),
+            (
+                |rt| rt.quip_version = bytes::<48>(b""),
+                Error::<Test>::EmptyQuipVersion,
+            ),
+            (
+                |rt| rt.docker_image = Some(bytes::<256>(b"")),
+                Error::<Test>::EmptyDockerImage,
+            ),
+        ];
+
+        for (mutate, expected) in cases {
+            let mut rt = runtime_info();
+            mutate(&mut rt);
+            let mut input = v2_input();
+            input.runtime = Some(rt);
+            assert_noop!(
+                MinerRegistry::set_descriptor(
+                    RuntimeOrigin::signed(1),
+                    NodeDescriptorInput::V2(input)
+                ),
+                expected
+            );
+        }
     });
 }
 
