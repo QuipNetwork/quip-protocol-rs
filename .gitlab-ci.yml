@@ -64,9 +64,11 @@ variables:
   # The quip-signer PyPI jobs run on a lean official `rust:*` image, NOT the
   # heavy Substrate TOOLCHAIN_IMAGE: the binding is its own pure-Rust workspace
   # (no clang/protoc/substrate deps), and the aarch64 wheel needs `rustup target
-  # add`, which the official images guarantee. Pinned (not `:latest`) so a
-  # surprise upstream Rust bump can't change release artefacts mid-series.
-  PY_RELEASE_IMAGE: docker.io/library/rust:1.83-bookworm
+  # add`, which the official images guarantee. Pinned to the same Rust the rest
+  # of the project builds with (RUST_VERSION in Dockerfile / ci-toolchain) — a
+  # floor of 1.85 is required anyway, as edition-2024 transitive deps
+  # (zeroize_derive) don't parse on older Cargo.
+  PY_RELEASE_IMAGE: docker.io/library/rust:1.95.0-bookworm
   # cargo-zigbuild drives the aarch64 cross-build (zig as the linker). Pinned and
   # fetched as a prebuilt via cargo-binstall (seconds) rather than compiled from
   # source. Bump deliberately; it changes the linker the release wheels are built
