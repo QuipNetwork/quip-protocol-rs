@@ -339,7 +339,9 @@ manifest:
     - curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
     - cargo binstall --no-confirm --locked "cargo-zigbuild@$CARGO_ZIGBUILD_VERSION"
     - rustup target add aarch64-unknown-linux-gnu
-    - maturin --version && twine --version && cargo zigbuild --version
+    # `cargo zigbuild` is a build subcommand with no --version flag; just
+    # confirm the binstalled binary is on PATH.
+    - maturin --version && twine --version && command -v cargo-zigbuild
 
 # Dry-run on every MR/push: build all three artefacts and twine-check their
 # metadata. No token, no upload. Catches release-blocking packaging regressions
