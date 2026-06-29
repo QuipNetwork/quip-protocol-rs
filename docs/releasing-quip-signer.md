@@ -61,6 +61,11 @@ Do these once per registry. Phase 1 is TestPyPI; Phase 2 adds production PyPI.
 - **`release` environment** — Settings → CI/CD → Environments: create an
   environment named exactly `release`. Restrict its deployments to protected
   tags so only `v*` tag pipelines can mint OIDC tokens against it.
+- **Enable publishing** — Settings → CI/CD → Variables: set
+  `QUIP_SIGNER_PUBLISH` to `true`. Until this is set, the publish jobs stay
+  dormant on `v*` tags, so a node release tag never reds on an unconfigured
+  wheel publish. Set it **only after** the Trusted Publisher below is configured
+  (do it per registry: enable after TestPyPI for Phase 1, keep it on for Phase 2).
 
 The CI project coordinates the Trusted Publisher needs below:
 
@@ -82,7 +87,8 @@ The CI project coordinates the Trusted Publisher needs below:
    `quip-signer`, using the four fields in the table above. (For a brand-new
    project name, add it as a *pending* publisher — it activates on first
    upload.)
-3. Cut a release tag and let `release:publish-testpypi` run.
+3. Set `QUIP_SIGNER_PUBLISH=true` (GitLab step above), then cut a release tag
+   and let `release:publish-testpypi` run.
 4. Verify the install resolves and imports on both arches:
    ```bash
    pip install -i https://test.pypi.org/simple/ quip-signer
@@ -122,6 +128,10 @@ script's mint/upload endpoints differ accordingly:
   the token redacted — compare against the table above.
 - **Wheel rejected for a `linux_x86_64` platform tag**: PyPI only accepts
   `manylinux*` / `musllinux*` wheels. The native x86_64 build must stay
-  manylinux-compatible; the dry-run's `twine check` surfaces a bad tag on the
-  MR. The aarch64 build targets an old glibc via the zig linker, so it stays
-  manylinux by construction.
+  manylinux-compatible (it depends on the build image's glibc being old enough
+  for a manylinux profile). `twine check` does **not** inspect platform tags, so
+  `scripts/python-dists.sh` asserts every wheel carries a manylinux/musllinux tag
+  after the build — that assertion (not `twine check`) is what fails the dry-run
+  on a non-portable wheel. The aarch64 build targets an old glibc via the zig
+  linker, so it stays manylinux by construction; if the native x86_64 wheel ever
+  trips the guard, build it via cargo-zigbuild too (pin an older glibc).

@@ -74,6 +74,16 @@ variables:
   # source. Bump deliberately; it changes the linker the release wheels are built
   # with.
   CARGO_ZIGBUILD_VERSION: "0.22.3"
+  # cargo-binstall itself is pinned and fetched as a release binary (not the
+  # `curl .../main/install.sh | bash` bootstrap), so the toolchain that builds a
+  # published, trust-signed wheel can't be altered by an upstream `main` change.
+  CARGO_BINSTALL_VERSION: "1.20.1"
+  # Gate for the publish jobs. They stay dormant on `v*` tags until this is set
+  # to "true" in project CI/CD variables — which the maintainer does only after
+  # the PyPI Trusted Publisher is configured (see docs/releasing-quip-signer.md).
+  # Until then a node release tag never triggers (and so never reds on) an
+  # unconfigured wheel publish.
+  QUIP_SIGNER_PUBLISH: "false"
 
 workflow:
   rules:
@@ -281,21 +291,27 @@ manifest:
 # the protected `v*` tag pattern) is documented in docs/releasing-quip-signer.md.
 #
 # All three jobs share one build path (scripts/python-dists.sh):
-#   release:dry-run-pypi      every MR / push   build + twine check (no upload)
-#   release:publish-testpypi  release tag       auto    → TestPyPI
-#   release:publish-pypi      release tag       manual  → PyPI (promote button)
+#   release:dry-run-pypi      every MR / push                build + twine check
+#   release:publish-testpypi  release tag, if PUBLISH=true   auto    → TestPyPI
+#   release:publish-pypi      release tag, if PUBLISH=true   manual  → PyPI
+#
+# The publish jobs are gated on QUIP_SIGNER_PUBLISH (off by default) so a node
+# release tag never reds on an unconfigured wheel publish during Phase 1, and run
+# with needs:[] so they don't wait on the container build/manifest stages.
 #
 # Artefact matrix mirrors xquad's xqffi cdylib: abi3 wheel for linux x86_64
 # (native) + abi3 wheel for linux aarch64 (cargo-zigbuild / zig linker) + an
 # sdist (universal source fallback; macOS/Windows build from it). The wheel
 # version is the pyproject/Cargo version, bumped per release so the tag matches.
 
-# Run only on pushed release tags like v0.2.1, v0.3.0-rc1, … (the same `v*`
-# stream that releases the node container; the wheel publish is tag-only —
-# never on the v0.2/main branch pushes that publish the container).
+# Run on pushed release tags like v0.2.1, v0.3.0-rc1, … (the same `v*` stream
+# that releases the node container; the wheel publish is tag-only — never on the
+# v0.2/main branch pushes that publish the container) AND only once publishing
+# is enabled (QUIP_SIGNER_PUBLISH). The gate keeps an unconfigured publish from
+# reding the node release pipeline during Phase 1.
 .on-release-tag:
   rules:
-    - if: $CI_COMMIT_TAG =~ /^v\d/
+    - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
 
 # Run on every MR and on main/v0.2 pushes; never on a release tag (the publish
 # jobs own those). Proves the release build works without uploading anything,
@@ -336,9 +352,12 @@ manifest:
     - export PATH="/opt/pyrelease/bin:$CARGO_HOME/bin:$PATH"
     - pip install --quiet --upgrade pip 'maturin>=1.7,<2' 'twine>=6.1' ziglang
     # cargo-zigbuild as a prebuilt binary via cargo-binstall (seconds) instead of
-    # `cargo install` from source (minutes). The upstream script bootstraps
-    # binstall itself from a release binary.
-    - curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+    # `cargo install` from source (minutes). cargo-binstall is fetched as a
+    # version-pinned release binary (the runner is always linux amd64, so the
+    # musl asset is portable) rather than the unpinned `main` bootstrap script —
+    # the toolchain that builds a published wheel must be reproducible.
+    - mkdir -p "$CARGO_HOME/bin"
+    - curl -L --proto '=https' --tlsv1.2 -sSf "https://github.com/cargo-bins/cargo-binstall/releases/download/v${CARGO_BINSTALL_VERSION}/cargo-binstall-x86_64-unknown-linux-musl.tgz" | tar -xz -C "$CARGO_HOME/bin"
     - cargo binstall --no-confirm --locked "cargo-zigbuild@$CARGO_ZIGBUILD_VERSION"
     - rustup target add aarch64-unknown-linux-gnu
     # `cargo zigbuild` is a build subcommand with no --version flag; just
@@ -356,10 +375,17 @@ release:dry-run-pypi:
   script:
     - bash scripts/python-dists.sh check
 
-# Auto-publish to TestPyPI on every release tag (Phase 1 validation target).
+# Auto-publish to TestPyPI on every release tag, once publishing is enabled
+# (Phase 1 validation target). `needs: []` starts it as soon as the pipeline is
+# created instead of waiting out the build/manifest container stages — the wheel
+# publish is independent of the node container build (and must not be blocked by
+# the slow, OOM-prone arm64 kaniko job). No allow_failure: once enabled, a failed
+# TestPyPI upload is a real signal that should red the pipeline.
 release:publish-testpypi:
   extends: .pypi-dist
   stage: release
+  needs: []
+  interruptible: false
   rules: !reference [.on-release-tag, rules]
   # `environment: release` must match the environment configured on the TestPyPI
   # Trusted Publisher; PyPI rejects the OIDC exchange if they differ.
@@ -372,15 +398,18 @@ release:publish-testpypi:
   script:
     - bash scripts/python-dists.sh publish testpypi
 
-# Promote to production PyPI: manual button on the tag pipeline. Manual +
-# allow_failure so an un-clicked (or not-yet-configured, during Phase 1) prod
-# publish never reds the tag pipeline; click it once the TestPyPI wheel checks
-# out. Audience is `pypi` here (vs `testpypi` above).
+# Promote to production PyPI: manual button on the tag pipeline, once publishing
+# is enabled. Manual + allow_failure so an un-clicked promote never reds the node
+# release pipeline; click it once the TestPyPI wheel checks out. `needs: []`
+# decouples it from the container stages (same as testpypi). Audience is `pypi`
+# here (vs `testpypi` above).
 release:publish-pypi:
   extends: .pypi-dist
   stage: release
+  needs: []
+  interruptible: false
   rules:
-    - if: $CI_COMMIT_TAG =~ /^v\d/
+    - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
       when: manual
       allow_failure: true
   environment: release

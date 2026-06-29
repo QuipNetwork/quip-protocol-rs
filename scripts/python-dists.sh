@@ -68,6 +68,23 @@ maturin build --release --manifest-path "${MANIFEST}" --out "${DIST}" \
 	--target aarch64-unknown-linux-gnu --zig
 maturin sdist --manifest-path "${MANIFEST}" --out "${DIST}"
 
+# Platform-tag guard. `twine check` validates metadata only -- it does NOT
+# inspect platform tags, so a wheel tagged plain `linux_x86_64` (linked against
+# a glibc newer than any manylinux profile) passes twine check and is then
+# rejected at upload time. Assert every wheel carries a manylinux/musllinux tag
+# here so the dry-run actually fails on a non-portable build instead of
+# discovering it mid-publish.
+for whl in "${DIST}"/*.whl; do
+	case "${whl}" in
+	*manylinux* | *musllinux*) ;;
+	*)
+		echo "ERROR: ${whl##*/} has no manylinux/musllinux platform tag; PyPI will reject it." >&2
+		echo "       The native build linked against too-new a glibc -- build it via cargo-zigbuild too, or lower the build image's glibc." >&2
+		exit 1
+		;;
+	esac
+done
+
 if [[ "${mode}" == "check" ]]; then
 	twine check "${DIST}"/*
 	exit 0
