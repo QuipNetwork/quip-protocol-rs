@@ -225,7 +225,8 @@ pub(crate) fn adjust_energy_along_curve(
     // The `as i64` cast saturates (never UB/panic), and every `room`/result
     // subtraction below saturates too, so the genesis `i64::MAX` sentinel and
     // extreme curves stay overflow-safe.
-    let geometric_floored = |room: i64| (libm::round(room as f64 * rate) as i64).max(min_delta_milli);
+    let geometric_floored =
+        |room: i64| (libm::round(room as f64 * rate) as i64).max(min_delta_milli);
 
     match direction {
         Direction::Harder => {

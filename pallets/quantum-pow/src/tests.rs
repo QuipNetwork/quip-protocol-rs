@@ -1852,8 +1852,7 @@ fn harden_steps_geometric_fraction_in_the_interior() {
                 /* min_delta_milli */ 5000,
             );
             let room = current - curve.min_milli;
-            let expected_delta =
-                libm::round(room as f64 * f64::from(rate_milli) / 1000.0) as i64;
+            let expected_delta = libm::round(room as f64 * f64::from(rate_milli) / 1000.0) as i64;
             assert_eq!(
                 result,
                 current - expected_delta,
@@ -1881,12 +1880,13 @@ fn harden_steps_geometric_fraction_in_the_interior() {
 fn harden_tail_walks_past_cap_by_min_delta() {
     let curve = walkup_curve();
     let floor = 1000; // the production MIN_ENERGY_DELTA_MILLI
-    // `room` runs from a few units inside the cap down to below it (negative).
+                      // `room` runs from a few units inside the cap down to below it (negative).
     for room in [5 * floor, floor, 1, 0, -floor] {
         let current = curve.min_milli + room;
         let result = crate::difficulty::adjust_energy_along_curve(
             current,
-            /* rate_milli */ 1, // tiny rate so the geometric step rounds below the floor
+            /* rate_milli */
+            1, // tiny rate so the geometric step rounds below the floor
             crate::difficulty::Direction::Harder,
             curve,
             floor,
@@ -1927,7 +1927,10 @@ fn observed_win_series_never_pins_the_hard_cap() {
         max_energy_milli: curve.knee_milli, // start at the field level
         min_diversity_milli: 0,
     };
-    for (i, gap) in [29_u64, 280, 27, 200, 100, 300, 1401].into_iter().enumerate() {
+    for (i, gap) in [29_u64, 280, 27, 200, 100, 300, 1401]
+        .into_iter()
+        .enumerate()
+    {
         // Decay eases the live threshold by one step per elapsed epoch …
         let steps = (gap / epoch_len) as u32;
         let active = difficulty::apply_decay(base, steps, curve);
