@@ -31,17 +31,15 @@ const FAST_PROOF_BLOCKS: u64 = 60;
 const TARGET_PROOF_BLOCKS: u64 = 100;
 const SLOW_PROOF_BLOCKS: u64 = 200;
 
-/// Proof adjustment enforces a 5000-milli floor on the energy delta so very
-/// small curve outputs still move the threshold by a perceptible amount.
-/// Mirrors v0.1 `apply_min_adjustment(min_adj=5.0)` for non-decay
-/// adjustments: v0.1 operated on whole energy units, chain state stores
-/// milli-energy, so 5.0 units -> 5000 milli.
-const MIN_PROOF_ADJUSTMENT_DELTA_MILLI: i64 = 5000;
-
-/// Decay enforces a 3000-milli floor — matches v0.1
-/// `apply_min_adjustment(min_adj=3.0)` (whole energy units -> milli) for
-/// decay easing.
-const MIN_DECAY_DELTA_MILLI: i64 = 3000;
+/// Floor on the per-step energy delta — one energy unit (1.0 unit -> 1000
+/// milli). Under the geometric model the step shrinks toward zero as the
+/// threshold nears a curve bound, so this floor sets the granularity of the
+/// tail: the rate at which hardening walks *past* `min_milli` to track a
+/// stronger-than-estimated field, and the final settle onto `max_milli` when
+/// easing. Hardening and easing share the one floor (the walk-up plan's §3 —
+/// it replaces the legacy asymmetric `5.0`/`3.0`-unit floors that let
+/// hardening out-pace easing 5:3 at the tail).
+const MIN_ENERGY_DELTA_MILLI: i64 = 1000;
 
 /// Decay rate per epoch step: 25 per-mille = 2.5%, half of the typical
 /// hardening floor (50 per-mille). Mirrors v0.1 `energy_ease_rate = 0.025`.
@@ -82,10 +80,17 @@ pub struct CurveC {
 ///
 /// - `min_milli` = `expected_gse(.., c_hard, ..)` — hardest, most
 ///   negative.
-/// - `knee_milli` = `expected_gse(.., c_knee, ..)` — where the
-///   curve compression peaks (motion most aggressive here).
+/// - `knee_milli` = `expected_gse(.., c_knee, ..)` — the mid-curve
+///   calibration point between the hard and easy ends.
 /// - `max_milli` = `expected_gse(.., c_easy, ..)` — easiest, least
 ///   negative.
+///
+/// These are mean-field GSE *estimates*, not hard limits: the actual ground
+/// state of a given instance can be more negative than `min_milli`. The
+/// difficulty threshold therefore tracks *past* `min_milli` when hardening
+/// (to follow a stronger-than-estimated field) but never eases *past*
+/// `max_milli` (difficulty stays at or above the easiest calibrated puzzle).
+/// See [`adjust_energy_along_curve`].
 ///
 /// All three values are in milli precision. `min_milli < knee_milli <
 /// max_milli` (all negative).
@@ -178,19 +183,30 @@ fn sample_adjustment_milli(mining_time_blocks: u64, harder: bool, seed: &[u8]) -
     min_rate + (sample % (span + 1)) as u32
 }
 
-/// Move `current_milli` along the energy curve by `rate_milli` per-mille of
-/// the total range, with adjustments compressed near the boundaries and
-/// peaking at the knee.
+/// Move `current_milli` toward the curve bound implied by `direction` by a
+/// geometric fraction of the distance *remaining* to that bound.
 ///
-/// Port of v0.1 `shared.energy_utils.adjust_energy_along_curve` at git ref
-/// `33a4837^`. When `current_milli` lies outside `[min_milli, max_milli]`,
-/// the curve degrades to a linear `total_range * rate` adjustment — same
-/// behaviour as v0.1.
+/// The step is a geometric fraction `room × rate` of the distance to the
+/// curve bound the adjustment moves toward, floored at `min_delta_milli`.
+/// Because `rate < 1`, the geometric term is always smaller than `room`, so
+/// from anywhere short of the bound the threshold *walks* toward it a fraction
+/// of the remaining gap at a time — a single fast win can no longer slam the
+/// threshold across the whole range and strand the chain (the slam-and-stall
+/// this replaces; see `quantum-pow-difficulty-hardening-walkup-plan.md`).
 ///
-/// Unlike v0.1, an in-range `current_milli` is clamped back into
-/// `[min_milli, max_milli]` after the adjustment: a max-roll fast win from
-/// the knee can otherwise overshoot past `min_milli`, recreating the
-/// impossible-threshold state the v1 storage migration exists to repair.
+/// The two directions are deliberately asymmetric, because the curve bounds
+/// are GSE *estimates*, not hard limits:
+///
+/// - [`Direction::Harder`] references `min_milli` but is **uncapped**: a
+///   stronger-than-calibrated field finds winning energies below the hard
+///   estimate, so the threshold must keep tracking past `min_milli`. Once at
+///   or past it (`room ≤ 0`) the geometric term vanishes and the floor carries
+///   the threshold one further energy step down.
+/// - [`Direction::Easier`] references `max_milli` and is **capped** there:
+///   difficulty should never ease below the easiest calibrated puzzle, so the
+///   step is clamped to the remaining gap and is a no-op once at/past the easy
+///   cap. Recovery from a too-hard threshold is fastest at the hard end (where
+///   the gap to `max_milli` is largest) and settles gently onto the easy cap.
 #[cfg_attr(test, allow(dead_code))]
 pub(crate) fn adjust_energy_along_curve(
     current_milli: i64,
@@ -199,63 +215,33 @@ pub(crate) fn adjust_energy_along_curve(
     curve: EnergyCurve,
     min_delta_milli: i64,
 ) -> i64 {
-    // Energy is signed and negative; min < max (both negative).
-    let min_f = curve.min_milli as f64;
-    let max_f = curve.max_milli as f64;
-    let knee_f = curve.knee_milli as f64;
-    let cur_f = current_milli as f64;
-    let total_range = max_f - min_f;
+    // Defensive: a degenerate curve (e.g. zero-node topology) collapses to a
+    // single point — there is no bound to reference. Leave `current` alone.
+    if curve.max_milli <= curve.min_milli {
+        return current_milli;
+    }
     let rate = f64::from(rate_milli) / 1000.0;
+    // Geometric step toward the target bound, floored so progress never stalls.
+    // The `as i64` cast saturates (never UB/panic), and every `room`/result
+    // subtraction below saturates too, so the genesis `i64::MAX` sentinel and
+    // extreme curves stay overflow-safe.
+    let geometric_floored = |room: i64| (libm::round(room as f64 * rate) as i64).max(min_delta_milli);
 
-    // Defensive: a degenerate curve (e.g. zero-node topology) has total_range
-    // == 0. There is no meaningful adjustment to apply; leave `current` alone.
-    if total_range <= 0.0 {
-        return current_milli;
-    }
-
-    let raw_delta_f = if cur_f < min_f || cur_f > max_f {
-        // Out-of-range: v0.1 falls back to linear adjustment.
-        total_range * rate
-    } else {
-        let normalized = (cur_f - min_f) / total_range;
-        let knee_pos = (knee_f - min_f) / total_range;
-        let curve_factor = if knee_pos <= 0.0 || knee_pos >= 1.0 {
-            // Degenerate knee position (curve collapses); treat as linear.
-            1.0
-        } else if normalized <= knee_pos {
-            0.1 + 0.9 * libm::sqrt(normalized / knee_pos)
-        } else {
-            1.0 - 0.9 * libm::sqrt((normalized - knee_pos) / (1.0 - knee_pos))
-        };
-        total_range * rate * curve_factor
-    };
-
-    let mut delta = libm::round(raw_delta_f) as i64;
-    // Gate the min-delta floor on the raw float, not the rounded int. A
-    // raw_delta_f in (0, 0.5) rounds to 0, which would skip the floor and
-    // stall difficulty progress — exactly the case `min_delta_milli` exists
-    // to prevent. Once the floor is applied, subsequent rounds compound the
-    // adjustment instead of getting stuck at no-op.
-    if raw_delta_f > 0.0 && delta < min_delta_milli {
-        delta = min_delta_milli;
-    }
-    if delta == 0 {
-        return current_milli;
-    }
-
-    let adjusted = match direction {
-        Direction::Harder => current_milli.saturating_sub(delta),
-        Direction::Easier => current_milli.saturating_add(delta),
-    };
-    // In-range thresholds stay in range (see doc comment). Out-of-range
-    // inputs keep the unclamped linear fallback so root-set sentinel values
-    // converge gradually instead of snapping to a boundary. The early
-    // `total_range <= 0` return above guarantees `min < max` here, so
-    // `clamp` cannot panic.
-    if current_milli >= curve.min_milli && current_milli <= curve.max_milli {
-        adjusted.clamp(curve.min_milli, curve.max_milli)
-    } else {
-        adjusted
+    match direction {
+        Direction::Harder => {
+            // Uncapped: `room` may be ≤ 0 once the threshold has walked below
+            // the hard estimate, where the floor alone advances it one step.
+            let room = current_milli.saturating_sub(curve.min_milli);
+            current_milli.saturating_sub(geometric_floored(room))
+        }
+        Direction::Easier => {
+            // Capped at the easy cap: never ease past `max_milli`.
+            let room = curve.max_milli.saturating_sub(current_milli);
+            if room <= 0 {
+                return current_milli;
+            }
+            current_milli.saturating_add(geometric_floored(room).min(room))
+        }
     }
 }
 
@@ -270,7 +256,7 @@ pub fn apply_decay(current: DifficultyConfig, steps: u32, curve: EnergyCurve) ->
             DECAY_RATE_MILLI,
             Direction::Easier,
             curve,
-            MIN_DECAY_DELTA_MILLI,
+            MIN_ENERGY_DELTA_MILLI,
         );
     }
     difficulty
@@ -321,7 +307,7 @@ pub fn adjust_on_proof_with_dominance(
         rate_milli,
         direction,
         curve,
-        MIN_PROOF_ADJUSTMENT_DELTA_MILLI,
+        MIN_ENERGY_DELTA_MILLI,
     );
     DifficultyConfig {
         max_energy_milli: new_max_energy_milli,

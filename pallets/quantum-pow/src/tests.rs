@@ -446,15 +446,6 @@ fn set_default_topology_repoints_default_and_curve() {
 
         // …and difficulty decay is calibrated against B's zero-field curve,
         // not A's ternary-field curve.
-        let initial = DifficultyConfig {
-            min_solutions: 1,
-            max_energy_milli: -10_000,
-            min_diversity_milli: 0,
-        };
-        set_difficulty_default(initial);
-        LastProofBlock::<Test>::put(1);
-        System::set_block_number(101); // (101 - 1) / 20 = 5 decay steps
-
         let zero_h: AllowedValueSpec<AllowedValueSetOf<Test>> =
             AllowedValueSpec::Set(bounded::<_, MaxAllowedValues>(vec![0]));
         let curve_b = crate::difficulty::EnergyCurve::new(
@@ -465,6 +456,20 @@ fn set_default_topology_repoints_default_and_curve() {
             &allowed_j_spec().as_slice(),
         )
         .expect("zero-field spec is valid");
+        // Start inside B's range (B is the new default, so the pallet eases
+        // against B's curve). A's range is disjoint from B's, so easing under
+        // A's curve lands on a different value — the difference this test
+        // asserts. An out-of-range start would decay floor-only and be
+        // curve-independent, defeating the sanity check below.
+        let initial = DifficultyConfig {
+            min_solutions: 1,
+            max_energy_milli: curve_b.knee_milli,
+            min_diversity_milli: 0,
+        };
+        set_difficulty_default(initial);
+        LastProofBlock::<Test>::put(1);
+        System::set_block_number(101); // (101 - 1) / 20 = 5 decay steps
+
         let expected = difficulty::apply_decay(initial, 5, curve_b);
         let decayed = QuantumPow::mining_snapshot(None).expect("snapshot exists");
         assert_eq!(decayed.difficulty, expected);
@@ -663,12 +668,18 @@ fn submit_proof_uses_decayed_difficulty_after_block_gap() {
     new_test_ext().execute_with(|| {
         // Regression: submit_proof must validate against the *decayed*
         // current_difficulty_for(topology), not the raw Difficulties entry.
-        // Under the new curve policy, only max_energy_milli decays — so we
-        // build the discriminator out of energy: set the threshold to exactly
-        // the proof's best energy (validation requires strict-less-than) so
-        // the same-block submit fails, then wait an epoch for decay to raise
-        // the threshold above the proof's energy and admit it.
-        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        // Only max_energy_milli decays, so we build the discriminator out of
+        // energy: set the threshold to exactly the proof's best energy
+        // (validation requires strict-less-than) so the same-block submit
+        // fails, then wait an epoch for decay to ease the threshold up to the
+        // easy cap — which lies above this proof's energy — and admit it.
+        //
+        // Miner 3's puzzle has a ground-state energy below the curve's easy
+        // cap, which is the case that matters: decay eases the threshold only
+        // up to `max_milli`, so the proof's energy must sit below `max_milli`
+        // for decay to flip it from reject to admit. (Miner 1's GSE happens to
+        // be easier than the easy cap, where no in-range threshold gates it.)
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(3)));
         let (nodes, edges, topology_hash) = registered_topology();
 
         // Fix the nonce-derivation seed so both submissions use the same
@@ -677,7 +688,7 @@ fn submit_proof_uses_decayed_difficulty_after_block_gap() {
         System::set_block_number(1);
 
         // Build the proof once and compute its best energy.
-        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+        let proof = proof_for(3, &nodes, &edges, topology_hash, &[0]);
         let h_spec = allowed_h_spec();
         let j_spec = allowed_j_spec();
         let (h, j) = generate_ising_model(
@@ -693,6 +704,13 @@ fn submit_proof_uses_decayed_difficulty_after_block_gap() {
             .map(|s| energy_of_solution(s, &h, edges.as_slice(), &j, nodes.as_slice()).unwrap())
             .min()
             .unwrap();
+        // The discriminator only works when the proof's energy is below the
+        // easy cap decay eases toward; assert the precondition so a future
+        // nonce-derivation change fails loudly rather than silently.
+        assert!(
+            best_energy_milli < test_curve().max_milli,
+            "test precondition: proof energy ({best_energy_milli}) must be below the easy cap"
+        );
 
         // Threshold == best energy: validation's strict-less-than gate
         // rejects same-block submissions (no decay yet).
@@ -701,20 +719,20 @@ fn submit_proof_uses_decayed_difficulty_after_block_gap() {
             max_energy_milli: best_energy_milli,
             min_diversity_milli: 0,
         });
-        let early_proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+        let early_proof = proof_for(3, &nodes, &edges, topology_hash, &[0]);
         assert_noop!(
-            QuantumPow::submit_proof(RuntimeOrigin::signed(1), early_proof),
+            QuantumPow::submit_proof(RuntimeOrigin::signed(3), early_proof),
             crate::Error::<Test>::InsufficientEnergy
         );
 
-        // One full epoch later: decay raises the threshold by at least
-        // MIN_DECAY_DELTA_MILLI (= 3000 milli), strictly above the proof's
-        // energy. Validation now admits the same proof — proving submit_proof
-        // consulted current_difficulty(), not the raw storage baseline.
+        // One full epoch later: decay eases the threshold up to the easy cap,
+        // strictly above the proof's energy. Validation now admits the same
+        // proof — proving submit_proof consulted current_difficulty(), not the
+        // raw storage baseline.
         System::set_block_number(21); // (21 - 1) / EpochLength(20) = 1 decay step
-        let decayed_proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+        let decayed_proof = proof_for(3, &nodes, &edges, topology_hash, &[0]);
         assert_ok!(QuantumPow::submit_proof(
-            RuntimeOrigin::signed(1),
+            RuntimeOrigin::signed(3),
             decayed_proof
         ));
         assert!(BlockBestProof::<Test>::get().is_some());
@@ -1037,26 +1055,26 @@ fn zero_easing_threshold_disables_forced_easing() {
 
         // Without the `threshold > 0` guard, `count >= 0` would force
         // easing on every slow win. A threshold of 0 must mean "disabled":
-        // slow wins keep hardening (or hold at the clamp floor) — easing
-        // would raise the threshold and trip this.
+        // slow wins keep hardening — easing would raise the threshold and trip
+        // this. (Hardening may walk below the hard estimate `min_milli`; that
+        // is by design, so we assert only the no-easing direction here.)
         assert!(
             after_third.max_energy_milli <= after_second.max_energy_milli,
             "threshold 0 disables streak easing; a slow repeat win must never ease"
-        );
-        assert!(
-            after_third.max_energy_milli >= curve.min_milli,
-            "hardening must respect the curve floor"
         );
     });
 }
 
 #[test]
-fn adjustment_from_in_range_never_leaves_curve_range() {
+fn single_adjustment_never_slams_past_a_cap() {
     let curve = test_curve();
-    // Regression for the convergence bug this MR fixes: a max-roll fast win
-    // from the knee could overshoot below `min_milli`, re-entering the
-    // impossible range the v1 migration repairs. Sweep many seeds and
-    // mining times; an in-range threshold must stay in range.
+    // Regression for the convergence bug this MR fixes: the old total-range
+    // step let a max-roll fast win overshoot far past `min_milli` and pin the
+    // ceiling. Under the geometric model a single adjustment moves by at most
+    // the remaining room (or one floor step at the tail), so it can overshoot
+    // the hard cap by at most one energy unit and never eases past the easy
+    // cap. Sweep many seeds, mining times, starts, and dominance.
+    const MIN_DELTA: i64 = 1000; // mirrors MIN_ENERGY_DELTA_MILLI
     for seed_byte in 0_u8..64 {
         for &mining_time in &[1_u64, 30, 59, 60, 61, 150, 200, 201, 500] {
             for &start in &[curve.min_milli, curve.knee_milli, curve.max_milli] {
@@ -1073,12 +1091,13 @@ fn adjustment_from_in_range_never_leaves_curve_range() {
                         dominant,
                     );
                     assert!(
-                        adjusted.max_energy_milli >= curve.min_milli
+                        adjusted.max_energy_milli >= curve.min_milli - MIN_DELTA
                             && adjusted.max_energy_milli <= curve.max_milli,
                         "seed {seed_byte}, time {mining_time}, start {start}, \
-                         dominant {dominant}: adjusted threshold {} left [{}, {}]",
+                         dominant {dominant}: adjusted threshold {} slammed past a cap \
+                         (allowed [{}, {}])",
                         adjusted.max_energy_milli,
-                        curve.min_milli,
+                        curve.min_milli - MIN_DELTA,
                         curve.max_milli,
                     );
                 }
@@ -1110,17 +1129,13 @@ fn winner_streak_resets_for_different_miner() {
 
         assert_eq!(streak.miner, 2);
         assert_eq!(streak.count, 1);
-        // Two fast wins from the knee can already pin the threshold at the
-        // clamp floor (`curve.min_milli`), so the reset win may have no room
-        // left to harden further. The regression this guards is the streak
-        // *not* resetting: count 3 would force easing, raising the threshold.
+        // The regression this guards is the streak *not* resetting: count 3
+        // would force easing, raising the threshold. Hardening may walk below
+        // the hard estimate `min_milli` (by design), so we assert only that
+        // the reset win keeps hardening rather than easing.
         assert!(
             after_reset.max_energy_milli <= before_reset.max_energy_milli,
             "new winner below cutoff must use normal hardening, never easing"
-        );
-        assert!(
-            after_reset.max_energy_milli >= curve.min_milli,
-            "hardening must respect the curve floor"
         );
     });
 }
@@ -1320,9 +1335,11 @@ fn mining_snapshot_returns_decayed_difficulty_after_epochs() {
         // Pin the contract that mining_snapshot.difficulty applies decay so
         // miners querying the runtime API get the live threshold — not the
         // stale Difficulty<T> baseline that polkadot.js storage queries return.
+        // In-range baseline (between the curve's hard and easy caps) so decay
+        // actually eases it; a value past the easy cap would be a decay no-op.
         let initial = DifficultyConfig {
             min_solutions: 5,
-            max_energy_milli: 0,
+            max_energy_milli: -2_300,
             min_diversity_milli: 100,
         };
         let _ = registered_topology();
@@ -1477,9 +1494,11 @@ fn current_difficulty_short_circuits_at_genesis() {
 #[test]
 fn adjust_on_proof_only_mutates_max_energy() {
     let curve = test_curve();
+    // In-range start so a fast (hardening) proof actually moves the threshold;
+    // a value past the hard cap would be a no-op (nothing harder to reach).
     let before = DifficultyConfig {
         min_solutions: 7,
-        max_energy_milli: -2_500,
+        max_energy_milli: -2_300,
         min_diversity_milli: 400,
     };
     let after = difficulty::adjust_on_proof(before, 30, curve, b"seed");
@@ -1507,10 +1526,16 @@ fn apply_decay_only_mutates_max_energy() {
 
 #[test]
 fn decay_moves_less_than_hardening_per_step() {
-    let curve = test_curve();
+    // Start from the curve midpoint so the distance to each cap is equal: that
+    // isolates the rate difference (fast harden ≥ 5% of the remaining gap vs
+    // decay's fixed 2.5%) from the geometric room asymmetry. On the tiny
+    // test_curve every step floors to a bound, so use the production-scale
+    // curve where the geometric rates are visible.
+    let curve = walkup_curve();
+    let midpoint = (curve.min_milli + curve.max_milli) / 2;
     let start = DifficultyConfig {
         min_solutions: 1,
-        max_energy_milli: -2_500,
+        max_energy_milli: midpoint,
         min_diversity_milli: 0,
     };
     let after_decay = difficulty::apply_decay(start, 5, curve);
@@ -1528,47 +1553,36 @@ fn decay_moves_less_than_hardening_per_step() {
 }
 
 #[test]
-fn curve_compresses_motion_near_boundaries() {
-    // Production-scale curve (v0.1's documented -16000/-15600/-14000 energy
-    // units, in milli). The tiny (2, 1) test curve's range sits below the
-    // 5000-milli proof floor, which would flatten every delta to the floor
-    // and hide the compression this test pins.
-    let curve = crate::difficulty::EnergyCurve {
-        min_milli: -16_000_000,
-        knee_milli: -15_600_000,
-        max_milli: -14_000_000,
+fn harden_motion_grows_with_distance_from_hard_cap() {
+    // The geometric model steps a fraction of the gap *remaining* to the hard
+    // cap, so a threshold far from the cap moves farther than one near it —
+    // the inverse of the retired curve_factor, which compressed motion at the
+    // edges and let mid-curve fast wins slam the ceiling. Both points use the
+    // same seed/mining-time, so they sample the same rate; only the room
+    // differs.
+    let curve = walkup_curve();
+    let near_cap = curve.min_milli + 50_000; // little room to the hard cap
+    let far_from_cap = curve.max_milli; // maximum room to the hard cap
+    let harden = |start: i64| {
+        start
+            - difficulty::adjust_on_proof(
+                DifficultyConfig {
+                    min_solutions: 1,
+                    max_energy_milli: start,
+                    min_diversity_milli: 0,
+                },
+                30,
+                curve,
+                b"seed",
+            )
+            .max_energy_milli
     };
-    // Pick two starting points inside the curve range: one near the knee
-    // (max curve_factor ≈ 1.0) and one near the max boundary (curve_factor ≈ 0.1).
-    let mid_start = (curve.min_milli + curve.knee_milli) / 2;
-    let near_max = curve.max_milli - 1;
-    let mid_after = difficulty::adjust_on_proof(
-        DifficultyConfig {
-            min_solutions: 1,
-            max_energy_milli: mid_start,
-            min_diversity_milli: 0,
-        },
-        30,
-        curve,
-        b"seed",
-    )
-    .max_energy_milli;
-    let near_after = difficulty::adjust_on_proof(
-        DifficultyConfig {
-            min_solutions: 1,
-            max_energy_milli: near_max,
-            min_diversity_milli: 0,
-        },
-        30,
-        curve,
-        b"seed",
-    )
-    .max_energy_milli;
-    let mid_move = mid_start - mid_after;
-    let near_move = near_max - near_after;
+    let near_move = harden(near_cap);
+    let far_move = harden(far_from_cap);
     assert!(
-        mid_move > near_move,
-        "curve must compress motion near boundaries (mid={mid_move}, near_max={near_move})",
+        far_move > near_move,
+        "a harden far from the hard cap must move more than one near it \
+         (far={far_move}, near={near_move})",
     );
 }
 
@@ -1603,11 +1617,10 @@ fn energy_curve_uses_default_topology_not_other_registered() {
         assert_eq!(DefaultTopology::<Test>::get(), Some(default_hash));
 
         // Set a stored difficulty and let decay elapse. Start inside A's
-        // curve range: the 3000-milli decay floor exceeds both tiny test
-        // curves' spans, so an out-of-range start would decay by identical
-        // floored linear steps under either curve and defeat the sanity
-        // check below. In-range, A's decay clamps at A's ceiling while B's
-        // (out-of-range for B) walks linearly — observably different.
+        // curve range so decay actually eases the threshold (a start past a
+        // curve's easy cap would be a decay no-op). A and B have different
+        // easy caps, so easing under each curve yields observably different
+        // decayed values — which is what the sanity check below relies on.
         let curve_a = test_curve();
         let initial = DifficultyConfig {
             min_solutions: 1,
@@ -1773,18 +1786,17 @@ fn last_proof_block_hash_stable_after_block_hash_ages_out() {
     });
 }
 
-/// `adjust_energy_along_curve` must apply `min_delta_milli` when the raw
-/// float delta is in (0, 0.5). Before the fix, `libm::round(0.4) = 0` made
-/// the guard `delta > 0` fail and difficulty stalled instead of advancing.
+/// `adjust_energy_along_curve` must apply `min_delta_milli` when the
+/// geometric step `room * rate` rounds to zero — otherwise difficulty would
+/// stall instead of advancing the last sliver toward the bound.
 #[test]
 fn difficulty_adjust_applies_min_delta_for_small_positive_floats() {
-    // Construct a curve and inputs where the raw delta falls in (0, 0.5).
-    // Pick numbers that make total_range * rate * curve_factor < 0.5 milli.
-    // total_range = 1000, rate = 0.0001 (rate_milli=0). 1000 * 0.0001 = 0.1.
-    // round(0.1) = 0 → without the fix, delta stays 0, function returns
-    // current. With the fix, raw_delta_f > 0.0 triggers the floor.
-    let current = -500_000i64;
+    // In-range start with a tiny rate so the geometric step rounds to 0:
+    // room = max - min = 159 milli, rate = 0.001 → round(0.159) = 0. The
+    // floor must lift the step to `min_delta_milli` (capped at the 159-milli
+    // gap, which exceeds 100 here so the floor binds without overshoot).
     let curve = test_curve();
+    let current = curve.max_milli; // greatest room to the hard cap
 
     let result = crate::difficulty::adjust_energy_along_curve(
         current,
@@ -1793,9 +1805,199 @@ fn difficulty_adjust_applies_min_delta_for_small_positive_floats() {
         curve,
         /* min_delta_milli */ 100,
     );
-    assert_ne!(
-        result, current,
-        "difficulty must advance by min_delta_milli when raw float delta is small but positive"
+    assert_eq!(
+        result,
+        current - 100,
+        "the floor must advance difficulty by exactly min_delta_milli when the \
+         geometric step rounds to zero"
+    );
+    assert!(
+        result > curve.min_milli,
+        "the floored step must not overshoot the hard cap"
+    );
+}
+
+/// Production-scale curve (energy units in milli) used by the geometric
+/// walk-up tests. The tiny `test_curve()` range (159 milli) sits below the
+/// delta floor, which would flatten every step to the floor and hide the
+/// geometric behaviour these tests pin.
+fn walkup_curve() -> crate::difficulty::EnergyCurve {
+    crate::difficulty::EnergyCurve {
+        min_milli: -16_000_000,
+        knee_milli: -15_600_000,
+        max_milli: -14_000_000,
+    }
+}
+
+/// Core of the slam-and-stall fix: well inside the curve a single harden steps
+/// exactly `room * rate` of the gap *remaining* to the hard cap and, because
+/// `rate < 1`, stays strictly inside it. The retired total-range step let one
+/// fast win overshoot `min_milli` and pin the ceiling. (The floored tail, which
+/// walks past the cap, is covered by `harden_tail_walks_past_cap_by_min_delta`.)
+#[test]
+fn harden_steps_geometric_fraction_in_the_interior() {
+    let curve = walkup_curve();
+    for &current in &[
+        curve.max_milli,
+        curve.knee_milli,
+        -15_000_000,
+        curve.min_milli + 100_000,
+    ] {
+        for rate_milli in [50_u32, 350, 650] {
+            let result = crate::difficulty::adjust_energy_along_curve(
+                current,
+                rate_milli,
+                crate::difficulty::Direction::Harder,
+                curve,
+                /* min_delta_milli */ 5000,
+            );
+            let room = current - curve.min_milli;
+            let expected_delta =
+                libm::round(room as f64 * f64::from(rate_milli) / 1000.0) as i64;
+            assert_eq!(
+                result,
+                current - expected_delta,
+                "harden must step exactly room*rate (current={current}, rate={rate_milli})"
+            );
+            // Every sampled room here is >= 100_000 milli, far above the
+            // 5000 floor, so the geometric step keeps the result strictly
+            // inside the hard cap (the floored tail that walks *past* the cap
+            // is covered separately by `harden_tail_walks_past_cap_by_min_delta`).
+            assert!(
+                result > curve.min_milli,
+                "a geometric harden (room >> floor) must stay strictly inside \
+                 the hard cap (current={current}, rate={rate_milli}, result={result})"
+            );
+        }
+    }
+}
+
+/// Tail behaviour: near, at, and below the hard cap the geometric term has
+/// shrunk below the floor, so a harden steps by exactly one floor — walking
+/// the threshold *past* `min_milli` to keep tracking a stronger-than-estimated
+/// field. Hardening is uncapped at this end, so it crosses the cap rather than
+/// landing on it.
+#[test]
+fn harden_tail_walks_past_cap_by_min_delta() {
+    let curve = walkup_curve();
+    let floor = 1000; // the production MIN_ENERGY_DELTA_MILLI
+    // `room` runs from a few units inside the cap down to below it (negative).
+    for room in [5 * floor, floor, 1, 0, -floor] {
+        let current = curve.min_milli + room;
+        let result = crate::difficulty::adjust_energy_along_curve(
+            current,
+            /* rate_milli */ 1, // tiny rate so the geometric step rounds below the floor
+            crate::difficulty::Direction::Harder,
+            curve,
+            floor,
+        );
+        assert_eq!(
+            result,
+            current - floor,
+            "a tail harden steps by exactly one floor (room={room})"
+        );
+    }
+    // Concretely: from the hard cap itself, a harden walks one floor below it —
+    // the threshold is free to track past the hard estimate.
+    let at_cap = crate::difficulty::adjust_energy_along_curve(
+        curve.min_milli,
+        1,
+        crate::difficulty::Direction::Harder,
+        curve,
+        floor,
+    );
+    assert!(
+        at_cap < curve.min_milli,
+        "harden from the hard cap must cross below it, got {at_cap}"
+    );
+}
+
+/// End-to-end regression for the observed testnet slam: replay the documented
+/// inter-win gap series (29, 280, 27, 200, 100, 300, 1401 blocks) as
+/// decay-then-harden rounds and assert the base threshold stays strictly
+/// interior to the curve — it never pins `min_milli` (the slam-and-stall the
+/// rewrite removes) nor runs away to `max_milli`. (Plan "Convergence
+/// simulation" test.)
+#[test]
+fn observed_win_series_never_pins_the_hard_cap() {
+    let curve = walkup_curve();
+    let epoch_len = 100_u64;
+    let mut base = DifficultyConfig {
+        min_solutions: 1,
+        max_energy_milli: curve.knee_milli, // start at the field level
+        min_diversity_milli: 0,
+    };
+    for (i, gap) in [29_u64, 280, 27, 200, 100, 300, 1401].into_iter().enumerate() {
+        // Decay eases the live threshold by one step per elapsed epoch …
+        let steps = (gap / epoch_len) as u32;
+        let active = difficulty::apply_decay(base, steps, curve);
+        // … then the winning proof adjusts from that decayed base. Use a
+        // distinct seed per round so the sampled rate varies like real wins.
+        let seed = [i as u8];
+        base = difficulty::adjust_on_proof(active, gap, curve, &seed);
+        assert!(
+            base.max_energy_milli > curve.min_milli && base.max_energy_milli < curve.max_milli,
+            "round {i} (gap {gap}) left the curve interior: {} not in ({}, {})",
+            base.max_energy_milli,
+            curve.min_milli,
+            curve.max_milli,
+        );
+    }
+}
+
+/// Walk-up property: climbing from the field level to the hard cap takes many
+/// wins, never one. The old total-range step saturated the curve on a single
+/// 35% fast win; the geometric step closes ~35% of the *remaining* gap, so it
+/// takes well over ten consecutive wins to approach the cap.
+#[test]
+fn fast_wins_walk_up_the_curve_over_many_steps() {
+    let curve = walkup_curve();
+    let mut current = curve.knee_milli; // field level, mid curve
+    let mut wins = 0;
+    // Stop within one energy unit (1000 milli) of the cap.
+    while current - curve.min_milli > 1000 && wins < 1000 {
+        current = crate::difficulty::adjust_energy_along_curve(
+            current,
+            /* rate_milli */ 350, // median fast-harden roll
+            crate::difficulty::Direction::Harder,
+            curve,
+            /* min_delta_milli */ 5000,
+        );
+        wins += 1;
+    }
+    assert!(
+        wins >= 10,
+        "a 35% geometric harden must take >=10 wins to reach the cap, got {wins}"
+    );
+    assert!(
+        current <= curve.min_milli + 1000,
+        "the walk-up must actually reach the hard cap, ended at {current}"
+    );
+}
+
+/// Decay easing is geometric in the distance to the *easy* cap, so its largest
+/// step is taken exactly at the hard ceiling — the inverse of the retired
+/// curve, which eased slowest there and caused multi-thousand-block recovery
+/// stalls. A threshold pinned at `min_milli` therefore recovers fastest.
+#[test]
+fn decay_recovers_fastest_from_the_hard_cap() {
+    let curve = walkup_curve();
+    let decay_step = |start: i64| {
+        crate::difficulty::adjust_energy_along_curve(
+            start,
+            /* DECAY rate per epoch */ 25,
+            crate::difficulty::Direction::Easier,
+            curve,
+            /* min_delta_milli */ 3000,
+        ) - start
+    };
+    let from_cap = decay_step(curve.min_milli); // full range remaining
+    let from_mid = decay_step(curve.knee_milli);
+    let from_near_max = decay_step(curve.max_milli - 50_000);
+    assert!(
+        from_cap > from_mid && from_mid > from_near_max,
+        "decay must ease most at the hard cap, least near the easy cap \
+         (cap={from_cap}, mid={from_mid}, near_max={from_near_max})"
     );
 }
 

@@ -102,7 +102,10 @@ pub fn new_test_ext() -> sp_io::TestExternalities {
         .unwrap();
 
     pallet_balances::GenesisConfig::<Test> {
-        balances: vec![(1, 1_000_000), (2, 1_000_000)],
+        // Account 3 is funded so tests can use a miner whose puzzle ground
+        // state sits below the energy curve (accounts 1 and 2 happen to map to
+        // puzzles easier than the curve's easy cap).
+        balances: vec![(1, 1_000_000), (2, 1_000_000), (3, 1_000_000)],
         dev_accounts: None,
     }
     .assimilate_storage(&mut storage)
