@@ -5,9 +5,6 @@ build-backend = "maturin"
 [project]
 name = "quip-signer"
 description = "Quip hybrid (sr25519 + ML-DSA-44) transaction signer"
-# The package README lives with the Python sources (python-source, below), so
-# the path is relative to this manifest. Populates the PyPI long description.
-readme = "../../py/quip-signer/README.md"
 requires-python = ">=3.9"
 license = { text = "MIT-0" }
 classifiers = [
