@@ -3,17 +3,22 @@
 # CI pipeline for quip-protocol-rs.
 #
 # Stages:
-#   - test:      fmt / clippy / test / runtime release build on every MR
+#   - test:      fmt / clippy / test / runtime release build on every MR;
+#                also the quip-signer PyPI dry-run (build wheels + twine check)
 #   - build:     build the quip-network-node container per architecture
 #                (amd64 + arm64), each on a native runner, on main/v0.2/tags
 #   - manifest:  stitch the per-arch images into a multi-arch manifest list so
 #                a single tag serves both architectures
+#   - release:   publish the quip-signer abi3 wheels + sdist to PyPI on release
+#                tags via Trusted Publishing (OIDC) — TestPyPI auto, PyPI manual
 #
 # Triggers:
-#   - merge_request_event  →  test
+#   - merge_request_event  →  test (incl. PyPI dry-run)
 #   - push to main         →  test + build + manifest (:latest)
 #   - push to v0.2         →  test + build + manifest (:v0.2)
-#   - git tag              →  test + build + manifest (:<tag> + floating :<vMAJOR.MINOR>)
+#   - git tag (/^v\d/)     →  test + build + manifest (:<tag> + floating :<vMAJOR.MINOR>)
+#                             + release:publish-testpypi (auto)
+#                             + release:publish-pypi (manual promote)
 #
 # Multi-arch: kaniko has no cross-build/manifest support — it builds for the
 # native architecture of whichever runner it runs on. So each architecture has
@@ -41,6 +46,7 @@ stages:
   - test
   - build
   - manifest
+  - release
 
 variables:
   TOOLCHAIN_IMAGE: docker.io/carback1/rust-substrate-builder:latest
@@ -55,6 +61,17 @@ variables:
   # the GitLab CI cache can pick them up between runs.
   CARGO_HOME: $CI_PROJECT_DIR/.cargo
   CARGO_TERM_COLOR: always
+  # The quip-signer PyPI jobs run on a lean official `rust:*` image, NOT the
+  # heavy Substrate TOOLCHAIN_IMAGE: the binding is its own pure-Rust workspace
+  # (no clang/protoc/substrate deps), and the aarch64 wheel needs `rustup target
+  # add`, which the official images guarantee. Pinned (not `:latest`) so a
+  # surprise upstream Rust bump can't change release artefacts mid-series.
+  PY_RELEASE_IMAGE: docker.io/library/rust:1.83-bookworm
+  # cargo-zigbuild drives the aarch64 cross-build (zig as the linker). Pinned and
+  # fetched as a prebuilt via cargo-binstall (seconds) rather than compiled from
+  # source. Bump deliberately; it changes the linker the release wheels are built
+  # with.
+  CARGO_ZIGBUILD_VERSION: "0.22.3"
 
 workflow:
   rules:
@@ -251,3 +268,120 @@ manifest:
         --template "$IMAGE:$PRIMARY_TAG-ARCH" \
         --target "$IMAGE:$PRIMARY_TAG" \
         --tags "$ADDL_TAGS"
+
+# ---------------------------------------------------------------------------
+# quip-signer PyPI release pipeline (QUI-776)
+# ---------------------------------------------------------------------------
+# Publishes the quip-signer PyO3 abi3 wheels + sdist to PyPI on release tags
+# via Trusted Publishing (OIDC) — no long-lived token in CI. The one-time
+# PyPI- and GitLab-side setup that CI *cannot* do (creating the TestPyPI/PyPI
+# projects, configuring each Trusted Publisher, the `release` environment, and
+# the protected `v*` tag pattern) is documented in docs/releasing-quip-signer.md.
+#
+# All three jobs share one build path (scripts/python-dists.sh):
+#   release:dry-run-pypi      every MR / push   build + twine check (no upload)
+#   release:publish-testpypi  release tag       auto    → TestPyPI
+#   release:publish-pypi      release tag       manual  → PyPI (promote button)
+#
+# Artefact matrix mirrors xquad's xqffi cdylib: abi3 wheel for linux x86_64
+# (native) + abi3 wheel for linux aarch64 (cargo-zigbuild / zig linker) + an
+# sdist (universal source fallback; macOS/Windows build from it). The wheel
+# version is the pyproject/Cargo version, bumped per release so the tag matches.
+
+# Run only on pushed release tags like v0.2.1, v0.3.0-rc1, … (the same `v*`
+# stream that releases the node container; the wheel publish is tag-only —
+# never on the v0.2/main branch pushes that publish the container).
+.on-release-tag:
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d/
+
+# Run on every MR and on main/v0.2 pushes; never on a release tag (the publish
+# jobs own those). Proves the release build works without uploading anything,
+# so a packaging regression fails an MR instead of a tag.
+.on-pr-or-push:
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d/
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+# Shared base for the PyPI jobs. Runs on the lean Rust image (see
+# PY_RELEASE_IMAGE) and installs the maturin/twine/zig toolchain. The binding is
+# its own workspace resolving against its own Cargo.lock, so — like
+# py-signer-test — it caches the crate's target/ keyed on that lock, not the
+# workspace one.
+.pypi-dist:
+  image: $PY_RELEASE_IMAGE
+  tags: [docker, amd64]
+  interruptible: true
+  timeout: 30m
+  cache:
+    - key:
+        files:
+          - crates/transaction-crypto-py/Cargo.lock
+      paths:
+        - .cargo/registry/cache
+        - .cargo/registry/index
+        - crates/transaction-crypto-py/target/
+  before_script:
+    # maturin + twine + ziglang go in a venv placed first on PATH, so the
+    # `python3` that cargo-zigbuild shells out to (`python3 -m ziglang`, how it
+    # locates zig) is the venv's — the one with ziglang. A system `pip install`
+    # would land in a different interpreter and zig would not be found.
+    - apt-get update && apt-get install -y --no-install-recommends python3 python3-venv curl ca-certificates
+    - rm -rf /var/lib/apt/lists/*
+    - python3 -m venv /opt/pyrelease
+    - export PATH="/opt/pyrelease/bin:$CARGO_HOME/bin:$PATH"
+    - pip install --quiet --upgrade pip 'maturin>=1.7,<2' 'twine>=6.1' ziglang
+    # cargo-zigbuild as a prebuilt binary via cargo-binstall (seconds) instead of
+    # `cargo install` from source (minutes). The upstream script bootstraps
+    # binstall itself from a release binary.
+    - curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+    - cargo binstall --no-confirm --locked "cargo-zigbuild@$CARGO_ZIGBUILD_VERSION"
+    - rustup target add aarch64-unknown-linux-gnu
+    - maturin --version && twine --version && cargo zigbuild --version
+
+# Dry-run on every MR/push: build all three artefacts and twine-check their
+# metadata. No token, no upload. Catches release-blocking packaging regressions
+# (bad metadata, a wheel that won't build, an unbuildable aarch64 cross) long
+# before a tag is cut.
+release:dry-run-pypi:
+  extends: .pypi-dist
+  stage: test
+  rules: !reference [.on-pr-or-push, rules]
+  script:
+    - bash scripts/python-dists.sh check
+
+# Auto-publish to TestPyPI on every release tag (Phase 1 validation target).
+release:publish-testpypi:
+  extends: .pypi-dist
+  stage: release
+  rules: !reference [.on-release-tag, rules]
+  # `environment: release` must match the environment configured on the TestPyPI
+  # Trusted Publisher; PyPI rejects the OIDC exchange if they differ.
+  environment: release
+  # GitLab mints one short-lived JWT into PYPI_ID_TOKEN for this job. The
+  # audience MUST be the literal `testpypi` (PyPI/TestPyPI reject any other aud).
+  id_tokens:
+    PYPI_ID_TOKEN:
+      aud: testpypi
+  script:
+    - bash scripts/python-dists.sh publish testpypi
+
+# Promote to production PyPI: manual button on the tag pipeline. Manual +
+# allow_failure so an un-clicked (or not-yet-configured, during Phase 1) prod
+# publish never reds the tag pipeline; click it once the TestPyPI wheel checks
+# out. Audience is `pypi` here (vs `testpypi` above).
+release:publish-pypi:
+  extends: .pypi-dist
+  stage: release
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d/
+      when: manual
+      allow_failure: true
+  environment: release
+  id_tokens:
+    PYPI_ID_TOKEN:
+      aud: pypi
+  script:
+    - bash scripts/python-dists.sh publish pypi

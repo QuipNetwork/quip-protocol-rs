@@ -7,10 +7,22 @@ the browser signer, and the runtime verifier are byte-identical.
 
 ## Install
 
-The package is distributed by vendoring `quip-protocol-rs` as a git submodule
-(the same model the browser signer uses), then building the extension locally
-with [maturin](https://www.maturin.rs/). The build drops the git-ignored
-extension into `py/quip-signer/quip_signer/`.
+```bash
+pip install quip-signer
+```
+
+Prebuilt abi3 wheels are published for **linux x86_64** and **linux aarch64**
+(CPython ≥ 3.9). macOS and Windows resolve the sdist and build it locally, which
+needs a [Rust toolchain](https://rustup.rs/) on the machine. Releasing is
+covered in [`docs/releasing-quip-signer.md`](../../docs/releasing-quip-signer.md).
+
+### Building from source (submodule)
+
+If you can't use the published wheel — pinning to an unreleased commit, or
+building on an unsupported platform — vendor `quip-protocol-rs` as a git
+submodule (the same model the browser signer uses) and build the extension
+locally with [maturin](https://www.maturin.rs/). The build drops the
+git-ignored extension into `py/quip-signer/quip_signer/`.
 
 ```bash
 # from your downstream repo, with quip-protocol-rs pinned as a submodule:
