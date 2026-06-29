@@ -148,6 +148,9 @@ pub enum MinerKind {
     QpuIonq,
     QpuPasqal,
     Asic,
+    /// Apple Metal GPU backend (Apple Silicon). Appended last to keep the
+    /// SCALE variant indices of the existing kinds stable on a live chain.
+    Metal,
 }
 
 #[derive(
