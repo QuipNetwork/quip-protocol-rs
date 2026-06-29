@@ -243,6 +243,26 @@ fn hex_digit(ch: u8) -> HybridResult<u8> {
 }
 
 /// Signs raw payload bytes with a 32-byte H3 master seed and returns the bytes-level envelope.
+///
+/// # Payload contract
+///
+/// `payload` is signed **exactly as given** — this function performs no hashing
+/// and no length check. Two caller obligations follow:
+///
+/// - **H3 domain prefix is intrinsic; do NOT pre-apply it.** The H3 scheme
+///   (`Sr25519MlDsa44`) frames every message internally as
+///   `0x01 ‖ "hybrid-sr25519-mldsa44-v1\0" ‖ len(ctx) ‖ ctx ‖ msg` before
+///   hashing/signing. Browser, runtime, and Python all go through the same
+///   core, so they agree byte-for-byte. Callers pass the unframed payload;
+///   pre-applying the prefix yourself would double-frame and the runtime would
+///   reject the signature.
+/// - **The Substrate >256-byte rule is the caller's job.** Substrate signs
+///   `SignedPayload::using_encoded`, which substitutes `blake2_256(payload)`
+///   for the raw bytes whenever the SCALE-encoded payload exceeds 256 bytes.
+///   That is an extrinsic convention, not part of H3, so this function does not
+///   apply it. A caller that hands a >256-byte extrinsic payload here verbatim
+///   gets a signature the runtime silently rejects. Hash first, then sign the
+///   32-byte digest.
 pub fn sign_payload_from_seed(seed: &[u8], payload: &[u8]) -> HybridResult<HybridTxSignatureBytes> {
     let (secret, public) = Sr25519MlDsa44::from_seed_slice(seed).map_err(map_suite_error)?;
     let signature = Sr25519MlDsa44::sign_deterministic(&secret, payload, b"", b"");
@@ -251,6 +271,11 @@ pub fn sign_payload_from_seed(seed: &[u8], payload: &[u8]) -> HybridResult<Hybri
 }
 
 /// Signs raw payload bytes with expanded H3 secret bytes and matching public bytes.
+///
+/// The payload contract is identical to [`sign_payload_from_seed`]: the bytes
+/// are signed verbatim (no hashing, no length check), the H3 domain prefix is
+/// applied intrinsically by the scheme, and applying Substrate's >256-byte
+/// `blake2_256` rule is the caller's responsibility.
 pub fn sign_payload_from_secret(
     secret: &[u8],
     public: &[u8],

@@ -31,6 +31,8 @@ polkadot-sdk
 
 # Python
 __pycache__
+.pytest_cache/
+*.egg-info/
 
 # Per-operator key material produced by scripts/derive-operator-keys.sh.
 # The script also writes a `*` .gitignore inside the directory; this entry

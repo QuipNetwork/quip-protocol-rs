@@ -1,0 +1,4 @@
+# This crate is excluded from the root workspace, so it builds into its own
+# target/ here (the root /target/ ignore does not reach it).
+/target/
+.pytest_cache/
