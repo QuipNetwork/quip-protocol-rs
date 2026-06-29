@@ -7,6 +7,15 @@ WASM_SIGNER_PKG := js/quip-transaction-crypto-wasm
 WASM_SIGNER_STAGE := target/wasm-signer-pkg
 WASM_SIGNER_NAME := quip_transaction_crypto_wasm
 
+PY_SIGNER_CRATE := crates/transaction-crypto-py
+PY_SIGNER_PKG := py/quip-signer
+PY_SIGNER_VENV := target/py-signer-venv
+PY_SIGNER_PY := $(PY_SIGNER_VENV)/bin/python
+PY_SIGNER_WHEELS := target/wheels
+# PyO3 builds abi3 against the limited API; allow building on a CPython newer
+# than the pinned pyo3 knows about (e.g. 3.14) via the forward-compat escape.
+PY_SIGNER_ENV := PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
+
 polkadot-sdk:
 	git clone --branch polkadot-stable2603 git@github.com:QuipNetwork/polkadot-sdk.git
 
@@ -33,4 +42,34 @@ wasm-signer:
 		$(WASM_SIGNER_PKG)/
 	@echo "Built $(WASM_SIGNER_PKG)/$(WASM_SIGNER_NAME)_bg.wasm ($$(wc -c < $(WASM_SIGNER_PKG)/$(WASM_SIGNER_NAME)_bg.wasm) bytes)"
 
-.PHONY: local-3-node quantum-validation-venv quantum-validation-fixtures wasm-signer
+# Tooling venv for the Python signer (maturin + pytest). Created on demand.
+$(PY_SIGNER_PY):
+	python3 -m venv $(PY_SIGNER_VENV)
+	$(PY_SIGNER_PY) -m pip install --quiet --upgrade pip 'maturin>=1.7,<2' pytest
+
+# Build the release wheel for the Python signer and report the extension size.
+# The wheel lands in target/wheels/; downstreams `pip install` it (see
+# py/quip-signer/README.md). Like wasm-signer, the compiled artifact is small
+# because the crate links only the sp-free transaction-crypto-core.
+py-signer: $(PY_SIGNER_PY)
+	$(PY_SIGNER_ENV) $(PY_SIGNER_VENV)/bin/maturin build --release \
+		-m $(PY_SIGNER_CRATE)/Cargo.toml --out $(PY_SIGNER_WHEELS)
+	@$(PY_SIGNER_PY) -c "import glob, zipfile; \
+w = sorted(glob.glob('$(PY_SIGNER_WHEELS)/quip_signer-*.whl'))[-1]; \
+z = zipfile.ZipFile(w); \
+ext = max((i for i in z.infolist() if i.filename.endswith(('.so', '.pyd', '.dylib'))), key=lambda i: i.file_size); \
+print(f'Built {ext.filename} ({ext.file_size} bytes) in {w}')"
+
+# Build + install the extension into the venv AND drop the loose extension into
+# py/quip-signer/quip_signer/ (the submodule/PYTHONPATH staging location).
+py-signer-develop: $(PY_SIGNER_PY)
+	$(PY_SIGNER_ENV) VIRTUAL_ENV=$(abspath $(PY_SIGNER_VENV)) \
+		$(PY_SIGNER_VENV)/bin/maturin develop --release \
+		-m $(PY_SIGNER_CRATE)/Cargo.toml
+
+# Build the extension and run the Python test suite (parity + API).
+py-signer-test: py-signer-develop
+	$(PY_SIGNER_PY) -m pytest $(PY_SIGNER_CRATE)/tests -q
+
+.PHONY: local-3-node quantum-validation-venv quantum-validation-fixtures wasm-signer \
+	py-signer py-signer-develop py-signer-test

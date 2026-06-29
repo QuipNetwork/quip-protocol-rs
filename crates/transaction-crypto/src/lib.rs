@@ -157,6 +157,11 @@ impl HybridTxSignature {
 
     /// Signs the message with the given hybrid H3 pair and returns the full
     /// transaction signature envelope.
+    ///
+    /// `message` is signed exactly as given. The H3 domain prefix is applied
+    /// intrinsically by the scheme (callers must not pre-apply it), and this
+    /// does not hash long messages — applying Substrate's `SignedPayload`
+    /// >256-byte `blake2_256` rule is the caller's responsibility.
     #[cfg(feature = "std")]
     pub fn sign(pair: &HybridPair, message: &[u8]) -> Self {
         let envelope =

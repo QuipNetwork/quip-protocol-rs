@@ -108,6 +108,14 @@ pub fn seed_from_mnemonic(secret_uri: &str) -> Result<String, JsValue> {
 
 /// Sign SCALE-encoded transaction payload bytes and return a SCALE-encoded
 /// `HybridTxSignature` envelope.
+///
+/// The payload hex is signed **exactly as given**: no hashing, no length check.
+/// The H3 domain prefix (`0x01 || "hybrid-sr25519-mldsa44-v1\0" || ...`) is
+/// applied intrinsically by the scheme, so callers must not pre-apply it.
+/// Substrate's `SignedPayload` rule — `blake2_256(payload)` when the encoded
+/// payload exceeds 256 bytes — is an extrinsic convention and the caller's
+/// responsibility; the higher-level `QuipSigner` (`signRaw`) applies it, so
+/// callers using that path get it for free.
 #[wasm_bindgen(js_name = signPayloadFromSeed)]
 pub fn sign_payload_from_seed(seed_hex: &str, payload_hex: &str) -> Result<String, JsValue> {
     sign_payload_from_seed_impl(seed_hex, payload_hex).map_err(|error| JsValue::from_str(&error))

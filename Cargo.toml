@@ -20,6 +20,11 @@ members = [
   "pallets/xqvm",
   "runtime",
 ]
+# `transaction-crypto-py` is a PyO3 `extension-module` cdylib. It is excluded so
+# its macOS `dynamic_lookup` link requirement (injected by maturin) never
+# perturbs the runtime/node builds. It depends on `transaction-crypto-core` by
+# path and is built via maturin, not as part of this workspace.
+exclude = ["crates/transaction-crypto-py"]
 resolver = "2"
 
 [workspace.dependencies]

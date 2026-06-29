@@ -87,6 +87,50 @@ cargo-test:
     - cargo test --workspace --lib --bins --tests
     - cargo build --release -p quip-protocol-runtime
 
+# The Python signer crate (crates/transaction-crypto-py) is *excluded* from the
+# workspace — its macOS `dynamic_lookup` link requirement would perturb the
+# runtime/node builds (see the exclude comment in the root Cargo.toml). A side
+# effect of that exclusion is that `cargo-test`'s `--workspace` clippy/test runs
+# never compile or lint the binding, and its pytest parity suite
+# (tests/test_api.py + tests/test_parity.py) otherwise only runs locally via
+# `make py-signer-test`. Without this job, a change that breaks the binding's
+# compilation — or its byte-for-byte parity with transaction-crypto-core — lands
+# green. This job restores that coverage: it lints/format-checks the wrapper and
+# runs the parity tests that back the "Python / WASM / runtime are byte-identical"
+# guarantee. (It covers the in-repo wrapper; the downstream `self_test` covers a
+# consumer's locally-built extension.)
+py-signer-test:
+  stage: test
+  image: $TOOLCHAIN_IMAGE
+  tags: [docker, amd64]
+  interruptible: true
+  timeout: 30m
+  # Two caches: the shared Cargo registry (keyed on the workspace lock, same as
+  # cargo-test) and the excluded crate's own target/ (it resolves against its
+  # own Cargo.lock, so the workspace target/ is useless to it).
+  cache:
+    - key:
+        files:
+          - Cargo.lock
+      paths:
+        - .cargo/registry/cache
+        - .cargo/registry/index
+    - key:
+        files:
+          - crates/transaction-crypto-py/Cargo.lock
+      paths:
+        - crates/transaction-crypto-py/target/
+  before_script:
+    # The toolchain image is a bare rust:bookworm; `make py-signer-test` shells
+    # out to `python3 -m venv` and builds a PyO3 extension via maturin, so it
+    # needs the interpreter, venv module, and dev headers.
+    - apt-get update && apt-get install -y --no-install-recommends python3 python3-venv python3-dev
+    - rm -rf /var/lib/apt/lists/*
+  script:
+    - cargo fmt --manifest-path crates/transaction-crypto-py/Cargo.toml -- --check
+    - cargo clippy -p quip-transaction-crypto-py --manifest-path crates/transaction-crypto-py/Cargo.toml --all-targets -- -D warnings
+    - make py-signer-test
+
 # Shared publish rules: which branches/tags publish, and the PRIMARY_TAG each
 # maps to. Referenced (not inherited) by the build jobs and the manifest job so
 # all three resolve the same PRIMARY_TAG for a given pipeline.
