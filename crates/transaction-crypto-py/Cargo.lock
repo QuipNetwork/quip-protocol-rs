@@ -635,7 +635,7 @@ dependencies = [
 
 [[package]]
 name = "quip-transaction-crypto-py"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "pyo3",
  "quip-transaction-crypto-core",
