@@ -116,6 +116,13 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // V1 is unaffected and V2 was not yet deployed, so `transaction_version`
     // stays at 4 and no new migration is needed (the v1 → v2 migration already
     // wipes descriptors; pallet storage version stays 2).
+    // Also under 110: `QuantumPow.QBlock` gains a trailing `topology_hash` so a
+    // block records which topology it was mined against. This changes the
+    // persisted `QBlocks` value layout, so QuantumPow pallet storage version
+    // goes 3 → 4 with a v3 → v4 migration that re-encodes existing entries,
+    // backfilling `topology_hash` with the default topology. Read-only runtime
+    // API shape change (`QBlock`/`QBlockWithNonce`); no call encodings change,
+    // so `transaction_version` stays at 4.
     spec_version: 110,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,

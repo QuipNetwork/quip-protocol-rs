@@ -1,8 +1,15 @@
-#!/bin/sh
-set -eu
-# Fresh named volumes are root-owned on some Docker versions/platforms;
-# ensure /data is writable by the unprivileged runtime user before exec.
-chown -R quip:quip /data
+#!/bin/bash
+# Entrypoint for the quip-network-node image.
+#
+# Host environment (not node configuration):
+#   PUID / PGID   uid/gid to run the node as (default 1000:1000; PUID=0 = root)
+#
+# Node state lives at /data (image WORKDIR, volume target in our compose and
+# deployments). A --base-path outside /data is not supported: the ownership
+# fix and the db_version repair below only cover /data.
+set -euo pipefail
+
+NODE_BIN=/usr/local/bin/quip-network-node
 
 # --- RocksDB db_version self-heal -------------------------------------------
 # A node killed mid-write (OOM, SIGKILL, host crash) can leave the tiny
@@ -21,22 +28,8 @@ chown -R quip:quip /data
 # (substrate/client/db/src/upgrade.rs); it is baked into the image (Dockerfile).
 DB_VERSION="${QUIP_DB_VERSION:-4}"
 
-# Resolve --base-path (alias -d) from the node args; default matches our images.
-base_path=/data
-prev=
-for arg in "$@"; do
-    case "$prev" in
-    --base-path | -d) base_path=$arg ;;
-    esac
-    case "$arg" in
-    --base-path=*) base_path=${arg#--base-path=} ;;
-    -d=*) base_path=${arg#-d=} ;;
-    esac
-    prev=$arg
-done
-
 repair_marker() {
-    marker=$1
+    local marker=$1 dir contents
     dir=$(dirname "$marker")
     # Only touch a populated RocksDB; `CURRENT` is its live manifest pointer.
     [ -f "$dir/CURRENT" ] || return 0
@@ -47,15 +40,33 @@ repair_marker() {
     '' | *[!0-9]*)
         echo "entrypoint: repairing corrupt db_version at $marker (was '$contents') -> $DB_VERSION"
         printf '%s' "$DB_VERSION" >"$marker"
-        chown quip:quip "$marker"
         ;;
     esac
 }
 
-for marker in "$base_path"/chains/*/db/*/db_version; do
+# The chain-id and db-kind path segments vary at runtime (chain spec id, db
+# backend), hence the glob; the /data root is fixed by the image contract.
+for marker in /data/chains/*/db/*/db_version; do
     [ -f "$marker" ] || continue # no glob match -> literal path, skip
     repair_marker "$marker"
 done
 # ---------------------------------------------------------------------------
 
-exec gosu quip /usr/local/bin/quip-network-node "$@"
+# --- Privilege drop ----------------------------------------------------------
+# Container starts as root so it can repair markers and fix /data ownership
+# (fresh named volumes are root-owned on some Docker versions/platforms); the
+# node runs as `quip`. PUID/PGID map the in-container user to a host uid/gid
+# (default 1000:1000; PUID=0 keeps root).
+PUID="${PUID:-1000}"
+PGID="${PGID:-1000}"
+
+if [ "$PUID" = "0" ]; then
+    echo "entrypoint: PUID=0 — running as root"
+    exec "$NODE_BIN" "$@"
+fi
+
+[ "$(id -g quip)" != "$PGID" ] && groupmod -g "$PGID" quip
+[ "$(id -u quip)" != "$PUID" ] && usermod -u "$PUID" -g "$PGID" quip
+chown -R quip:quip /data
+echo "entrypoint: exec as uid=$PUID gid=$PGID"
+exec gosu quip:quip "$NODE_BIN" "$@"

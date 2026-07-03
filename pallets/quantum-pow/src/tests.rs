@@ -958,7 +958,8 @@ fn migration_v2_to_v3_carries_difficulty_and_whitelists_default() {
             frame_support::storage::unhashed::get::<DifficultyConfig>(&old_key).is_none(),
             "old global value removed"
         );
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(3));
+        // on_runtime_upgrade steps cumulatively through v4.
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(4));
         // The live threshold for the default now equals the carried value.
         assert_eq!(
             QuantumPow::current_difficulty_for(hash, System::block_number()),
@@ -1096,7 +1097,7 @@ fn repeated_same_winner_forces_easing() {
 }
 
 #[test]
-fn migration_below_v2_wipes_then_bumps_to_v3() {
+fn migration_below_v2_wipes_then_bumps_to_v4() {
     new_test_ext().execute_with(|| {
         let (_, _, hash) = registered_topology();
         QBlockCount::<Test>::put(9);
@@ -1108,12 +1109,65 @@ fn migration_below_v2_wipes_then_bumps_to_v3() {
         assert_eq!(DefaultTopology::<Test>::get(), None);
         assert_eq!(QBlockCount::<Test>::get(), 0);
         assert!(!MineableTopologies::<Test>::contains_key(hash));
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(3));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(4));
+    });
+}
+
+/// Pre-v4 `QBlock` layout (no `topology_hash`), used to plant an old-format
+/// entry so the v3 → v4 backfill can be exercised end-to-end.
+#[derive(codec::Encode)]
+struct OldQBlockV3 {
+    miner: u64,
+    salt: [u8; 32],
+    energy_milli: i64,
+    reward: u128,
+    submitted_at: u64,
+    difficulty: DifficultyConfig,
+    last_proof_block_hash: sp_core::H256,
+}
+
+#[test]
+fn migration_v3_to_v4_backfills_qblock_topology() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        DefaultTopology::<Test>::put(hash);
+        StorageVersion::new(3).put::<QuantumPow>();
+
+        // Plant an old-layout qblock straight at its storage key so it decodes
+        // only under the pre-v4 shape.
+        let block: u64 = 7;
+        let old = OldQBlockV3 {
+            miner: 1,
+            salt: [3u8; 32],
+            energy_milli: -42_000,
+            reward: 50,
+            submitted_at: block,
+            difficulty: easy_difficulty(),
+            last_proof_block_hash: sp_core::H256::repeat_byte(9),
+        };
+        let key = QBlocks::<Test>::hashed_key_for(block);
+        frame_support::storage::unhashed::put(&key, &old);
+
+        QuantumPow::on_runtime_upgrade();
+
+        let migrated = QBlocks::<Test>::get(block).expect("qblock survives the v4 re-encode");
+        assert_eq!(migrated.miner, 1);
+        assert_eq!(migrated.salt, [3u8; 32]);
+        assert_eq!(migrated.energy_milli, -42_000);
+        assert_eq!(migrated.reward, 50);
+        assert_eq!(migrated.difficulty, easy_difficulty());
+        assert_eq!(
+            migrated.last_proof_block_hash,
+            sp_core::H256::repeat_byte(9)
+        );
+        // Backfilled with the default topology — correct for a pre-binding block.
+        assert_eq!(migrated.topology_hash, hash);
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(4));
     });
 }
 
 #[test]
-fn migration_noop_at_v3() {
+fn migration_noop_at_v4() {
     new_test_ext().execute_with(|| {
         let (_, _, hash) = registered_topology();
         let d = DifficultyConfig {
@@ -1123,14 +1177,14 @@ fn migration_noop_at_v3() {
         };
         Difficulties::<Test>::insert(hash, d);
         QBlockCount::<Test>::put(9);
-        StorageVersion::new(3).put::<QuantumPow>();
+        StorageVersion::new(4).put::<QuantumPow>();
 
         QuantumPow::on_runtime_upgrade();
 
         assert!(RegisteredTopologies::<Test>::contains_key(hash));
         assert_eq!(Difficulties::<Test>::get(hash), Some(d));
         assert_eq!(QBlockCount::<Test>::get(), 9);
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(3));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(4));
     });
 }
 
@@ -1278,6 +1332,9 @@ fn on_finalize_persists_qblock_with_recoverable_nonce() {
         // the active threshold equals whatever set_difficulty just stored.
         assert_eq!(stored.difficulty, easy_difficulty());
         assert_eq!(stored.last_proof_block_hash, expected_last_proof_block_hash);
+        // The winning proof's topology is persisted on the qblock, so a block's
+        // topology provenance is recoverable from state alone.
+        assert_eq!(stored.topology_hash, topology_hash);
 
         // Re-derive the nonce via the runtime helper and confirm it matches
         // the value that was on the submitted proof. This is the round-trip

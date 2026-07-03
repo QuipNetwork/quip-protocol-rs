@@ -198,6 +198,12 @@ pub struct QBlock<AccountId, Balance, BlockNumber> {
     pub submitted_at: BlockNumber,
     pub difficulty: DifficultyConfig,
     pub last_proof_block_hash: H256,
+    /// Topology the winning proof was mined against, copied from the
+    /// accepted [`ProofRecord`]. Persisting it makes each block's
+    /// topology provenance queryable from state rather than only from the
+    /// (prunable) `DifficultyUpdated` event, and keeps `difficulty` above
+    /// interpretable against the curve it was computed from.
+    pub topology_hash: H256,
 }
 
 /// Runtime-API view augmenting [`QBlock`] with the derived nonce.
