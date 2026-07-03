@@ -38,26 +38,31 @@ is preserved; "no_std" is not (and is not needed for a CPython extension).
 
 ```
 quip-protocol-rs/
-├── crates/
-│   ├── transaction-crypto-core/  # UNCHANGED — sp-free byte API + golden fixture
-│   ├── transaction-crypto-wasm/  # UNCHANGED — cdylib over core (hex API, browser)
-│   └── transaction-crypto-py/    # NEW — cdylib over core (bytes API, CPython)
-│       ├── Cargo.toml            # pyo3 (extension-module, abi3) + core(std)
-│       ├── pyproject.toml        # maturin build backend
-│       ├── src/lib.rs            # #[pymodule] quip_signer
-│       └── tests/
-│           ├── test_parity.py    # reuses core's golden_vectors.txt
-│           └── test_api.py
-└── py/
-    └── quip-signer/              # NEW — staging package consumed via submodule
-        ├── quip_signer/__init__.py
-        ├── quip_signer/*.so      # built artifact (git-ignored, like the .wasm)
-        ├── quip_signer/py.typed + .pyi
-        └── pyproject.toml        # editable-install metadata for downstreams
+└── crates/
+    ├── transaction-crypto-core/  # UNCHANGED — sp-free byte API + golden fixture
+    ├── transaction-crypto-wasm/  # UNCHANGED — cdylib over core (hex API, browser)
+    └── transaction-crypto-py/    # NEW — cdylib over core (bytes API, CPython)
+        ├── Cargo.toml            # pyo3 (extension-module, abi3) + core(std)
+        ├── pyproject.toml        # maturin backend; python-source = "python"
+        ├── README.md             # usage + submodule/editable-install docs
+        ├── src/lib.rs            # #[pymodule] quip_signer
+        ├── python/               # in-tree python-source (packed INTO the wheel)
+        │   └── quip_signer/
+        │       ├── __init__.py
+        │       ├── *.so          # built artifact (git-ignored, like the .wasm)
+        │       └── py.typed + .pyi
+        └── tests/
+            ├── test_parity.py    # reuses core's golden_vectors.txt
+            └── test_api.py
 ```
 
+The python-source lives **inside** the crate (`python/`) rather than a sibling
+`py/quip-signer/`: maturin only packs a python-source under the manifest dir
+into the built wheel, so an out-of-tree path shipped a surface-less wheel
+(QUI-792). This dir doubles as the submodule/PYTHONPATH staging location.
+
 The crate depends on `quip-transaction-crypto-core` only — the same dependency
-edge the WASM crate uses. The `py/quip-signer/` staging package mirrors the role
+edge the WASM crate uses. The `crates/transaction-crypto-py/python/` staging package mirrors the role
 `js/quip-transaction-crypto-wasm/` plays for the browser signer: a fixed
 location, importable by a downstream that pins `quip-protocol-rs` as a git
 submodule, into which `make py-signer` drops the built (git-ignored) extension.
@@ -94,7 +99,7 @@ hashing, no length check. The H3 domain prefix is applied intrinsically by the
 scheme (callers must not pre-apply it), and Substrate's `SignedPayload` rule
 (`blake2_256(payload)` when the encoded payload exceeds 256 bytes) is an
 extrinsic convention the caller must apply before signing. See the "Payload
-contract" section in `py/quip-signer/README.md`.
+contract" section in `crates/transaction-crypto-py/README.md`.
 
 Each function is a thin wrapper over the existing core entry points
 (`public_key_from_seed`, `account_id_from_public_bytes`,
@@ -146,17 +151,17 @@ keygen on every `sign`.
 10. Makefile `py-signer` target mirroring `wasm-signer`:
     `maturin build --release -m crates/transaction-crypto-py/Cargo.toml`,
     then copy the built extension (`*.so`/`*.pyd`) and type stub into
-    `py/quip-signer/quip_signer/` — exactly as `wasm-signer` copies the
+    `crates/transaction-crypto-py/python/quip_signer/` — exactly as `wasm-signer` copies the
     `.wasm`/`.js`/`.d.ts` into `js/quip-transaction-crypto-wasm/`. Echo the
     extension size like the WASM target does. Add a `$(PY_OUT)` "build only if
     missing" rule too.
-11. Git-ignore the built `*.so`/`*.pyd` under `py/quip-signer/` (it's a
+11. Git-ignore the built `*.so`/`*.pyd` under `crates/transaction-crypto-py/python/` (it's a
     generated artifact, like the `.wasm`); keep `__init__.py`, `py.typed`,
     `.pyi`, and `pyproject.toml` tracked.
 12. A size-tuned build: extension built with `opt-level = "z"`, `lto = true`,
     `codegen-units = 1`, `strip = true`. Keep `panic = "unwind"` (PyO3 converts
     Rust panics to Python exceptions; `abort` would kill the interpreter).
-13. README for `py/quip-signer/`; usage example.
+13. README for the crate (`crates/transaction-crypto-py/README.md`); usage example.
 
 ## Distribution
 
@@ -173,12 +178,12 @@ QUIP_SUBMODULE := quip-protocol-rs
 py-signer: quip-submodule
 	$(MAKE) -C $(QUIP_SUBMODULE) py-signer
 	# then either:
-	pip install -e $(QUIP_SUBMODULE)/py/quip-signer        # editable install, or
-	# add $(QUIP_SUBMODULE)/py to PYTHONPATH and `import quip_signer`
+	pip install -e $(QUIP_SUBMODULE)/crates/transaction-crypto-py  # editable install, or
+	# add $(QUIP_SUBMODULE)/crates/transaction-crypto-py/python to PYTHONPATH and `import quip_signer`
 ```
 
 `make py-signer` drops the built (git-ignored) `.so` into
-`py/quip-signer/quip_signer/`, so the downstream imports `quip_signer` straight
+`crates/transaction-crypto-py/python/quip_signer/`, so the downstream imports `quip_signer` straight
 from the submodule with no PyPI round-trip — the same on-demand, build-locally
 model as the WASM signer. Submodule consumers fetch the pinned commit from
 origin (just like `apps` does), so the pin must be pushed to be shareable.
@@ -219,7 +224,7 @@ rather than be vendored via submodule.
 - [ ] `pytest` green, incl. golden-vector parity against the shared fixture.
 - [ ] Built `.so` is small (same order as the ~400 KB WASM bundle), with no
       `sp-*` linked (`cargo tree -p quip-transaction-crypto-py` is sp-free).
-- [ ] `make py-signer` drops the extension into `py/quip-signer/quip_signer/`
+- [ ] `make py-signer` drops the extension into `crates/transaction-crypto-py/python/quip_signer/`
       and `import quip_signer` works from `py/` (the submodule consumption path).
 - [ ] A Python-signed envelope verifies under the runtime (reuse the
       cross-impl parity: same bytes as `sign_payload_from_seed` in Rust, which

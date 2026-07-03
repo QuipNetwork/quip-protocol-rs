@@ -8,7 +8,8 @@
 # or the upload flow is a one-place edit here.
 #
 # quip-signer is a single PyO3 abi3 cdylib (mixed maturin layout: the Rust
-# extension is dropped into the `quip_signer` package under py/quip-signer/).
+# extension is dropped into the `quip_signer` package under the crate's
+# in-tree `python/` python-source).
 # There are no pure-Python peer packages and the crate itself is
 # `publish = false`, so -- unlike xquad's multi-package python-dists.sh -- this
 # handles exactly one distribution and mints exactly one OIDC token.
@@ -83,6 +84,31 @@ for whl in "${DIST}"/*.whl; do
 		exit 1
 		;;
 	esac
+done
+
+# Wheel-content guard (QUI-792). A wheel is a zip; `twine check` validates
+# metadata but NEVER opens the archive, and the manylinux guard above only
+# reads the filename tag. When the python-source lived outside the crate,
+# `maturin build` packed only `_quip_signer.abi3.so` and silently dropped the
+# `quip_signer` package surface -- the wheel passed every check above, then
+# imported as an empty namespace package (no `HybridSigner`, etc.). Open each
+# wheel and assert the tracked pure-Python surface is present so a layout
+# regression fails the build HERE (both dry-run and publish) instead of
+# shipping -- or promoting to production -- an unimportable package.
+required_members=(
+	"quip_signer/__init__.py"   # re-exports the extension's public API
+	"quip_signer/__init__.pyi"  # type stubs
+	"quip_signer/py.typed"      # PEP 561 typing marker
+)
+for whl in "${DIST}"/*.whl; do
+	names="$(python3 -c 'import sys, zipfile; print("\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))' "${whl}")"
+	for member in "${required_members[@]}"; do
+		if ! grep -qxF "${member}" <<<"${names}"; then
+			echo "ERROR: ${whl##*/} is missing ${member}; the wheel would import as an empty namespace package (QUI-792)." >&2
+			echo "       Check crates/transaction-crypto-py/pyproject.toml: python-source must be in-tree (\"python\"), not an out-of-tree path maturin drops from the wheel." >&2
+			exit 1
+		fi
+	done
 done
 
 if [[ "${mode}" == "check" ]]; then

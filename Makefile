@@ -8,7 +8,6 @@ WASM_SIGNER_STAGE := target/wasm-signer-pkg
 WASM_SIGNER_NAME := quip_transaction_crypto_wasm
 
 PY_SIGNER_CRATE := crates/transaction-crypto-py
-PY_SIGNER_PKG := py/quip-signer
 PY_SIGNER_VENV := target/py-signer-venv
 PY_SIGNER_PY := $(PY_SIGNER_VENV)/bin/python
 PY_SIGNER_WHEELS := target/wheels
@@ -49,7 +48,7 @@ $(PY_SIGNER_PY):
 
 # Build the release wheel for the Python signer and report the extension size.
 # The wheel lands in target/wheels/; downstreams `pip install` it (see
-# py/quip-signer/README.md). Like wasm-signer, the compiled artifact is small
+# crates/transaction-crypto-py/README.md). Like wasm-signer, the compiled artifact is small
 # because the crate links only the sp-free transaction-crypto-core.
 py-signer: $(PY_SIGNER_PY)
 	$(PY_SIGNER_ENV) $(PY_SIGNER_VENV)/bin/maturin build --release \
@@ -61,7 +60,8 @@ ext = max((i for i in z.infolist() if i.filename.endswith(('.so', '.pyd', '.dyli
 print(f'Built {ext.filename} ({ext.file_size} bytes) in {w}')"
 
 # Build + install the extension into the venv AND drop the loose extension into
-# py/quip-signer/quip_signer/ (the submodule/PYTHONPATH staging location).
+# crates/transaction-crypto-py/python/quip_signer/ (the submodule/PYTHONPATH
+# staging location).
 py-signer-develop: $(PY_SIGNER_PY)
 	$(PY_SIGNER_ENV) VIRTUAL_ENV=$(abspath $(PY_SIGNER_VENV)) \
 		$(PY_SIGNER_VENV)/bin/maturin develop --release \
