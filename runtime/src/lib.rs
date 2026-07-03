@@ -78,13 +78,55 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // Bumped to 103 for QUI-567: adds the canonical default plain Ising job
     // spec, root-gates `QuantumComputeMempool::register_job_spec`, and changes
     // that call's argument encoding, so `transaction_version` moves to 3.
-    // Bumped to 104 for quantum PoW difficulty convergence fixes: recalibrates
-    // the energy curve, adds winner-streak easing, and migrates impossible
-    // stored thresholds back into range. Extrinsic encoding is unchanged.
-    spec_version: 104,
+    // Bumped to 104 for the topology-upgrade path: adds
+    // `QuantumPow::set_default_topology` (call_index 5) and makes the
+    // difficulty energy curve spec-aware (h/J magnitudes derived from the
+    // default topology's allowed-value specs instead of hardcoded ternary-h /
+    // binary-J). Existing call encodings are unchanged, so
+    // `transaction_version` stays at 3.
+    // Bumped to 105 for indexer-free quantum reads: adds monotonic qblock ids,
+    // qblock/hardness runtime APIs, and the mempool open-order recovery index.
+    // Existing call encodings are unchanged, so `transaction_version` stays at
+    // 3.
+    // Bumped to 106 for on-chain miner descriptors and qblock participation:
+    // adds `MinerRegistry` (idx 13) with descriptor/participation calls,
+    // events, and storage. Existing call encodings are unchanged, so
+    // `transaction_version` stays at 3.
+    // Bumped to 107 for the participants-per-qblock reverse index
+    // (`ParticipantsByQBlock`, `ParticipantCountByQBlock`) and the
+    // `MinerRegistryApi` runtime API. Call encodings are unchanged, so
+    // `transaction_version` stays at 3.
+    // Bumped to 108 for per-topology difficulty + the mineable-topology
+    // whitelist: `QuantumPow.Difficulty` (global StorageValue) becomes
+    // `Difficulties` (StorageMap keyed by topology hash), `MineableTopologies`
+    // is added, `set_difficulty` gains a `topology_hash` argument, and
+    // `add_mineable_topology`/`remove_mineable_topology` (call_index 6/7) are
+    // added. `set_difficulty`'s argument encoding changed, so
+    // `transaction_version` moves to 4. Pallet storage version 2 → 3 with a
+    // carry-forward migration.
+    // Bumped to 109 to restore on-chain `system_info`: `MinerRegistry` adds a
+    // schema-v2 descriptor input (`NodeDescriptorInput::V2`) carrying an
+    // optional typed hardware survey, plus a v1 → v2 storage migration that
+    // drops existing descriptors (miners re-file on restart). The V1 call
+    // variant keeps index 0 and encodes identically, so `transaction_version`
+    // stays at 4. MinerRegistry pallet storage version 1 → 2.
+    // Bumped to 110 to add the optional `runtime` block (node software identity:
+    // python / quip_version / protocol_version / in_docker / docker_image) to
+    // the MinerRegistry V2 descriptor. Additive trailing field on the V2 input;
+    // V1 is unaffected and V2 was not yet deployed, so `transaction_version`
+    // stays at 4 and no new migration is needed (the v1 → v2 migration already
+    // wipes descriptors; pallet storage version stays 2).
+    // Also under 110: `QuantumPow.QBlock` gains a trailing `topology_hash` so a
+    // block records which topology it was mined against. This changes the
+    // persisted `QBlocks` value layout, so QuantumPow pallet storage version
+    // goes 3 → 4 with a v3 → v4 migration that re-encodes existing entries,
+    // backfilling `topology_hash` with the default topology. Read-only runtime
+    // API shape change (`QBlock`/`QBlockWithNonce`); no call encodings change,
+    // so `transaction_version` stays at 4.
+    spec_version: 110,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
-    transaction_version: 3,
+    transaction_version: 4,
     system_version: 1,
 };
 
@@ -189,6 +231,10 @@ pub type UncheckedExtrinsic =
 /// The payload being signed in transactions.
 pub type SignedPayload = generic::SignedPayload<RuntimeCall, TxExtension>;
 
+/// Runtime storage migrations, run on upgrade before every pallet's
+/// `on_runtime_upgrade`.
+pub type Migrations = (pallet_miner_registry::migrations::v2::MigrateToV2<Runtime>,);
+
 /// Executive: handles dispatch to the various modules.
 pub type Executive = frame_executive::Executive<
     Runtime,
@@ -196,6 +242,7 @@ pub type Executive = frame_executive::Executive<
     frame_system::ChainContext<Runtime>,
     Runtime,
     AllPalletsWithSystem,
+    Migrations,
 >;
 
 #[cfg(test)]
@@ -359,4 +406,7 @@ mod runtime {
 
     #[runtime::pallet_index(12)]
     pub type Session = pallet_session;
+
+    #[runtime::pallet_index(13)]
+    pub type MinerRegistry = pallet_miner_registry;
 }

@@ -1,0 +1,24 @@
+{
+  "name": "quip-transaction-crypto-wasm",
+  "collaborators": [
+    "Quip Network <roman@postquant.xyz>"
+  ],
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT-0",
+  "repository": {
+    "type": "git",
+    "url": "https://gitlab.com/piqued/quip-protocol-rs.git"
+  },
+  "files": [
+    "quip_transaction_crypto_wasm_bg.wasm",
+    "quip_transaction_crypto_wasm.js",
+    "quip_transaction_crypto_wasm.d.ts"
+  ],
+  "module": "quip_transaction_crypto_wasm.js",
+  "homepage": "https://www.quip.network/",
+  "types": "quip_transaction_crypto_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

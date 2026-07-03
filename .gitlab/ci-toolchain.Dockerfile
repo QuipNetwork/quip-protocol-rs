@@ -6,12 +6,15 @@
 # substrate-wasm-builder.
 #
 # The check-stage jobs in `.gitlab-ci.yml` pull this image from
-# docker.io/carback1/rust-substrate-builder:latest. Rebuild and push manually
-# from a workstation when this Dockerfile changes — there is no CI job that
-# builds the image:
+# docker.io/carback1/rust-substrate-builder:latest, and the faucet repo's
+# per-arch build-binary jobs pull it on both the amd64 and arm64 runners — so
+# it must be published multi-arch. Rebuild and push manually from a
+# workstation when this Dockerfile changes — there is no CI job that builds
+# the image (the non-native half builds under QEMU/Rosetta emulation; slow,
+# but only paid on manual re-pushes):
 #
 #   docker buildx build \
-#     --platform linux/amd64 \
+#     --platform linux/amd64,linux/arm64 \
 #     --file .gitlab/ci-toolchain.Dockerfile \
 #     --tag carback1/rust-substrate-builder:latest \
 #     --push \

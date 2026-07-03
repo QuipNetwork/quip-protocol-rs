@@ -3,14 +3,37 @@
 # CI pipeline for quip-protocol-rs.
 #
 # Stages:
-#   - test:  fmt / clippy / test / runtime release build on every MR
-#   - build: publish quip-network-node container on main/v0.2/tags
+#   - test:      fmt / clippy / test / runtime release build on every MR;
+#                also the quip-signer PyPI dry-run (build wheels + twine check)
+#   - build:     build the quip-network-node container per architecture
+#                (amd64 + arm64), each on a native runner, on main/v0.2/tags
+#   - manifest:  stitch the per-arch images into a multi-arch manifest list so
+#                a single tag serves both architectures
+#   - release:   publish the quip-signer abi3 wheels + sdist to PyPI on release
+#                tags via Trusted Publishing (OIDC) — TestPyPI auto, PyPI manual
 #
 # Triggers:
-#   - merge_request_event  →  test
-#   - push to main         →  test + build (:latest)
-#   - push to v0.2         →  test + build (:v0.2-preview)
-#   - git tag              →  test + build (:<tag> + floating :<vMAJOR.MINOR>)
+#   - merge_request_event  →  test (incl. PyPI dry-run)
+#   - push to main         →  test + build + manifest (:latest)
+#   - push to v0.2         →  test + build + manifest (:v0.2)
+#   - git tag (/^v\d/)     →  test + build + manifest (:<tag> + floating :<vMAJOR.MINOR>)
+#                             + release:publish-testpypi (auto)
+#                             + release:publish-pypi (manual promote)
+#
+# Multi-arch: kaniko has no cross-build/manifest support — it builds for the
+# native architecture of whichever runner it runs on. So each architecture has
+# its own kaniko job pinned to a native runner (tags: [docker, amd64] /
+# [docker, arm64]) that publishes an arch-suffixed image (:<tag>-amd64 /
+# :<tag>-arm64). The `manifest` job then combines those into the real
+# consumer-facing tags as a manifest list with `manifest-tool` (buildx-free).
+#
+# The `docker` tag is load-bearing: it pins these jobs to *container* (Docker)
+# executors, which honour `image:` and can run kaniko. The fleet also has macOS
+# *shell* runners that carry the bare arch tags (amd64/arm64) but ignore
+# `image:` and run on the SIP-protected host — kaniko cannot run there. Every
+# runner that should accept these jobs must carry `docker`: the amd64 Linux
+# Docker boxes (lovelace/finney/watch) and an arm64 Docker-executor runner
+# (e.g. a docker-executor gitlab-runner hosted on an Apple-Silicon Mac).
 #
 # Toolchain image: docker.io/carback1/rust-substrate-builder:latest
 # (built manually from .gitlab/ci-toolchain.Dockerfile and pushed to Docker
@@ -22,15 +45,45 @@
 stages:
   - test
   - build
+  - manifest
+  - release
 
 variables:
   TOOLCHAIN_IMAGE: docker.io/carback1/rust-substrate-builder:latest
   IMAGE: $CI_REGISTRY_IMAGE/quip-network-node
-  CACHE_IMAGE: $CI_REGISTRY_IMAGE/quip-network-node:buildcache
+  # Tagless repository: kaniko's --cache-repo must be a bare repo, not a tag
+  # ref. A ':buildcache' tag here makes kaniko reject the cache destination
+  # ("repository can only contain the characters ...") and silently skip every
+  # cache upload, so builds never warm. The per-arch suffix is appended in the
+  # build job (-> quip-network-node-buildcache-<arch>).
+  CACHE_IMAGE: $CI_REGISTRY_IMAGE/quip-network-node-buildcache
   # Keep Cargo's registry and the workspace target/ inside the project dir so
   # the GitLab CI cache can pick them up between runs.
   CARGO_HOME: $CI_PROJECT_DIR/.cargo
   CARGO_TERM_COLOR: always
+  # The quip-signer PyPI jobs run on a lean official `rust:*` image, NOT the
+  # heavy Substrate TOOLCHAIN_IMAGE: the binding is its own pure-Rust workspace
+  # (no clang/protoc/substrate deps), and the aarch64 wheel needs `rustup target
+  # add`, which the official images guarantee. Pinned to the same Rust the rest
+  # of the project builds with (RUST_VERSION in Dockerfile / ci-toolchain) — a
+  # floor of 1.85 is required anyway, as edition-2024 transitive deps
+  # (zeroize_derive) don't parse on older Cargo.
+  PY_RELEASE_IMAGE: docker.io/library/rust:1.95.0-bookworm
+  # cargo-zigbuild drives the aarch64 cross-build (zig as the linker). Pinned and
+  # fetched as a prebuilt via cargo-binstall (seconds) rather than compiled from
+  # source. Bump deliberately; it changes the linker the release wheels are built
+  # with.
+  CARGO_ZIGBUILD_VERSION: "0.22.3"
+  # cargo-binstall itself is pinned and fetched as a release binary (not the
+  # `curl .../main/install.sh | bash` bootstrap), so the toolchain that builds a
+  # published, trust-signed wheel can't be altered by an upstream `main` change.
+  CARGO_BINSTALL_VERSION: "1.20.1"
+  # Gate for the publish jobs. They stay dormant on `v*` tags until this is set
+  # to "true" in project CI/CD variables — which the maintainer does only after
+  # the PyPI Trusted Publisher is configured (see docs/releasing-quip-signer.md).
+  # Until then a node release tag never triggers (and so never reds on) an
+  # unconfigured wheel publish.
+  QUIP_SIGNER_PUBLISH: "false"
 
 workflow:
   rules:
@@ -46,7 +99,7 @@ workflow:
 cargo-test:
   stage: test
   image: $TOOLCHAIN_IMAGE
-  tags: [linux, amd64]
+  tags: [docker, amd64]
   interruptible: true
   timeout: 60m
   cache:
@@ -63,42 +116,91 @@ cargo-test:
     - cargo test --workspace --lib --bins --tests
     - cargo build --release -p quip-protocol-runtime
 
-# Publish the production node image. `needs: []` lets the kaniko job start
-# as soon as the pipeline is created instead of waiting for `cargo-test` —
-# the container build is independent of the cargo lint/test suite, so there
-# is no reason to serialise the two. Stage label remains `build` so the
-# pipeline UI still groups it separately from the test stage.
-kaniko-build-push:
-  stage: build
-  needs: []
-  image:
-    name: gcr.io/kaniko-project/executor:v1.23.2-debug
-    entrypoint: [""]
-  tags: [linux, amd64]
-  timeout: 90m
+# The Python signer crate (crates/transaction-crypto-py) is *excluded* from the
+# workspace — its macOS `dynamic_lookup` link requirement would perturb the
+# runtime/node builds (see the exclude comment in the root Cargo.toml). A side
+# effect of that exclusion is that `cargo-test`'s `--workspace` clippy/test runs
+# never compile or lint the binding, and its pytest parity suite
+# (tests/test_api.py + tests/test_parity.py) otherwise only runs locally via
+# `make py-signer-test`. Without this job, a change that breaks the binding's
+# compilation — or its byte-for-byte parity with transaction-crypto-core — lands
+# green. This job restores that coverage: it lints/format-checks the wrapper and
+# runs the parity tests that back the "Python / WASM / runtime are byte-identical"
+# guarantee. (It covers the in-repo wrapper; the downstream `self_test` covers a
+# consumer's locally-built extension.)
+py-signer-test:
+  stage: test
+  image: $TOOLCHAIN_IMAGE
+  tags: [docker, amd64]
   interruptible: true
+  timeout: 30m
+  # Two caches: the shared Cargo registry (keyed on the workspace lock, same as
+  # cargo-test) and the excluded crate's own target/ (it resolves against its
+  # own Cargo.lock, so the workspace target/ is useless to it).
+  cache:
+    - key:
+        files:
+          - Cargo.lock
+      paths:
+        - .cargo/registry/cache
+        - .cargo/registry/index
+    - key:
+        files:
+          - crates/transaction-crypto-py/Cargo.lock
+      paths:
+        - crates/transaction-crypto-py/target/
+  before_script:
+    # The toolchain image is a bare rust:bookworm; `make py-signer-test` shells
+    # out to `python3 -m venv` and builds a PyO3 extension via maturin, so it
+    # needs the interpreter, venv module, and dev headers.
+    - apt-get update && apt-get install -y --no-install-recommends python3 python3-venv python3-dev
+    - rm -rf /var/lib/apt/lists/*
+  script:
+    - cargo fmt --manifest-path crates/transaction-crypto-py/Cargo.toml -- --check
+    - cargo clippy -p quip-transaction-crypto-py --manifest-path crates/transaction-crypto-py/Cargo.toml --all-targets -- -D warnings
+    - make py-signer-test
+
+# Shared publish rules: which branches/tags publish, and the PRIMARY_TAG each
+# maps to. Referenced (not inherited) by the build jobs and the manifest job so
+# all three resolve the same PRIMARY_TAG for a given pipeline.
+.publish-rules:
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
       variables:
         PRIMARY_TAG: latest
     - if: $CI_COMMIT_BRANCH == "v0.2"
       variables:
-        PRIMARY_TAG: v0.2-preview
+        PRIMARY_TAG: v0.2
     - if: $CI_COMMIT_TAG
       variables:
         PRIMARY_TAG: $CI_COMMIT_TAG
+
+# Per-architecture container build. `needs: []` lets the kaniko jobs start as
+# soon as the pipeline is created instead of waiting for `cargo-test` — the
+# container build is independent of the cargo lint/test suite. Each concrete
+# job below pins itself to a native runner and sets ARCH (amd64 also opts into
+# the GPU-runner /lib workaround); this template holds what they share. Only
+# the arch-suffixed tag
+# (:<tag>-<arch>) is pushed here — the consumer-facing tags are assembled by
+# the `manifest` job.
+.kaniko-build:
+  stage: build
+  needs: []
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  timeout: 90m
+  interruptible: true
+  rules: !reference [.publish-rules, rules]
   before_script:
-    # The cuda runners' NVIDIA container runtime bind-mounts host GPU driver
-    # firmware into every job container at /lib/firmware/nvidia/. kaniko's
-    # rootfs extraction cannot replace /lib with the usr-merge symlink while
-    # those mounts are busy, so the executor runs with --ignore-path=/lib,
-    # which skips that replacement and preserves /lib as a plain directory.
-    # The ELF interpreter resolves through /lib/x86_64-linux-gnu (via the
-    # /lib64 → /usr/lib64 → /lib/x86_64-linux-gnu symlink chain), so RUN
-    # commands need this shim. It dangles until kaniko unpacks the rootfs,
-    # and never reaches the image: /lib is excluded from snapshots and the
-    # final image's /lib symlink comes from the base layers.
-    - mkdir -p /lib && ln -sfn /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu
+    # GPU-runner firmware workaround — amd64 only (see KANIKO_LIB_IGNORE below).
+    # The amd64 builders are NVIDIA GPU hosts that bind-mount host firmware into
+    # /lib, so kaniko must --ignore-path=/lib; that drops the multilib dir, so
+    # recreate it for this arch's triplet. This is NOT applied on arm64: the
+    # OrbStack runner has no firmware mount, and on aarch64 the ELF interpreter
+    # /lib/ld-linux-aarch64.so.1 lives directly in /lib, so ignoring /lib would
+    # make every `RUN` fail with `exec /bin/sh: no such file or directory`.
+    - if [ -n "$KANIKO_LIB_IGNORE" ]; then mkdir -p /lib && ln -sfn /usr/lib/$TRIPLET /lib/$TRIPLET; fi
     - mkdir -p /kaniko/.docker
     - |
       printf '{"auths":{"%s":{"auth":"%s"}}}\n' \
@@ -106,25 +208,213 @@ kaniko-build-push:
         "$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')" \
         > /kaniko/.docker/config.json
   script:
-    # On tag pipelines, also publish a floating minor-series tag derived from the
-    # release tag (e.g. v0.2.0rc1 → :v0.2) so deployments can pin a series and
-    # pick up the latest release in it. Branch pipelines get PRIMARY_TAG + sha
-    # only. kaniko's debug image ships busybox sh/grep, which supports -oE.
-    # --ignore-path=/lib: see the before_script comment — paired with the
-    # /lib/x86_64-linux-gnu shim created there.
+    # --cache-repo is suffixed per arch: kaniko's cache keys hash the build
+    # instructions, not the target architecture, so amd64 and arm64 would
+    # collide on identical keys but hold arch-incompatible layers if they
+    # shared one cache repo.
     - |
-      SERIES_DEST=""
-      if [ -n "$CI_COMMIT_TAG" ]; then
-        SERIES_TAG=$(printf '%s' "$CI_COMMIT_TAG" | grep -oE '^v[0-9]+\.[0-9]+' || true)
-        [ -n "$SERIES_TAG" ] && SERIES_DEST="--destination=$IMAGE:$SERIES_TAG"
-      fi
       /kaniko/executor \
         --context "$CI_PROJECT_DIR" \
         --dockerfile "$CI_PROJECT_DIR/Dockerfile" \
-        --destination "$IMAGE:$PRIMARY_TAG" \
-        --destination "$IMAGE:sha-$CI_COMMIT_SHORT_SHA" \
-        $SERIES_DEST \
+        --destination "$IMAGE:$PRIMARY_TAG-$ARCH" \
         --build-arg "SUBSTRATE_CLI_GIT_COMMIT_HASH=$CI_COMMIT_SHORT_SHA" \
         --cache=true \
-        --cache-repo "$CACHE_IMAGE" \
-        --ignore-path=/lib
+        --cache-repo "$CACHE_IMAGE-$ARCH" \
+        $KANIKO_LIB_IGNORE \
+        $KANIKO_EXTRA
+
+kaniko-build-amd64:
+  extends: .kaniko-build
+  tags: [docker, amd64]
+  variables:
+    ARCH: amd64
+    # GPU runners bind-mount firmware into /lib; ignore it + shim the multilib
+    # dir (TRIPLET). arm64 deliberately sets neither — see the before_script.
+    TRIPLET: x86_64-linux-gnu
+    KANIKO_LIB_IGNORE: "--ignore-path=/lib"
+
+kaniko-build-arm64:
+  extends: .kaniko-build
+  tags: [docker, arm64]
+  # The OrbStack/Colima Mac runner is slower than the amd64 boxes; a full
+  # Substrate release compile + kaniko snapshot can run long, so give it more
+  # than the 90m template default.
+  timeout: 180m
+  variables:
+    ARCH: arm64
+    # The arm64 runner is a docker-executor on an Apple-Silicon Mac (OrbStack),
+    # a far more memory/disk-constrained VM than the amd64 Linux boxes. kaniko's
+    # default --compressed-caching=true holds compressed layers in RAM while
+    # snapshotting the multi-GB Rust builder rootfs, which OOM-freezes the whole
+    # VM (docker daemon hangs) right at "Taking snapshot of full filesystem".
+    # Disable it so layers stream to disk instead of accumulating in memory.
+    KANIKO_EXTRA: "--compressed-caching=false"
+
+# Combine the per-arch images into a multi-arch manifest list. manifest-tool
+# replaces the literal `ARCH` token in --template with each platform's arch
+# (amd64 / arm64), matching the arch-suffixed tags the build jobs pushed, and
+# stamps the assembled index with the consumer-facing tags: PRIMARY_TAG, the
+# commit-sha tag, and (on release tags) the floating minor-series tag
+# (e.g. v0.2.1-rc18 → :v0.2). kaniko's debug image ships busybox sh/grep with -oE.
+manifest:
+  stage: manifest
+  needs: [kaniko-build-amd64, kaniko-build-arm64]
+  image:
+    name: mplatform/manifest-tool:alpine
+    entrypoint: [""]
+  tags: [docker, amd64]
+  interruptible: true
+  rules: !reference [.publish-rules, rules]
+  script:
+    - |
+      ADDL_TAGS="sha-$CI_COMMIT_SHORT_SHA"
+      if [ -n "$CI_COMMIT_TAG" ]; then
+        SERIES_TAG=$(printf '%s' "$CI_COMMIT_TAG" | grep -oE '^v[0-9]+\.[0-9]+' || true)
+        [ -n "$SERIES_TAG" ] && ADDL_TAGS="$ADDL_TAGS,$SERIES_TAG"
+      fi
+      manifest-tool \
+        --username "$CI_REGISTRY_USER" \
+        --password "$CI_REGISTRY_PASSWORD" \
+        push from-args \
+        --platforms linux/amd64,linux/arm64 \
+        --template "$IMAGE:$PRIMARY_TAG-ARCH" \
+        --target "$IMAGE:$PRIMARY_TAG" \
+        --tags "$ADDL_TAGS"
+
+# ---------------------------------------------------------------------------
+# quip-signer PyPI release pipeline (QUI-776)
+# ---------------------------------------------------------------------------
+# Publishes the quip-signer PyO3 abi3 wheels + sdist to PyPI on release tags
+# via Trusted Publishing (OIDC) — no long-lived token in CI. The one-time
+# PyPI- and GitLab-side setup that CI *cannot* do (creating the TestPyPI/PyPI
+# projects, configuring each Trusted Publisher, the `release` environment, and
+# the protected `v*` tag pattern) is documented in docs/releasing-quip-signer.md.
+#
+# All three jobs share one build path (scripts/python-dists.sh):
+#   release:dry-run-pypi      every MR / push                build + twine check
+#   release:publish-testpypi  release tag, if PUBLISH=true   auto    → TestPyPI
+#   release:publish-pypi      release tag, if PUBLISH=true   manual  → PyPI
+#
+# The publish jobs are gated on QUIP_SIGNER_PUBLISH (off by default) so a node
+# release tag never reds on an unconfigured wheel publish during Phase 1, and run
+# with needs:[] so they don't wait on the container build/manifest stages.
+#
+# Artefact matrix mirrors xquad's xqffi cdylib: abi3 wheel for linux x86_64
+# (native) + abi3 wheel for linux aarch64 (cargo-zigbuild / zig linker) + an
+# sdist (universal source fallback; macOS/Windows build from it). The wheel
+# version is the pyproject/Cargo version, bumped per release so the tag matches.
+
+# Run on pushed release tags like v0.2.1, v0.3.0-rc1, … (the same `v*` stream
+# that releases the node container; the wheel publish is tag-only — never on the
+# v0.2/main branch pushes that publish the container) AND only once publishing
+# is enabled (QUIP_SIGNER_PUBLISH). The gate keeps an unconfigured publish from
+# reding the node release pipeline during Phase 1.
+.on-release-tag:
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
+
+# Run on every MR and on main/v0.2 pushes; never on a release tag (the publish
+# jobs own those). Proves the release build works without uploading anything,
+# so a packaging regression fails an MR instead of a tag.
+.on-pr-or-push:
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d/
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+# Shared base for the PyPI jobs. Runs on the lean Rust image (see
+# PY_RELEASE_IMAGE) and installs the maturin/twine/zig toolchain. The binding is
+# its own workspace resolving against its own Cargo.lock, so — like
+# py-signer-test — it caches the crate's target/ keyed on that lock, not the
+# workspace one.
+.pypi-dist:
+  image: $PY_RELEASE_IMAGE
+  tags: [docker, amd64]
+  interruptible: true
+  timeout: 30m
+  cache:
+    - key:
+        files:
+          - crates/transaction-crypto-py/Cargo.lock
+      paths:
+        - .cargo/registry/cache
+        - .cargo/registry/index
+        - crates/transaction-crypto-py/target/
+  before_script:
+    # maturin + twine + ziglang go in a venv placed first on PATH, so the
+    # `python3` that cargo-zigbuild shells out to (`python3 -m ziglang`, how it
+    # locates zig) is the venv's — the one with ziglang. A system `pip install`
+    # would land in a different interpreter and zig would not be found.
+    - apt-get update && apt-get install -y --no-install-recommends python3 python3-venv curl ca-certificates
+    - rm -rf /var/lib/apt/lists/*
+    - python3 -m venv /opt/pyrelease
+    - export PATH="/opt/pyrelease/bin:$CARGO_HOME/bin:$PATH"
+    - pip install --quiet --upgrade pip 'maturin>=1.7,<2' 'twine>=6.1' ziglang
+    # cargo-zigbuild as a prebuilt binary via cargo-binstall (seconds) instead of
+    # `cargo install` from source (minutes). cargo-binstall is fetched as a
+    # version-pinned release binary (the runner is always linux amd64, so the
+    # musl asset is portable) rather than the unpinned `main` bootstrap script —
+    # the toolchain that builds a published wheel must be reproducible.
+    - mkdir -p "$CARGO_HOME/bin"
+    - curl -L --proto '=https' --tlsv1.2 -sSf "https://github.com/cargo-bins/cargo-binstall/releases/download/v${CARGO_BINSTALL_VERSION}/cargo-binstall-x86_64-unknown-linux-musl.tgz" | tar -xz -C "$CARGO_HOME/bin"
+    - cargo binstall --no-confirm --locked "cargo-zigbuild@$CARGO_ZIGBUILD_VERSION"
+    - rustup target add aarch64-unknown-linux-gnu
+    # `cargo zigbuild` is a build subcommand with no --version flag; just
+    # confirm the binstalled binary is on PATH.
+    - maturin --version && twine --version && command -v cargo-zigbuild
+
+# Dry-run on every MR/push: build all three artefacts and twine-check their
+# metadata. No token, no upload. Catches release-blocking packaging regressions
+# (bad metadata, a wheel that won't build, an unbuildable aarch64 cross) long
+# before a tag is cut.
+release:dry-run-pypi:
+  extends: .pypi-dist
+  stage: test
+  rules: !reference [.on-pr-or-push, rules]
+  script:
+    - bash scripts/python-dists.sh check
+
+# Auto-publish to TestPyPI on every release tag, once publishing is enabled
+# (Phase 1 validation target). `needs: []` starts it as soon as the pipeline is
+# created instead of waiting out the build/manifest container stages — the wheel
+# publish is independent of the node container build (and must not be blocked by
+# the slow, OOM-prone arm64 kaniko job). No allow_failure: once enabled, a failed
+# TestPyPI upload is a real signal that should red the pipeline.
+release:publish-testpypi:
+  extends: .pypi-dist
+  stage: release
+  needs: []
+  interruptible: false
+  rules: !reference [.on-release-tag, rules]
+  # `environment: release` must match the environment configured on the TestPyPI
+  # Trusted Publisher; PyPI rejects the OIDC exchange if they differ.
+  environment: release
+  # GitLab mints one short-lived JWT into PYPI_ID_TOKEN for this job. The
+  # audience MUST be the literal `testpypi` (PyPI/TestPyPI reject any other aud).
+  id_tokens:
+    PYPI_ID_TOKEN:
+      aud: testpypi
+  script:
+    - bash scripts/python-dists.sh publish testpypi
+
+# Promote to production PyPI: manual button on the tag pipeline, once publishing
+# is enabled. Manual + allow_failure so an un-clicked promote never reds the node
+# release pipeline; click it once the TestPyPI wheel checks out. `needs: []`
+# decouples it from the container stages (same as testpypi). Audience is `pypi`
+# here (vs `testpypi` above).
+release:publish-pypi:
+  extends: .pypi-dist
+  stage: release
+  needs: []
+  interruptible: false
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
+      when: manual
+      allow_failure: true
+  environment: release
+  id_tokens:
+    PYPI_ID_TOKEN:
+      aud: pypi
+  script:
+    - bash scripts/python-dists.sh publish pypi

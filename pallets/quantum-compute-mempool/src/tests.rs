@@ -1,6 +1,9 @@
 use super::mock::*;
 use crate::types::{Formulation, JobMode, MinerType, ResultDelivery, RewardResolution};
-use crate::{Event as QuantumComputeMempoolEvent, JobOrders, JobSpecs, OrderFrontRunner, Solvers};
+use crate::{
+    Event as QuantumComputeMempoolEvent, JobOrders, JobSpecs, NextOrderId, OpenOrders,
+    OrderFrontRunner, Solvers,
+};
 use frame_support::{
     assert_noop, assert_ok,
     traits::{Hooks, StorageVersion},
@@ -191,68 +194,111 @@ fn propose_job_works_with_genesis_default_ising_spec() {
     });
 }
 
-fn test_db_weight() -> frame_support::weights::RuntimeDbWeight {
-    <<Test as frame_system::Config>::DbWeight as frame_support::traits::Get<_>>::get()
-}
-
 #[test]
-fn runtime_upgrade_migration_inserts_default_ising_spec_when_missing() {
+fn proposed_jobs_are_discoverable_through_open_order_index() {
     new_test_ext().execute_with(|| {
-        StorageVersion::new(0).put::<QuantumComputeMempool>();
-        assert!(JobSpecs::<Test>::get(QuantumComputeMempool::default_ising_spec_id()).is_none());
+        let spec_id = register_spec();
 
-        let weight = QuantumComputeMempool::on_runtime_upgrade();
-
-        let spec = JobSpecs::<Test>::get(QuantumComputeMempool::default_ising_spec_id()).unwrap();
-        assert_eq!(spec.builder, 1);
-        assert_eq!(
-            StorageVersion::get::<QuantumComputeMempool>(),
-            StorageVersion::new(1)
-        );
-        assert_eq!(weight, test_db_weight().reads_writes(3, 2));
-    });
-}
-
-#[test]
-fn runtime_upgrade_migration_keeps_existing_default_ising_spec() {
-    new_test_ext().execute_with(|| {
-        assert_ok!(QuantumComputeMempool::register_job_spec(
-            RuntimeOrigin::root(),
-            4,
-            QuantumComputeMempool::default_ising_spec_name(),
-            Formulation::Ising,
-            None,
-            None,
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            10,
+            5,
+            ResultDelivery::OnChainOnly,
         ));
-        StorageVersion::new(0).put::<QuantumComputeMempool>();
 
-        let weight = QuantumComputeMempool::on_runtime_upgrade();
-
-        let spec = JobSpecs::<Test>::get(QuantumComputeMempool::default_ising_spec_id()).unwrap();
-        assert_eq!(spec.builder, 4);
+        assert!(OpenOrders::<Test>::contains_key(0));
+        assert_eq!(QuantumComputeMempool::open_order_ids(None, 10), vec![0]);
         assert_eq!(
-            StorageVersion::get::<QuantumComputeMempool>(),
-            StorageVersion::new(1)
+            QuantumComputeMempool::open_order_ids(Some(0), 10),
+            Vec::<u64>::new()
         );
-        assert_eq!(weight, test_db_weight().reads_writes(2, 1));
+        assert_eq!(QuantumComputeMempool::job_order(0).unwrap().proposer, 1);
     });
 }
 
 #[test]
-fn runtime_upgrade_migration_is_idempotent_when_already_at_v1() {
+fn open_order_ids_filter_lazily_expired_orders() {
+    new_test_ext().execute_with(|| {
+        let spec_id = register_spec();
+
+        assert_ok!(QuantumComputeMempool::propose_job(
+            RuntimeOrigin::signed(1),
+            spec_id,
+            sample_params(),
+            100,
+            JobMode::Open,
+            RewardResolution::SingleBest,
+            1,
+            1,
+            ResultDelivery::OnChainOnly,
+        ));
+        assert!(OpenOrders::<Test>::contains_key(0));
+
+        System::set_block_number(2);
+
+        assert!(OpenOrders::<Test>::contains_key(0));
+        assert_eq!(
+            QuantumComputeMempool::open_order_ids(None, 10),
+            Vec::<u64>::new()
+        );
+    });
+}
+
+#[test]
+fn network_upgrade_wipes_mempool_and_reseeds_default_spec() {
+    new_test_ext().execute_with(|| {
+        // v0.2-style state: a registered (non-default) spec plus an order id.
+        let spec_id = register_spec();
+        assert!(JobSpecs::<Test>::contains_key(spec_id));
+        NextOrderId::<Test>::put(7);
+        // Simulate the on-chain v0.2 storage version so the guard fires.
+        StorageVersion::new(1).put::<QuantumComputeMempool>();
+
+        QuantumComputeMempool::on_runtime_upgrade();
+
+        // Old data is dropped, not carried forward...
+        assert!(
+            !JobSpecs::<Test>::contains_key(spec_id),
+            "v0.2 job specs must be wiped"
+        );
+        assert_eq!(NextOrderId::<Test>::get(), 0, "order counter must reset");
+        // ...and only the canonical default Ising spec is reseeded.
+        let default_id = QuantumComputeMempool::default_ising_spec_id();
+        assert!(
+            JobSpecs::<Test>::contains_key(default_id),
+            "default Ising spec must be reseeded"
+        );
+        assert_eq!(
+            StorageVersion::get::<QuantumComputeMempool>(),
+            StorageVersion::new(2)
+        );
+    });
+}
+
+#[test]
+fn network_upgrade_is_noop_once_at_v2() {
     new_test_ext_with_default_ising_spec(true).execute_with(|| {
-        // Genesis seeded the spec and the pallet's storage version is already 1.
+        // Fresh chain already at the post-upgrade version: the guard must
+        // short-circuit so live state is neither wiped nor re-seeded.
+        StorageVersion::new(2).put::<QuantumComputeMempool>();
         let spec_id = QuantumComputeMempool::default_ising_spec_id();
         let pre = JobSpecs::<Test>::get(spec_id).unwrap();
 
-        let weight = QuantumComputeMempool::on_runtime_upgrade();
+        QuantumComputeMempool::on_runtime_upgrade();
 
-        // Spec is untouched (no over-write of `registered_at` or counters).
+        // The version guard short-circuits: nothing is wiped or re-seeded.
         let post = JobSpecs::<Test>::get(spec_id).unwrap();
         assert_eq!(post.builder, pre.builder);
         assert_eq!(post.registered_at, pre.registered_at);
-        // Weight matches the early-return branch.
-        assert_eq!(weight, test_db_weight().reads(1));
+        assert_eq!(
+            StorageVersion::get::<QuantumComputeMempool>(),
+            StorageVersion::new(2)
+        );
     });
 }
 
@@ -290,10 +336,10 @@ fn root_register_job_spec_emits_event_with_provided_builder() {
 }
 
 #[test]
-fn migration_does_not_emit_job_spec_registered_event() {
+fn network_upgrade_does_not_emit_job_spec_registered_event() {
     new_test_ext().execute_with(|| {
         System::set_block_number(1);
-        StorageVersion::new(0).put::<QuantumComputeMempool>();
+        StorageVersion::new(1).put::<QuantumComputeMempool>();
 
         let _ = QuantumComputeMempool::on_runtime_upgrade();
 
@@ -307,7 +353,7 @@ fn migration_does_not_emit_job_spec_registered_event() {
         });
         assert!(
             !emitted,
-            "migration must not emit JobSpecRegistered (genesis/migration are silent)",
+            "network-upgrade reseed must be silent (no JobSpecRegistered)",
         );
     });
 }
@@ -658,6 +704,11 @@ fn reclaim_order_returns_reserved_reward_when_no_solutions() {
 
         let order = JobOrders::<Test>::get(0).unwrap();
         assert_eq!(order.status, crate::types::OrderStatus::Closed);
+        assert!(!OpenOrders::<Test>::contains_key(0));
+        assert_eq!(
+            QuantumComputeMempool::open_order_ids(None, 10),
+            Vec::<u64>::new()
+        );
         assert_eq!(Balances::reserved_balance(1), 0);
         assert_eq!(Balances::free_balance(1), 1_000_000);
     });

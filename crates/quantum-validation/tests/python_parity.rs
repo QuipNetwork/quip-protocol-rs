@@ -15,7 +15,7 @@
 
 use quantum_validation::{
     calculate_diversity, energy_of_solution, expected_gse, symmetric_hamming, validate_solution,
-    validate_topology_consistency,
+    validate_topology_consistency, AllowedValueSpec, MilliValue,
 };
 use serde::Deserialize;
 
@@ -119,8 +119,14 @@ fn energy_matches_python_reference_vectors() {
 fn expected_gse_matches_python_reference_vectors() {
     let fixture = load_fixture();
 
+    // The Python reference fixtures were generated with the canonical c = 0.75
+    // and the legacy ternary-h {-1, 0, +1} / binary-J {-1, +1} specs.
+    let ternary_h: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::Set(&[-1000, 0, 1000]);
+    let binary_j: AllowedValueSpec<&[MilliValue]> = AllowedValueSpec::Set(&[-1000, 1000]);
+
     for case in &fixture.expected_gse_cases {
-        let actual = expected_gse(case.num_nodes, case.num_edges);
+        let actual = expected_gse(case.num_nodes, case.num_edges, 0.75, &ternary_h, &binary_j)
+            .unwrap_or_else(|error| panic!("expected_gse case {} failed: {error}", case.name));
 
         assert_eq!(
             actual, case.expected_milli,

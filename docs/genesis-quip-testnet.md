@@ -45,7 +45,7 @@ cargo build --release -p quip-network-node
 ```
 
 Expected output: three `/dns4/bootnode-N.testnet.quip.network/.../p2p/12D3KooW…`
-multiaddrs (matching the peer-ids above) and `tokenSymbol=tQUIP`,
+multiaddrs (matching the peer-ids above) and `tokenSymbol=AGLS`,
 `tokenDecimals=12`, `ss58Format=42`.
 
 To compare the runtime-derived authority public bytes against the hex blobs:

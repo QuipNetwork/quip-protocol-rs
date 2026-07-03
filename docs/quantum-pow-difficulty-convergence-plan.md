@@ -57,8 +57,9 @@ Expected effect:
 - Future tuning can move the middle value slightly upward, for example
   `0.728` or `0.730`, if observed chain data supports it.
 
-Update all mock/test curve construction from `EnergyCurve::new(..., 700, 750,
-800)` to `EnergyCurve::new(..., 700, 725, 750)`.
+Update mock/test curve helpers to use the configured `700 / 725 / 750`
+constants and the spec-aware `EnergyCurve::new(..., CurveC, allowed_h,
+allowed_j)` constructor.
 
 ### 2. Separate Hardening Cutoff from Decay Interval
 

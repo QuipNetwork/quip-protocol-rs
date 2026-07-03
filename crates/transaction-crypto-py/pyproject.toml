@@ -1,0 +1,31 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "quip-signer"
+description = "Quip hybrid (sr25519 + ML-DSA-44) transaction signer"
+requires-python = ">=3.9"
+license = { text = "MIT-0" }
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3 :: Only",
+]
+# Single-sourced from Cargo.toml's `[package] version` (maturin reads it when
+# `version` is dynamic), so a release bumps the version in exactly one place.
+dynamic = ["version"]
+
+[tool.maturin]
+# Mixed layout: the Rust extension `_quip_signer` is dropped into the
+# `quip_signer` Python package under `python/`, which re-exports it and ships
+# type stubs. That dir also serves as the submodule/PYTHONPATH staging location
+# (`maturin develop` drops the built `.so` there).
+#
+# `python-source` MUST stay inside the crate tree. `maturin build` only packs a
+# python-source that lives under the manifest dir; an out-of-tree path (e.g.
+# `../../py/...`) is honored by `maturin develop`/`sdist` but silently dropped
+# from the built wheel, shipping the `.so` with no `__init__.py` (QUI-792). The
+# wheel-content guard in scripts/python-dists.sh fails the build if it regresses.
+module-name = "quip_signer._quip_signer"
+python-source = "python"
+manifest-path = "Cargo.toml"

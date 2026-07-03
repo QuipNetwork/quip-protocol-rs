@@ -47,7 +47,7 @@ use pallet_xqvm::WeightInfo as _;
 use super::{
     AccountId, Babe, Balance, Balances, Block, BlockNumber, Hash, Nonce, PalletInfo, Runtime,
     RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask,
-    SessionKeys, System, EXISTENTIAL_DEPOSIT, SLOT_DURATION, UNIT, VERSION,
+    SessionKeys, System, EXISTENTIAL_DEPOSIT, MICRO_UNIT, MILLI_UNIT, SLOT_DURATION, UNIT, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -285,19 +285,44 @@ parameter_types! {
     pub const QuantumPowMaxProofsPerBlock: u32 = 8;
     /// Upper bound on the cardinality of `allowed_h_values`, `allowed_j_values`,
     /// and `allowed_spin_values` per registered topology. Set well above the
-    /// expected real-world maximum (Advantage2_system1 uses 3 for h, 2 for j,
+    /// expected real-world maximum (the legacy ternary spec uses 3 for h; the
+    /// Advantage2_system1 zero-field spin-glass spec uses 1 for h, 2 for j,
     /// 2 for spin) so future hardware-spec changes don't force a runtime
     /// upgrade.
     pub const QuantumPowMaxAllowedValues: u32 = 32;
     /// Energy-curve calibration: per-mille `c` values that define the
-    /// `(max_energy, knee_energy, min_energy)` triple via `expected_gse_with_c`
-    /// on the default topology. Defaults `(0.700, 0.725, 0.750)` keep the hard
-    /// edge difficult without pushing the threshold into the known-impossible
-    /// range.
+    /// `(max_energy, knee_energy, min_energy)` triple via
+    /// `expected_gse` on the default topology and its h/J value
+    /// specs. Defaults `(0.700, 0.725, 0.750)` keep the hard edge difficult
+    /// without pushing the threshold into the known-impossible range.
     pub const QuantumPowCurveCEasyMilli: u32 = 700;
     pub const QuantumPowCurveCKneeMilli: u32 = 725;
     pub const QuantumPowCurveCHardMilli: u32 = 750;
     pub const QuantumPowConsecutiveWinnerEasingThreshold: u32 = 3;
+
+    pub const MinerRegistryMaxNodeIdBytes: u32 = 64;
+    pub const MinerRegistryMaxNodeNameBytes: u32 = 64;
+    pub const MinerRegistryMaxPublicHostBytes: u32 = 253;
+    pub const MinerRegistryMaxRpcEndpointBytes: u32 = 256;
+    pub const MinerRegistryMaxRpcEndpoints: u32 = 8;
+    pub const MinerRegistryMaxMinerSpecs: u32 = 16;
+    pub const MinerRegistryMaxMinerLabelBytes: u32 = 64;
+    pub const MinerRegistryMaxMinerBackendBytes: u32 = 32;
+    pub const MinerRegistryMaxMinerDeviceIdBytes: u32 = 128;
+    // schema-v2 `system_info` bounds, sized off measured payloads (worst-case
+    // 8-GPU survey ~787 B), leaving generous headroom.
+    pub const MinerRegistryMaxOsStringBytes: u32 = 64;
+    pub const MinerRegistryMaxCpuBrandBytes: u32 = 96;
+    pub const MinerRegistryMaxArchBytes: u32 = 16;
+    pub const MinerRegistryMaxGpuVendorBytes: u32 = 16;
+    pub const MinerRegistryMaxGpuNameBytes: u32 = 96;
+    pub const MinerRegistryMaxGpus: u32 = 16;
+    // schema-v2 `runtime` block: version strings run ~16 B; image refs with a
+    // registry path + digest can reach ~120 B.
+    pub const MinerRegistryMaxRuntimeVersionBytes: u32 = 48;
+    pub const MinerRegistryMaxDockerImageBytes: u32 = 256;
+    pub const MinerRegistryDescriptorDepositBase: Balance = MILLI_UNIT;
+    pub const MinerRegistryDescriptorDepositPerByte: Balance = MICRO_UNIT;
 }
 
 /// Account attributed as the builder for migration-inserted default job specs.
@@ -352,6 +377,40 @@ impl pallet_quantum_pow::Config for Runtime {
     type CurveCHardMilli = QuantumPowCurveCHardMilli;
     type ConsecutiveWinnerEasingThreshold = QuantumPowConsecutiveWinnerEasingThreshold;
     type WeightInfo = pallet_quantum_pow::weights::SubstrateWeight<Runtime>;
+}
+
+pub struct RuntimeQBlockIds;
+
+impl pallet_miner_registry::QBlockIdProvider for RuntimeQBlockIds {
+    fn latest_qblock_id() -> Option<u64> {
+        pallet_quantum_pow::Pallet::<Runtime>::latest_qblock_id()
+    }
+}
+
+impl pallet_miner_registry::Config for Runtime {
+    type RuntimeEvent = RuntimeEvent;
+    type Currency = Balances;
+    type QBlockIds = RuntimeQBlockIds;
+    type MaxNodeIdBytes = MinerRegistryMaxNodeIdBytes;
+    type MaxNodeNameBytes = MinerRegistryMaxNodeNameBytes;
+    type MaxPublicHostBytes = MinerRegistryMaxPublicHostBytes;
+    type MaxRpcEndpointBytes = MinerRegistryMaxRpcEndpointBytes;
+    type MaxRpcEndpoints = MinerRegistryMaxRpcEndpoints;
+    type MaxMinerSpecs = MinerRegistryMaxMinerSpecs;
+    type MaxMinerLabelBytes = MinerRegistryMaxMinerLabelBytes;
+    type MaxMinerBackendBytes = MinerRegistryMaxMinerBackendBytes;
+    type MaxMinerDeviceIdBytes = MinerRegistryMaxMinerDeviceIdBytes;
+    type MaxOsStringBytes = MinerRegistryMaxOsStringBytes;
+    type MaxCpuBrandBytes = MinerRegistryMaxCpuBrandBytes;
+    type MaxArchBytes = MinerRegistryMaxArchBytes;
+    type MaxGpuVendorBytes = MinerRegistryMaxGpuVendorBytes;
+    type MaxGpuNameBytes = MinerRegistryMaxGpuNameBytes;
+    type MaxGpus = MinerRegistryMaxGpus;
+    type MaxRuntimeVersionBytes = MinerRegistryMaxRuntimeVersionBytes;
+    type MaxDockerImageBytes = MinerRegistryMaxDockerImageBytes;
+    type DescriptorDepositBase = MinerRegistryDescriptorDepositBase;
+    type DescriptorDepositPerByte = MinerRegistryDescriptorDepositPerByte;
+    type WeightInfo = pallet_miner_registry::weights::SubstrateWeight<Runtime>;
 }
 
 #[cfg(test)]
