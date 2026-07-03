@@ -2506,3 +2506,258 @@ fn unset_whitelisted_topology_reads_default_hard_difficulty() {
         );
     });
 }
+
+// ============================================================================
+// Weight Regression Tests (QIP-03: Parameterized Weight Accounting)
+// ============================================================================
+
+use crate::weights::WeightInfo;
+
+/// Test helper: calculate weight for given proof dimensions
+fn calculate_weight(nodes: u32, edges: u32, solutions: u32) -> frame_support::weights::Weight {
+    <() as WeightInfo>::submit_proof(nodes, edges, solutions)
+}
+
+#[test]
+fn weight_scales_with_proof_dimensions() {
+    // Mathematical invariant: Weight(n,e,s) should increase with dimensions
+
+    let weight_small = calculate_weight(2, 1, 1);
+    let weight_medium = calculate_weight(100, 200, 8);
+    let weight_large = calculate_weight(1000, 5000, 32);
+
+    // Monotonicity: larger inputs -> larger weight
+    assert!(
+        weight_medium.ref_time() > weight_small.ref_time(),
+        "Weight should increase with proof size (medium > small)"
+    );
+    assert!(
+        weight_large.ref_time() > weight_medium.ref_time(),
+        "Weight should increase with proof size (large > medium)"
+    );
+}
+
+#[test]
+fn weight_formula_components_are_present() {
+    // Verify all components of W(n,e,s) = BASE + k₁·n + k₂·e + k₃·s·n + k₄·s·e + k₅·s²·n
+
+    let base_weight = calculate_weight(0, 0, 0);
+    assert!(base_weight.ref_time() > 0, "Base weight should be non-zero");
+
+    // Component k₁·n: nodes contribute linearly
+    let w_100_nodes = calculate_weight(100, 0, 0);
+    let w_200_nodes = calculate_weight(200, 0, 0);
+    assert!(
+        w_200_nodes.ref_time() > w_100_nodes.ref_time(),
+        "Node component (k₁·n) should increase with node count"
+    );
+
+    // Component k₂·e: edges contribute linearly
+    let w_100_edges = calculate_weight(0, 100, 0);
+    let w_200_edges = calculate_weight(0, 200, 0);
+    assert!(
+        w_200_edges.ref_time() > w_100_edges.ref_time(),
+        "Edge component (k₂·e) should increase with edge count"
+    );
+
+    // Component k₄·s·e: solutions × edges (dominant term)
+    let w_1_sol_100_edge = calculate_weight(0, 100, 1);
+    let w_2_sol_100_edge = calculate_weight(0, 100, 2);
+    assert!(
+        w_2_sol_100_edge.ref_time() > w_1_sol_100_edge.ref_time(),
+        "Solution-edge component (k₄·s·e) should increase with solutions"
+    );
+}
+
+#[test]
+fn weight_prevents_undercharging_for_large_proofs() {
+    // Critical invariant: large proofs must cost far more than small ones, so a
+    // worst-case proof can't be under-charged. The mock's Max* bounds are tiny
+    // (16/32/8), so exercise the formula directly at the documented production
+    // bounds where the dimensional terms must dominate the fixed base.
+    let small_proof_weight = calculate_weight(2, 1, 1); // Minimal proof
+    let large_proof_weight = calculate_weight(5_000, 50_000, 32); // Production worst case
+
+    // Large proof should cost significantly more (at least 10x).
+    let ratio = large_proof_weight.ref_time() / small_proof_weight.ref_time().max(1);
+    assert!(
+        ratio >= 10,
+        "Worst-case proof should cost at least 10x more than minimal proof, got {ratio}x"
+    );
+}
+
+#[test]
+fn weight_scales_quadratically_with_solutions_for_diversity() {
+    // Diversity/quality calculation is O(s²·n). Superlinearity is verified by
+    // comparing successive increments (which cancel the fixed base) rather than
+    // ratios of totals — the large base term makes total ratios ~1 regardless of
+    // curvature, so they cannot reveal the quadratic component.
+    let w_2_sols = calculate_weight(100, 100, 2).ref_time();
+    let w_4_sols = calculate_weight(100, 100, 4).ref_time();
+    let w_8_sols = calculate_weight(100, 100, 8).ref_time();
+
+    // The cost of each additional pair of solutions must itself grow, which is
+    // the signature of the s²·n term.
+    let inc_2_to_4 = w_4_sols - w_2_sols;
+    let inc_4_to_8 = w_8_sols - w_4_sols;
+    assert!(
+        inc_4_to_8 > inc_2_to_4,
+        "Per-solution cost should grow with solution count (quadratic term), \
+         got increment {inc_2_to_4} then {inc_4_to_8}"
+    );
+}
+
+#[test]
+fn weight_calculation_saturates_safely() {
+    // Pathological inputs must saturate, not wrap: the s²·n term alone is
+    // ~2^96 at u32::MAX inputs, so a saturating implementation pins ref_time
+    // at u64::MAX while a wrapping one would land on an arbitrary value.
+    let max_weight = calculate_weight(u32::MAX, u32::MAX, u32::MAX);
+    assert_eq!(
+        max_weight.ref_time(),
+        u64::MAX,
+        "weight must saturate to u64::MAX on overflow"
+    );
+}
+
+#[test]
+fn submit_proof_uses_parameterized_weight() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let (nodes, edges, topology_hash) = registered_topology();
+        assert_ok!(QuantumPow::set_difficulty(
+            RuntimeOrigin::root(),
+            topology_hash,
+            easy_difficulty()
+        ));
+
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+
+        // The charge for this proof is the parameterized formula keyed to the
+        // registered topology's dimensions (node/edge counts come from the
+        // topology, not the proof), so it covers at least the base cost.
+        let charged = <() as WeightInfo>::submit_proof(
+            nodes.len() as u32,
+            edges.len() as u32,
+            proof.solutions.len() as u32,
+        );
+        assert!(
+            charged.ref_time() >= 10_000_000,
+            "parameterized weight must cover the base extrinsic cost"
+        );
+
+        // QIP-03 guarantee: a large proof is charged well above the retired 60M
+        // flat weight, so large proofs can no longer be under-charged.
+        let large = calculate_weight(1_000, 5_000, 32);
+        assert!(
+            large.ref_time() > 60_000_000,
+            "large proofs must exceed the retired 60M flat weight"
+        );
+
+        // Submission succeeds end-to-end.
+        assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
+    });
+}
+
+#[test]
+fn submit_proof_dispatch_info_charges_topology_scaled_weight() {
+    // The QIP-03 fix lives in the #[pallet::weight] closure, not in
+    // WeightInfo: this pins the *dispatched* charge to the formula evaluated
+    // at the registered topology's dimensions (n/e come from storage via
+    // proof.topology_hash, s from the proof). A regression to the flat
+    // weight — or transposed nodes/edges arguments — fails here.
+    use frame_support::dispatch::GetDispatchInfo;
+    new_test_ext().execute_with(|| {
+        let (nodes, edges, topology_hash) = registered_topology();
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+        let expected = <() as WeightInfo>::submit_proof(
+            nodes.len() as u32,
+            edges.len() as u32,
+            proof.solutions.len() as u32,
+        );
+        let call = crate::Call::<Test>::submit_proof { proof };
+        assert_eq!(
+            call.get_dispatch_info().call_weight,
+            expected,
+            "dispatched weight must equal the formula at the topology's dimensions"
+        );
+    });
+}
+
+#[test]
+fn submit_proof_dispatch_info_charges_base_for_unregistered_topology() {
+    // An unregistered topology_hash must be charged exactly the
+    // zero-dimension base: every solution-scaled term multiplies by n or e,
+    // so solution count adds nothing, and dispatch rejects after O(1) work.
+    // This pins the closure's unwrap_or((0, 0)) fallback.
+    use frame_support::dispatch::GetDispatchInfo;
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let (nodes, edges, _) = registered_topology();
+        let bogus = sp_core::H256::repeat_byte(0xAB);
+        let proof = proof_for(1, &nodes, &edges, bogus, &[0]);
+
+        let base_only = <() as WeightInfo>::submit_proof(0, 0, proof.solutions.len() as u32);
+        assert_eq!(
+            base_only,
+            <() as WeightInfo>::submit_proof(0, 0, 0),
+            "solutions must not add weight when no topology dimensions apply"
+        );
+
+        let call = crate::Call::<Test>::submit_proof {
+            proof: proof.clone(),
+        };
+        assert_eq!(
+            call.get_dispatch_info().call_weight,
+            base_only,
+            "unregistered topology must be charged the base weight only"
+        );
+
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof),
+            crate::Error::<Test>::TopologyNotRegistered
+        );
+    });
+}
+
+#[test]
+fn weight_regression_small_proof_cost_increased() {
+    // Regression test: ensure small proofs still pay reasonable weight
+
+    let tiny_weight = calculate_weight(2, 1, 1);
+
+    // Even minimal proofs should pay at least the base cost
+    assert!(
+        tiny_weight.ref_time() >= 10_000_000,
+        "Minimal proof should pay at least base cost"
+    );
+}
+
+#[test]
+fn weight_proportionality_constant_is_reasonable() {
+    // Verify the per-unit weight constants are within reasonable bounds. Each
+    // marginal cost is isolated by differencing against the zero-dimension
+    // weight, since calculate_weight always includes the fixed extrinsic + DB
+    // base (~535M ref_time) that would otherwise swamp the per-unit terms.
+    let base = calculate_weight(0, 0, 0).ref_time();
+    let per_node = calculate_weight(1, 0, 0).ref_time() - base;
+    let per_edge = calculate_weight(0, 1, 0).ref_time() - base;
+    let per_solution_node = calculate_weight(1, 0, 1).ref_time() - base;
+
+    // Isolated marginal costs should be reasonable (not zero, not excessive).
+    assert!(
+        per_node > 0 && per_node < 100_000,
+        "Per-node marginal cost should be reasonable, got {per_node}"
+    );
+    assert!(
+        per_edge > 0 && per_edge < 200_000,
+        "Per-edge marginal cost should be reasonable, got {per_edge}"
+    );
+    assert!(
+        per_solution_node > per_node,
+        "Solution validation adds cost beyond a bare node"
+    );
+}
+
+// ============================================================================
+// End QIP-03 Weight Regression Tests
