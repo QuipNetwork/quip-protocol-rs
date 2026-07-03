@@ -44,7 +44,8 @@ RUN cargo build --release -p quip-network-node \
 
 FROM debian:${DEBIAN_VERSION}-slim AS runtime
 # runtime deps tracked with the Debian base; pinning point versions here adds
-# churn without a security benefit.
+# churn without a security benefit. uid 1000 matches the PUID/PGID default;
+# entrypoint.sh remaps the quip user at runtime when PUID/PGID are set.
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates libssl3 gosu \

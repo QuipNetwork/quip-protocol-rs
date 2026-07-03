@@ -143,7 +143,7 @@ pub mod pallet {
     use sp_core::H256;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
 
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(3);
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(4);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -432,26 +432,44 @@ pub mod pallet {
             <T as Config>::WeightInfo::register_miner()
         }
 
+        /// Cumulative storage migration to the in-code `STORAGE_VERSION`.
+        ///
         /// v2 → v3: difficulty becomes per-topology and a mineable whitelist
         /// is introduced.
         ///
-        /// - on-chain `>= 3`: nothing to do.
         /// - on-chain `== 2`: carry the single global `Difficulty` into
         ///   `Difficulties[DefaultTopology]`, seed `MineableTopologies` with
         ///   the default, and remove the old global value.
         /// - on-chain `< 2`: legacy v0.2 wipe (old encodings cannot be
-        ///   carried), then proceed to v3 with empty per-topology state.
+        ///   carried), then proceed with empty per-topology state.
+        ///
+        /// v3 → v4: `QBlock` gains a trailing `topology_hash`. Existing
+        /// entries were encoded without it and would otherwise fail to decode
+        /// (silently reading back as `None`), so every `QBlocks` value is
+        /// re-encoded, backfilling `topology_hash` with the default topology —
+        /// the only topology mineable before per-topology binding, so this is
+        /// the historically-correct value, not a placeholder.
+        ///
+        /// The steps are cumulative: a v2 chain runs v3 then v4; a v3 chain
+        /// runs only v4; a `< 2` chain wipes (which clears `QBlocks`, leaving
+        /// v4 nothing to translate).
         fn on_runtime_upgrade() -> Weight {
             let on_chain = Pallet::<T>::on_chain_storage_version();
             if on_chain >= STORAGE_VERSION {
                 return T::DbWeight::get().reads(1);
             }
 
-            let weight = if on_chain == StorageVersion::new(2) {
-                crate::migration::v3::carry_forward::<T>()
-            } else {
-                crate::migration::v3::wipe::<T>()
-            };
+            let mut weight = Weight::zero();
+
+            if on_chain < StorageVersion::new(3) {
+                weight = weight.saturating_add(if on_chain == StorageVersion::new(2) {
+                    crate::migration::v3::carry_forward::<T>()
+                } else {
+                    crate::migration::v3::wipe::<T>()
+                });
+            }
+
+            weight = weight.saturating_add(crate::migration::v4::backfill_topology::<T>());
 
             STORAGE_VERSION.put::<Pallet<T>>();
             weight.saturating_add(T::DbWeight::get().reads_writes(1, 1))
@@ -464,17 +482,28 @@ pub mod pallet {
             // it. StorageVersion has no Into<u16> in this SDK fork; == is
             // available and a bool is Encode/Decode, so we use that.
             let was_v2 = Pallet::<T>::on_chain_storage_version() == StorageVersion::new(2);
-            Ok((was_v2, DefaultTopology::<T>::get()).encode())
+            // Count `QBlocks` entries via `iter_keys`, which decodes only the
+            // (unchanged) keys — safe against the old value layout. The v4
+            // translate must preserve this count exactly; a dropped entry
+            // means an old value failed to decode and was silently discarded.
+            let qblocks = QBlocks::<T>::iter_keys().count() as u64;
+            Ok((was_v2, DefaultTopology::<T>::get(), qblocks).encode())
         }
 
         #[cfg(feature = "try-runtime")]
         fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
             ensure!(
                 Pallet::<T>::on_chain_storage_version() >= STORAGE_VERSION,
-                "storage version must be >= 3 after upgrade"
+                "storage version must be >= 4 after upgrade"
             );
-            let (was_v2, default): (bool, Option<H256>) =
+            let (was_v2, default, qblocks_before): (bool, Option<H256>, u64) =
                 Decode::decode(&mut &state[..]).map_err(|_| "pre_upgrade state decode failed")?;
+            // Every qblock must survive the v4 re-encode and now decode under
+            // the new layout. A count mismatch means an entry was dropped.
+            ensure!(
+                QBlocks::<T>::iter().count() as u64 == qblocks_before,
+                "v3→v4 must preserve every QBlocks entry"
+            );
             if was_v2 {
                 // The old global `Difficulty` value must be gone.
                 ensure!(
@@ -566,6 +595,7 @@ pub mod pallet {
                     submitted_at: record.submitted_at,
                     difficulty: active,
                     last_proof_block_hash,
+                    topology_hash,
                 },
             );
             QBlockBlockById::<T>::insert(qblock_id, n);
@@ -1369,6 +1399,56 @@ pub(crate) mod migration {
             let cleared =
                 frame_support::storage::unhashed::clear_prefix(&pallet_prefix, None, None).backend;
             T::DbWeight::get().reads_writes(1, u64::from(cleared))
+        }
+    }
+
+    pub(crate) mod v4 {
+        use crate::pallet::{Config, QBlocks};
+        use crate::{types, AccountIdOf, BalanceOf, BlockNumberOf, DefaultTopology};
+        use codec::Decode;
+        use frame_support::traits::Get;
+        use frame_support::weights::Weight;
+        use sp_core::H256;
+
+        /// The pre-v4 `QBlock` layout: identical to [`types::QBlock`] minus the
+        /// trailing `topology_hash`. Kept only so existing entries can be
+        /// decoded and re-encoded with the new field appended.
+        #[derive(Decode)]
+        struct OldQBlock<AccountId, Balance, BlockNumber> {
+            miner: AccountId,
+            salt: [u8; 32],
+            energy_milli: i64,
+            reward: Balance,
+            submitted_at: BlockNumber,
+            difficulty: types::DifficultyConfig,
+            last_proof_block_hash: H256,
+        }
+
+        /// 3 → 4: re-encode every `QBlocks` entry, backfilling `topology_hash`
+        /// with the default topology (`H256::zero()` when none is set). Blocks
+        /// won before per-topology binding were all mined against the default,
+        /// so this is the historically-correct value, not a placeholder. On a
+        /// freshly-wiped (`< 2`) chain `QBlocks` is empty and this is a no-op.
+        pub(crate) fn backfill_topology<T: Config>() -> Weight {
+            let backfill = DefaultTopology::<T>::get().unwrap_or_default();
+            let mut count = 0u64;
+            QBlocks::<T>::translate::<OldQBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>, _>(
+                |_block, old| {
+                    count = count.saturating_add(1);
+                    Some(types::QBlock {
+                        miner: old.miner,
+                        salt: old.salt,
+                        energy_milli: old.energy_milli,
+                        reward: old.reward,
+                        submitted_at: old.submitted_at,
+                        difficulty: old.difficulty,
+                        last_proof_block_hash: old.last_proof_block_hash,
+                        topology_hash: backfill,
+                    })
+                },
+            );
+            // One read + one write per entry, plus the `DefaultTopology` read.
+            T::DbWeight::get().reads_writes(count.saturating_add(1), count)
         }
     }
 }
