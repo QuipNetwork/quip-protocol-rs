@@ -859,7 +859,31 @@ pub mod pallet {
         }
 
         #[pallet::call_index(4)]
-        #[pallet::weight(<T as Config>::WeightInfo::submit_proof())]
+        #[pallet::weight({
+            // Calculate weight based on actual proof dimensions to prevent under-charging
+            // for large proofs (mitigates QIP-03: fixed placeholder weight vulnerability).
+            //
+            // Weight formula: W(n, e, s) = BASE + k₁·n + k₂·e + k₃·s·n + k₄·s·e + k₅·s²·n
+            // Where n=nodes, e=edges, s=solutions
+            //
+            // Validation cost scales with the registered topology's dimensions and the
+            // number of submitted solutions. `QuantumProof` only carries `topology_hash`
+            // and `solutions`, so node/edge counts come from the same topology lookup
+            // validation performs. An unregistered hash does O(1) work before rejecting
+            // with `TopologyNotRegistered`, so it is charged the base weight (n = e = 0);
+            // every solution-scaled term multiplies by n or e, so `solutions` adds
+            // nothing on that path. The base-only charge relies on all dispatch checks
+            // before the topology lookup staying O(1). Conversely, a registered
+            // topology rejected later in dispatch (not mineable, graph too small, bad
+            // nonce, …) still pays the full formula — DispatchResult carries no
+            // PostDispatchInfo refund; over-charging rejected work is the safe
+            // direction.
+            let (nodes, edges) = RegisteredTopologies::<T>::get(proof.topology_hash)
+                .map(|topology| (topology.nodes.len() as u32, topology.edges.len() as u32))
+                .unwrap_or((0, 0));
+            let solutions = proof.solutions.len() as u32;
+            <T as Config>::WeightInfo::submit_proof(nodes, edges, solutions)
+        })]
         pub fn submit_proof(origin: OriginFor<T>, proof: QuantumProofOf<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             ensure!(
