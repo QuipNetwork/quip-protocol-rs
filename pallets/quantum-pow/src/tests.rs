@@ -2625,6 +2625,7 @@ fn submit_proof_uses_parameterized_weight() {
         let (nodes, edges, topology_hash) = registered_topology();
         assert_ok!(QuantumPow::set_difficulty(
             RuntimeOrigin::root(),
+            topology_hash,
             easy_difficulty()
         ));
 
