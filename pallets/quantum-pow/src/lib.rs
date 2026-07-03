@@ -223,6 +223,16 @@ pub mod pallet {
     pub type Difficulties<T: Config> =
         StorageMap<_, Blake2_128Concat, H256, types::DifficultyConfig>;
 
+    /// Per-topology curve `c` override, set by root via `set_topology_curve`.
+    /// When present, `energy_curve_for` builds the topology's energy curve from
+    /// these values instead of the runtime `CurveC*Milli` constants; an unset
+    /// topology falls back to the constants (the legacy behavior). Keyed by
+    /// `topology_hash` so the override is carried with the topology and a
+    /// `DefaultTopology` switch resolves the matching curve.
+    #[pallet::storage]
+    pub type TopologyCurveC<T: Config> =
+        StorageMap<_, Blake2_128Concat, H256, crate::difficulty::CurveC>;
+
     /// Root-controlled whitelist of topologies that may be mined: a topology
     /// must have an entry here for `submit_proof` to accept its solutions.
     /// Steady state is `{ DefaultTopology }`.
@@ -313,6 +323,12 @@ pub mod pallet {
         DefaultTopologySet {
             topology_hash: H256,
         },
+        /// Root set a per-topology curve `c` override; the topology's energy
+        /// curve is now calibrated from the stored override, not the runtime
+        /// constants.
+        TopologyCurveSet {
+            topology_hash: H256,
+        },
         TopologyMineableAdded {
             topology_hash: H256,
         },
@@ -341,6 +357,10 @@ pub mod pallet {
         MinerNotRegistered,
         TopologyAlreadyRegistered,
         TopologyNotRegistered,
+        /// A curve `c` override was rejected: the values are not strictly
+        /// ordered `easy < knee < hard`, or they do not yield a well-ordered
+        /// energy curve (`min < knee < max`) for the topology.
+        InvalidCurve,
         GraphTooSmall,
         InvalidTopology,
         ProofLimitReached,
@@ -766,6 +786,48 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Set (or replace) a topology's curve `c` override (root only).
+        ///
+        /// The override is calibrated against the topology's graph and value
+        /// specs and takes effect immediately for difficulty adjustment and
+        /// decay; an unset topology keeps using the runtime `CurveC*Milli`
+        /// constants. Changing a live topology's curve can leave its stored
+        /// `Difficulty.max_energy_milli` outside the new bounds — the geometric
+        /// adjustment converges it back over subsequent rounds, but operators
+        /// who need an immediate baseline should follow with `set_difficulty`.
+        #[pallet::call_index(8)]
+        #[pallet::weight(<T as Config>::WeightInfo::set_topology_curve())]
+        pub fn set_topology_curve(
+            origin: OriginFor<T>,
+            topology_hash: H256,
+            curve_c: crate::difficulty::CurveC,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            let topology = RegisteredTopologies::<T>::get(topology_hash)
+                .ok_or(Error::<T>::TopologyNotRegistered)?;
+            // The `c` values must be strictly increasing easy -> knee -> hard,
+            // and must yield a well-ordered energy curve for this topology.
+            ensure!(
+                curve_c.easy_milli < curve_c.knee_milli && curve_c.knee_milli < curve_c.hard_milli,
+                Error::<T>::InvalidCurve
+            );
+            let curve = crate::difficulty::EnergyCurve::new(
+                topology.nodes.len() as u32,
+                topology.edges.len() as u32,
+                curve_c,
+                &topology.allowed_h_values.as_slice(),
+                &topology.allowed_j_values.as_slice(),
+            )
+            .map_err(|_| Error::<T>::InvalidCurve)?;
+            ensure!(
+                curve.min_milli < curve.knee_milli && curve.knee_milli < curve.max_milli,
+                Error::<T>::InvalidCurve
+            );
+            TopologyCurveC::<T>::insert(topology_hash, curve_c);
+            Self::deposit_event(Event::TopologyCurveSet { topology_hash });
+            Ok(())
+        }
+
         #[pallet::call_index(4)]
         #[pallet::weight(<T as Config>::WeightInfo::submit_proof())]
         pub fn submit_proof(origin: OriginFor<T>, proof: QuantumProofOf<T>) -> DispatchResult {
@@ -1110,16 +1172,23 @@ pub mod pallet {
         /// Returns `None` when the topology is not registered (defensive: a
         /// proof would not validate, and `set_difficulty` requires
         /// registration).
-        fn energy_curve_for(topology_hash: H256) -> Option<crate::difficulty::EnergyCurve> {
+        pub(crate) fn energy_curve_for(
+            topology_hash: H256,
+        ) -> Option<crate::difficulty::EnergyCurve> {
             let topology = RegisteredTopologies::<T>::get(topology_hash)?;
-            crate::difficulty::EnergyCurve::new(
-                topology.nodes.len() as u32,
-                topology.edges.len() as u32,
+            // Prefer a per-topology override; fall back to the runtime
+            // constants when none is set (the legacy calibration).
+            let curve_c = TopologyCurveC::<T>::get(topology_hash).unwrap_or_else(|| {
                 crate::difficulty::CurveC {
                     easy_milli: T::CurveCEasyMilli::get(),
                     knee_milli: T::CurveCKneeMilli::get(),
                     hard_milli: T::CurveCHardMilli::get(),
-                },
+                }
+            });
+            crate::difficulty::EnergyCurve::new(
+                topology.nodes.len() as u32,
+                topology.edges.len() as u32,
+                curve_c,
                 &topology.allowed_h_values.as_slice(),
                 &topology.allowed_j_values.as_slice(),
             )

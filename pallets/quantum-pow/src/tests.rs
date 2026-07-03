@@ -569,6 +569,109 @@ fn set_difficulty_works() {
     });
 }
 
+/// A valid per-topology curve override with a wider `c` spread than the
+/// 700/725/750 runtime constants (still `easy < knee < hard`).
+fn override_curve_c() -> crate::difficulty::CurveC {
+    crate::difficulty::CurveC {
+        easy_milli: 600,
+        knee_milli: 700,
+        hard_milli: 800,
+    }
+}
+
+#[test]
+fn set_topology_curve_requires_root() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        assert_noop!(
+            QuantumPow::set_topology_curve(RuntimeOrigin::signed(1), hash, override_curve_c()),
+            sp_runtime::DispatchError::BadOrigin
+        );
+    });
+}
+
+#[test]
+fn set_topology_curve_rejects_unregistered_topology() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology();
+        assert_noop!(
+            QuantumPow::set_topology_curve(
+                RuntimeOrigin::root(),
+                sp_core::H256::repeat_byte(7),
+                override_curve_c()
+            ),
+            crate::Error::<Test>::TopologyNotRegistered
+        );
+    });
+}
+
+#[test]
+fn set_topology_curve_rejects_misordered_c() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        // knee must lie strictly between easy and hard; this inverts the order.
+        let bad = crate::difficulty::CurveC {
+            easy_milli: 800,
+            knee_milli: 725,
+            hard_milli: 700,
+        };
+        assert_noop!(
+            QuantumPow::set_topology_curve(RuntimeOrigin::root(), hash, bad),
+            crate::Error::<Test>::InvalidCurve
+        );
+    });
+}
+
+#[test]
+fn topology_curve_override_replaces_constant_curve() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        // Without an override the curve is built from the runtime constants.
+        assert_eq!(QuantumPow::energy_curve_for(hash), Some(test_curve()));
+
+        let c = override_curve_c();
+        assert_ok!(QuantumPow::set_topology_curve(
+            RuntimeOrigin::root(),
+            hash,
+            c
+        ));
+
+        let expected = crate::difficulty::EnergyCurve::new(
+            2,
+            1,
+            c,
+            &allowed_h_spec().as_slice(),
+            &allowed_j_spec().as_slice(),
+        )
+        .unwrap();
+        assert_ne!(
+            expected,
+            test_curve(),
+            "override must produce a different curve"
+        );
+        assert_eq!(QuantumPow::energy_curve_for(hash), Some(expected));
+    });
+}
+
+#[test]
+fn topology_curve_override_is_per_topology() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash_a) = registered_topology();
+        let hash_b = registered_zero_field_topology();
+        let b_before = QuantumPow::energy_curve_for(hash_b);
+
+        assert_ok!(QuantumPow::set_topology_curve(
+            RuntimeOrigin::root(),
+            hash_a,
+            override_curve_c()
+        ));
+
+        // Only A's curve moves; B still resolves to the constant-derived curve.
+        assert_eq!(QuantumPow::energy_curve_for(hash_b), b_before);
+        assert_ne!(QuantumPow::energy_curve_for(hash_a), Some(test_curve()));
+    });
+}
+
 #[test]
 fn submit_proof_accepts_valid_proof() {
     new_test_ext().execute_with(|| {

@@ -209,6 +209,21 @@ mod benchmarks {
     }
 
     #[benchmark]
+    fn set_topology_curve() {
+        let (_nodes, _edges, topology_hash) = register_topology_for::<T>();
+        let curve_c = crate::difficulty::CurveC {
+            easy_milli: 600,
+            knee_milli: 700,
+            hard_milli: 800,
+        };
+
+        #[extrinsic_call]
+        QuantumPow::set_topology_curve(RawOrigin::Root, topology_hash, curve_c);
+
+        assert_eq!(TopologyCurveC::<T>::get(topology_hash), Some(curve_c));
+    }
+
+    #[benchmark]
     fn submit_proof() {
         let caller: T::AccountId = whitelisted_caller();
         register_miner_for::<T>(&caller);
