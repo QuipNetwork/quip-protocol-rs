@@ -2609,13 +2609,15 @@ fn weight_scales_quadratically_with_solutions_for_diversity() {
 
 #[test]
 fn weight_calculation_saturates_safely() {
-    // Edge case: weight calculation should not overflow on maximum inputs
-
+    // Pathological inputs must saturate, not wrap: the s²·n term alone is
+    // ~2^96 at u32::MAX inputs, so a saturating implementation pins ref_time
+    // at u64::MAX while a wrapping one would land on an arbitrary value.
     let max_weight = calculate_weight(u32::MAX, u32::MAX, u32::MAX);
-
-    // Should saturate to max weight, not panic or wrap
-    assert!(max_weight.ref_time() > 0, "Max weight should be positive");
-    // In practice, Weight uses saturating arithmetic
+    assert_eq!(
+        max_weight.ref_time(),
+        u64::MAX,
+        "weight must saturate to u64::MAX on overflow"
+    );
 }
 
 #[test]
@@ -2654,6 +2656,67 @@ fn submit_proof_uses_parameterized_weight() {
 
         // Submission succeeds end-to-end.
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
+    });
+}
+
+#[test]
+fn submit_proof_dispatch_info_charges_topology_scaled_weight() {
+    // The QIP-03 fix lives in the #[pallet::weight] closure, not in
+    // WeightInfo: this pins the *dispatched* charge to the formula evaluated
+    // at the registered topology's dimensions (n/e come from storage via
+    // proof.topology_hash, s from the proof). A regression to the flat
+    // weight — or transposed nodes/edges arguments — fails here.
+    use frame_support::dispatch::GetDispatchInfo;
+    new_test_ext().execute_with(|| {
+        let (nodes, edges, topology_hash) = registered_topology();
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+        let expected = <() as WeightInfo>::submit_proof(
+            nodes.len() as u32,
+            edges.len() as u32,
+            proof.solutions.len() as u32,
+        );
+        let call = crate::Call::<Test>::submit_proof { proof };
+        assert_eq!(
+            call.get_dispatch_info().call_weight,
+            expected,
+            "dispatched weight must equal the formula at the topology's dimensions"
+        );
+    });
+}
+
+#[test]
+fn submit_proof_dispatch_info_charges_base_for_unregistered_topology() {
+    // An unregistered topology_hash must be charged exactly the
+    // zero-dimension base: every solution-scaled term multiplies by n or e,
+    // so solution count adds nothing, and dispatch rejects after O(1) work.
+    // This pins the closure's unwrap_or((0, 0)) fallback.
+    use frame_support::dispatch::GetDispatchInfo;
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let (nodes, edges, _) = registered_topology();
+        let bogus = sp_core::H256::repeat_byte(0xAB);
+        let proof = proof_for(1, &nodes, &edges, bogus, &[0]);
+
+        let base_only = <() as WeightInfo>::submit_proof(0, 0, proof.solutions.len() as u32);
+        assert_eq!(
+            base_only,
+            <() as WeightInfo>::submit_proof(0, 0, 0),
+            "solutions must not add weight when no topology dimensions apply"
+        );
+
+        let call = crate::Call::<Test>::submit_proof {
+            proof: proof.clone(),
+        };
+        assert_eq!(
+            call.get_dispatch_info().call_weight,
+            base_only,
+            "unregistered topology must be charged the base weight only"
+        );
+
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof),
+            crate::Error::<Test>::TopologyNotRegistered
+        );
     });
 }
 

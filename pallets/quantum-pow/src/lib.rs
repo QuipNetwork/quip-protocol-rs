@@ -870,7 +870,14 @@ pub mod pallet {
             // number of submitted solutions. `QuantumProof` only carries `topology_hash`
             // and `solutions`, so node/edge counts come from the same topology lookup
             // validation performs. An unregistered hash does O(1) work before rejecting
-            // with `TopologyNotRegistered`, so it is charged the base weight (n = e = 0).
+            // with `TopologyNotRegistered`, so it is charged the base weight (n = e = 0);
+            // every solution-scaled term multiplies by n or e, so `solutions` adds
+            // nothing on that path. The base-only charge relies on all dispatch checks
+            // before the topology lookup staying O(1). Conversely, a registered
+            // topology rejected later in dispatch (not mineable, graph too small, bad
+            // nonce, …) still pays the full formula — DispatchResult carries no
+            // PostDispatchInfo refund; over-charging rejected work is the safe
+            // direction.
             let (nodes, edges) = RegisteredTopologies::<T>::get(proof.topology_hash)
                 .map(|topology| (topology.nodes.len() as u32, topology.edges.len() as u32))
                 .unwrap_or((0, 0));

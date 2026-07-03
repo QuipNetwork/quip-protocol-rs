@@ -38,6 +38,71 @@ pub trait WeightInfo {
 // benchmark suite exists.
 // TODO: Read through and verify the benchmark setup and coverage before
 // replacing these placeholder weights with generated output.
+// NOTE: the `submit_proof` benchmark takes no Linear<> complexity parameters,
+// so it can neither validate the k₁..k₅ constants below nor regenerate the
+// parameterized `submit_proof(nodes, edges, solutions)` signature. The
+// constants are hand-derived upper bounds from complexity analysis of
+// validate_proof / generate_ising_model; parameterize the benchmark over
+// n/e/s before treating them as measured values.
+
+// QIP-03 dimension-scaled submit_proof weight:
+//
+//   W(n, e, s) = BASE + k₁·n + k₂·e + k₃·s·n + k₄·s·e + k₅·s²·n
+//
+// - BASE = 10_000_000 — extrinsic overhead (charged DB weight is added on top)
+// - k₁ = 1_000  per node: topology traversal / Ising h-term sampling
+// - k₂ = 2_000  per edge: topology traversal / Ising J-term sampling
+// - k₃ = 5_000  per solution·node: spin validation
+// - k₄ = 50_000 per solution·edge: energy calculation (dominant term)
+// - k₅ = 1_000  per solution²·node: pairwise diversity/quality comparison
+//
+// Worst case at production bounds (n=5_000, e=50_000, s=32):
+// 10M + 5M + 100M + 800M + 80_000M + 5_120M ≈ 86_035M ref_time ≈ 86ms
+// (1 ref_time unit = 1ps), plus ~625M of charged DB weight (9 reads +
+// 4 writes at RocksDb costs). Eight proofs (MaxProofsPerBlock) ≈ 0.7s of
+// the 2s block ref_time budget.
+const SUBMIT_PROOF_BASE_REF_TIME: u64 = 10_000_000;
+const SUBMIT_PROOF_K1_NODE: u64 = 1_000;
+const SUBMIT_PROOF_K2_EDGE: u64 = 2_000;
+const SUBMIT_PROOF_K3_SOLUTION_NODE: u64 = 5_000;
+const SUBMIT_PROOF_K4_SOLUTION_EDGE: u64 = 50_000;
+const SUBMIT_PROOF_K5_SOLUTION_SQ_NODE: u64 = 1_000;
+
+// Distinct storage items touched on the submit_proof accept path. Reads:
+// RegisteredTopologies (weight closure + body, overlay-cached), Miners,
+// BlockProofCount, MineableTopologies, LastProofBlockHash, Difficulties,
+// LastProofBlock, TopologyCurveC (energy curve), BlockBestProof.
+// Writes (worst case): Miners, BlockBestProof, BlockProofCount; 4 kept as a
+// conservative carry-over from the pre-QIP-03 flat weight.
+const SUBMIT_PROOF_READS: u64 = 9;
+const SUBMIT_PROOF_WRITES: u64 = 4;
+
+/// Dimension-dependent portion of `submit_proof`'s weight (BASE plus every
+/// k-term), shared by both `WeightInfo` impls so the formula cannot silently
+/// diverge between the runtime (`SubstrateWeight`) and the mock/native
+/// fallback (`()`).
+fn submit_proof_dimension_weight(nodes: u32, edges: u32, solutions: u32) -> Weight {
+	let node_cost = Weight::from_parts(SUBMIT_PROOF_K1_NODE, 0).saturating_mul(nodes.into());
+	let edge_cost = Weight::from_parts(SUBMIT_PROOF_K2_EDGE, 0).saturating_mul(edges.into());
+	let solution_node_cost = Weight::from_parts(SUBMIT_PROOF_K3_SOLUTION_NODE, 0)
+		.saturating_mul(solutions.into())
+		.saturating_mul(nodes.into());
+	let solution_edge_cost = Weight::from_parts(SUBMIT_PROOF_K4_SOLUTION_EDGE, 0)
+		.saturating_mul(solutions.into())
+		.saturating_mul(edges.into());
+	let solution_squared_cost = Weight::from_parts(SUBMIT_PROOF_K5_SOLUTION_SQ_NODE, 0)
+		.saturating_mul(solutions.into())
+		.saturating_mul(solutions.into())
+		.saturating_mul(nodes.into());
+
+	Weight::from_parts(SUBMIT_PROOF_BASE_REF_TIME, 0)
+		.saturating_add(node_cost)
+		.saturating_add(edge_cost)
+		.saturating_add(solution_node_cost)
+		.saturating_add(solution_edge_cost)
+		.saturating_add(solution_squared_cost)
+}
+
 pub struct SubstrateWeight<T>(PhantomData<T>);
 impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	fn register_miner() -> Weight {
@@ -77,51 +142,10 @@ impl<T: frame_system::Config> WeightInfo for SubstrateWeight<T> {
 	}
 
 	fn submit_proof(nodes: u32, edges: u32, solutions: u32) -> Weight {
-		// Mathematical weight formula derived from computational complexity analysis:
-		//
-		// W(n, e, s) = BASE + k₁·n + k₂·e + k₃·s·n + k₄·s·e + k₅·s²·n
-		//
-		// Where:
-		// - BASE = 10_000_000 (extrinsic overhead, database ops)
-		// - k₁ = 1_000 (per-node cost: topology validation)
-		// - k₂ = 2_000 (per-edge cost: topology validation)
-		// - k₃ = 5_000 (per-solution-per-node: spin validation)
-		// - k₄ = 50_000 (per-solution-per-edge: energy calculation - dominant term)
-		// - k₅ = 1_000 (per-solution²-per-node: diversity/quality pairwise comparison)
-		//
-		// Worst case with production bounds (n=5000, e=50000, s=32):
-		// W = 10M + 5M + 100M + 800M + 80_000M + 1_024M ≈ 82_000M weight units
-		//
-		// This is approximately 820ms of compute time on reference hardware.
-		// With MaxProofsPerBlock=8, total worst-case per block: ~6.5s (acceptable).
-
-		let base = Weight::from_parts(10_000_000, 0)
-			.saturating_add(T::DbWeight::get().reads(5_u64))
-			.saturating_add(T::DbWeight::get().writes(4_u64));
-
-		// Linear terms
-		let node_cost = Weight::from_parts(1_000, 0).saturating_mul(nodes.into());
-		let edge_cost = Weight::from_parts(2_000, 0).saturating_mul(edges.into());
-
-		// Multiplicative terms (solutions × dimensions)
-		let solution_node_cost = Weight::from_parts(5_000, 0)
-			.saturating_mul(solutions.into())
-			.saturating_mul(nodes.into());
-		let solution_edge_cost = Weight::from_parts(50_000, 0)
-			.saturating_mul(solutions.into())
-			.saturating_mul(edges.into());
-
-		// Quadratic term (solutions² × nodes for diversity/quality)
-		let solution_squared_cost = Weight::from_parts(1_000, 0)
-			.saturating_mul(solutions.into())
-			.saturating_mul(solutions.into())
-			.saturating_mul(nodes.into());
-
-		base.saturating_add(node_cost)
-			.saturating_add(edge_cost)
-			.saturating_add(solution_node_cost)
-			.saturating_add(solution_edge_cost)
-			.saturating_add(solution_squared_cost)
+		// See submit_proof_dimension_weight for the QIP-03 formula and constants.
+		submit_proof_dimension_weight(nodes, edges, solutions)
+			.saturating_add(T::DbWeight::get().reads(SUBMIT_PROOF_READS))
+			.saturating_add(T::DbWeight::get().writes(SUBMIT_PROOF_WRITES))
 	}
 
 	fn add_mineable_topology() -> Weight {
@@ -175,35 +199,10 @@ impl WeightInfo for () {
 	}
 
 	fn submit_proof(nodes: u32, edges: u32, solutions: u32) -> Weight {
-		// Same formula as SubstrateWeight, using RocksDbWeight for native execution
-
-		let base = Weight::from_parts(10_000_000, 0)
-			.saturating_add(RocksDbWeight::get().reads(5_u64))
-			.saturating_add(RocksDbWeight::get().writes(4_u64));
-
-		// Linear terms
-		let node_cost = Weight::from_parts(1_000, 0).saturating_mul(nodes.into());
-		let edge_cost = Weight::from_parts(2_000, 0).saturating_mul(edges.into());
-
-		// Multiplicative terms
-		let solution_node_cost = Weight::from_parts(5_000, 0)
-			.saturating_mul(solutions.into())
-			.saturating_mul(nodes.into());
-		let solution_edge_cost = Weight::from_parts(50_000, 0)
-			.saturating_mul(solutions.into())
-			.saturating_mul(edges.into());
-
-		// Quadratic term
-		let solution_squared_cost = Weight::from_parts(1_000, 0)
-			.saturating_mul(solutions.into())
-			.saturating_mul(solutions.into())
-			.saturating_mul(nodes.into());
-
-		base.saturating_add(node_cost)
-			.saturating_add(edge_cost)
-			.saturating_add(solution_node_cost)
-			.saturating_add(solution_edge_cost)
-			.saturating_add(solution_squared_cost)
+		// Same formula as SubstrateWeight, with RocksDbWeight DB costs.
+		submit_proof_dimension_weight(nodes, edges, solutions)
+			.saturating_add(RocksDbWeight::get().reads(SUBMIT_PROOF_READS))
+			.saturating_add(RocksDbWeight::get().writes(SUBMIT_PROOF_WRITES))
 	}
 
 	fn add_mineable_topology() -> Weight {
