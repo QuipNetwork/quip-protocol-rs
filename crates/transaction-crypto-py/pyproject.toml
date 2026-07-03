@@ -17,8 +17,15 @@ dynamic = ["version"]
 
 [tool.maturin]
 # Mixed layout: the Rust extension `_quip_signer` is dropped into the
-# `quip_signer` Python package living at py/quip-signer/, which re-exports it
-# and ships type stubs. That dir doubles as the submodule staging location.
+# `quip_signer` Python package under `python/`, which re-exports it and ships
+# type stubs. That dir also serves as the submodule/PYTHONPATH staging location
+# (`maturin develop` drops the built `.so` there).
+#
+# `python-source` MUST stay inside the crate tree. `maturin build` only packs a
+# python-source that lives under the manifest dir; an out-of-tree path (e.g.
+# `../../py/...`) is honored by `maturin develop`/`sdist` but silently dropped
+# from the built wheel, shipping the `.so` with no `__init__.py` (QUI-792). The
+# wheel-content guard in scripts/python-dists.sh fails the build if it regresses.
 module-name = "quip_signer._quip_signer"
-python-source = "../../py/quip-signer"
+python-source = "python"
 manifest-path = "Cargo.toml"

@@ -5,7 +5,7 @@
 # node builds. It still depends on the sp-free `transaction-crypto-core` by path.
 [package]
 name = "quip-transaction-crypto-py"
-version = "0.2.1"
+version = "0.2.2"
 license = "MIT-0"
 authors = ["Quip Network <roman@postquant.xyz>"]
 homepage = "https://www.quip.network/"
@@ -15,7 +15,7 @@ publish = false
 
 [lib]
 # The compiled extension is `_quip_signer`; the `quip_signer` Python package
-# (in py/quip-signer/) re-exports it. Mixed layout so type stubs ship too.
+# (under python/) re-exports it. Mixed layout so type stubs ship too.
 name = "_quip_signer"
 crate-type = ["cdylib"]
 

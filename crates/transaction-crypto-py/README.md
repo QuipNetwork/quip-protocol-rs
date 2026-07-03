@@ -22,7 +22,7 @@ If you can't use the published wheel — pinning to an unreleased commit, or
 building on an unsupported platform — vendor `quip-protocol-rs` as a git
 submodule (the same model the browser signer uses) and build the extension
 locally with [maturin](https://www.maturin.rs/). The build drops the
-git-ignored extension into `py/quip-signer/quip_signer/`.
+git-ignored extension into `crates/transaction-crypto-py/python/quip_signer/`.
 
 ```bash
 # from your downstream repo, with quip-protocol-rs pinned as a submodule:
@@ -33,7 +33,7 @@ pip install quip-protocol-rs/target/wheels/quip_signer-*.whl
 # ...or, for an editable/dev install:
 pip install -e quip-protocol-rs/crates/transaction-crypto-py
 # ...or add the staging dir to PYTHONPATH after `make py-signer-develop`:
-export PYTHONPATH="quip-protocol-rs/py/quip-signer:$PYTHONPATH"
+export PYTHONPATH="quip-protocol-rs/crates/transaction-crypto-py/python:$PYTHONPATH"
 ```
 
 The submodule pin must be pushed to origin to be shareable (same as the WASM
