@@ -6,7 +6,7 @@
 #   - test:      fmt / clippy / test / runtime release build on every MR;
 #                also the quip-signer PyPI dry-run (build wheels + twine check)
 #   - build:     build the quip-network-node container per architecture
-#                (amd64 + arm64), each on a native runner, on main/v0.2/tags
+#                (amd64 + arm64), each on a native runner, on release tags only
 #   - manifest:  stitch the per-arch images into a multi-arch manifest list so
 #                a single tag serves both architectures
 #   - release:   publish the quip-signer abi3 wheels + sdist to PyPI on release
@@ -14,9 +14,10 @@
 #
 # Triggers:
 #   - merge_request_event  →  test (incl. PyPI dry-run)
-#   - push to main         →  test + build + manifest (:latest)
-#   - push to v0.2         →  test + build + manifest (:v0.2)
-#   - git tag (/^v\d/)     →  test + build + manifest (:<tag> + floating :<vMAJOR.MINOR>)
+#   - push to main         →  test
+#   - push to v0.2         →  test
+#   - git tag on v0.2      →  test + build + manifest (:<tag> + :v0.2 + :sha-*)
+#   - git tag on main      →  test + build + manifest (:<tag> + :latest + :sha-*)
 #                             + release:publish-testpypi (auto)
 #                             + release:publish-pypi (manual promote)
 #
@@ -160,17 +161,14 @@ py-signer-test:
     - cargo clippy -p quip-transaction-crypto-py --manifest-path crates/transaction-crypto-py/Cargo.toml --all-targets -- -D warnings
     - make py-signer-test
 
-# Shared publish rules: which branches/tags publish, and the PRIMARY_TAG each
-# maps to. Referenced (not inherited) by the build jobs and the manifest job so
-# all three resolve the same PRIMARY_TAG for a given pipeline.
+# Shared publish rules. Container images are published on release tags ONLY —
+# branch pushes (main/v0.2 merges) never build or push images. The floating
+# consumer tag depends on which branch the tag was cut from (resolved by
+# resolve-floating-tag): v0.2 releases float :v0.2, main releases float
+# :latest. Referenced (not inherited) by the build jobs and the manifest job
+# so all resolve the same PRIMARY_TAG for a given pipeline.
 .publish-rules:
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-      variables:
-        PRIMARY_TAG: latest
-    - if: $CI_COMMIT_BRANCH == "v0.2"
-      variables:
-        PRIMARY_TAG: v0.2
     - if: $CI_COMMIT_TAG
       variables:
         PRIMARY_TAG: $CI_COMMIT_TAG
@@ -250,15 +248,48 @@ kaniko-build-arm64:
     # Disable it so layers stream to disk instead of accumulating in memory.
     KANIKO_EXTRA: "--compressed-caching=false"
 
+# Maps the release tag to its floating consumer tag by branch membership:
+# tags cut on v0.2 → :v0.2, tags cut on main → :latest. Tag pipelines carry no
+# branch variable (CI_COMMIT_BRANCH is empty), so commit ancestry decides;
+# v0.2 is checked first so a v0.2 release that was also merged up to main
+# still floats :v0.2. A tag reachable from neither branch gets no floating
+# tag (only :<tag> and :sha-*). GIT_DEPTH 0 forces a full clone — merge-base
+# needs real ancestry, not a shallow tip.
+resolve-floating-tag:
+  stage: build
+  needs: []
+  rules: !reference [.publish-rules, rules]
+  image:
+    name: alpine/git:latest
+    entrypoint: [""]
+  tags: [docker, amd64]
+  interruptible: true
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - git fetch origin main v0.2
+    - |
+      FLOATING_TAG=""
+      if git merge-base --is-ancestor "$CI_COMMIT_SHA" origin/v0.2; then
+        FLOATING_TAG="v0.2"
+      elif git merge-base --is-ancestor "$CI_COMMIT_SHA" origin/main; then
+        FLOATING_TAG="latest"
+      fi
+      echo "FLOATING_TAG=$FLOATING_TAG" > floating-tag.env
+      echo "resolved FLOATING_TAG='$FLOATING_TAG' for $CI_COMMIT_TAG ($CI_COMMIT_SHA)"
+  artifacts:
+    reports:
+      dotenv: floating-tag.env
+
 # Combine the per-arch images into a multi-arch manifest list. manifest-tool
 # replaces the literal `ARCH` token in --template with each platform's arch
 # (amd64 / arm64), matching the arch-suffixed tags the build jobs pushed, and
-# stamps the assembled index with the consumer-facing tags: PRIMARY_TAG, the
-# commit-sha tag, and (on release tags) the floating minor-series tag
-# (e.g. v0.2.1-rc18 → :v0.2). kaniko's debug image ships busybox sh/grep with -oE.
+# stamps the assembled index with the consumer-facing tags: PRIMARY_TAG (the
+# release tag), the commit-sha tag, and the branch-derived floating tag from
+# resolve-floating-tag (:v0.2 for v0.2 releases, :latest for main releases).
 manifest:
   stage: manifest
-  needs: [kaniko-build-amd64, kaniko-build-arm64]
+  needs: [kaniko-build-amd64, kaniko-build-arm64, resolve-floating-tag]
   image:
     name: mplatform/manifest-tool:alpine
     entrypoint: [""]
@@ -268,9 +299,8 @@ manifest:
   script:
     - |
       ADDL_TAGS="sha-$CI_COMMIT_SHORT_SHA"
-      if [ -n "$CI_COMMIT_TAG" ]; then
-        SERIES_TAG=$(printf '%s' "$CI_COMMIT_TAG" | grep -oE '^v[0-9]+\.[0-9]+' || true)
-        [ -n "$SERIES_TAG" ] && ADDL_TAGS="$ADDL_TAGS,$SERIES_TAG"
+      if [ -n "$FLOATING_TAG" ]; then
+        ADDL_TAGS="$ADDL_TAGS,$FLOATING_TAG"
       fi
       manifest-tool \
         --username "$CI_REGISTRY_USER" \
@@ -305,10 +335,9 @@ manifest:
 # version is the pyproject/Cargo version, bumped per release so the tag matches.
 
 # Run on pushed release tags like v0.2.1, v0.3.0-rc1, … (the same `v*` stream
-# that releases the node container; the wheel publish is tag-only — never on the
-# v0.2/main branch pushes that publish the container) AND only once publishing
-# is enabled (QUIP_SIGNER_PUBLISH). The gate keeps an unconfigured publish from
-# reding the node release pipeline during Phase 1.
+# that releases the node container — both publishes are tag-only) AND only once
+# publishing is enabled (QUIP_SIGNER_PUBLISH). The gate keeps an unconfigured
+# publish from reding the node release pipeline during Phase 1.
 .on-release-tag:
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
