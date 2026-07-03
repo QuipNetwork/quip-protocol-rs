@@ -111,6 +111,58 @@ for whl in "${DIST}"/*.whl; do
 	done
 done
 
+# Import smoke test (QUI-793). The content guard above proves the surface
+# *files* are packed; this proves the built wheel actually *imports and runs*
+# from a clean install -- catching what a file check can't (a broken extension,
+# an ABI/symbol mismatch, a bad re-export). It installs into a throwaway venv
+# with the repo source NOT on the path, so -- unlike the pytest suite, which
+# runs against `maturin develop` (the editable source tree) -- it exercises the
+# artifact a `pip install quip-signer` user actually gets. That develop-vs-wheel
+# gap is exactly what let QUI-792 ship. On the shared path, so it also gates the
+# publish jobs (the tag pipeline runs `publish`, never `check`).
+#
+# `--no-index --only-binary=:all:` installs strictly from our built wheels --
+# never PyPI, never an sdist compile fallback that could mask a broken wheel.
+# pip resolves the one wheel matching this host's tag; the cross-built aarch64
+# wheel is not importable here and is skipped by tag.
+smoke_root="$(mktemp -d)"
+trap 'rm -rf "${smoke_root}"' EXIT
+python3 -m venv "${smoke_root}/venv"
+"${smoke_root}/venv/bin/pip" install --quiet --disable-pip-version-check \
+	--no-index --only-binary=:all: --find-links "${DIST}" quip-signer
+# Run from the venv dir so no stray `quip_signer/` in CWD can shadow the install.
+( cd "${smoke_root}/venv" && "${smoke_root}/venv/bin/python" - <<'PY'
+from quip_signer import (
+    HybridSigner,
+    account_id_from_public,
+    public_from_seed,
+    seed_from_mnemonic,
+    sign_payload_from_seed,
+    verify_envelope,
+)
+
+payload = b"quip-signer wheel smoke test"
+
+# Object surface: mnemonic -> sign -> verify, and the documented byte lengths.
+signer = HybridSigner.from_mnemonic(
+    "bottom drive obey lake curtain smoke basket hold race lonely fit walk"
+)
+assert len(signer.public_key) == 1344, "unexpected public key length"
+assert len(signer.account_id) == 32, "unexpected account id length"
+assert verify_envelope(payload, signer.sign(payload), signer.account_id), \
+    "object-path sign/verify failed"
+
+# Free-function surface: seed -> public -> account, and a seed-based round-trip.
+seed = seed_from_mnemonic("0x" + "07" * 32)
+account = account_id_from_public(public_from_seed(seed))
+assert account == HybridSigner.from_seed(seed).account_id, "account derivation mismatch"
+assert verify_envelope(payload, sign_payload_from_seed(seed, payload), account), \
+    "free-function sign/verify failed"
+
+print("quip-signer wheel smoke test: import + sign/verify OK")
+PY
+)
+
 if [[ "${mode}" == "check" ]]; then
 	twine check "${DIST}"/*
 	exit 0

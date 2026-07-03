@@ -20,6 +20,12 @@ tag v0.X.Y  ──▶  release:publish-testpypi   (auto)   → TestPyPI
 - The dry-run (`release:dry-run-pypi`) runs on **every MR/push**: it builds all
   three artefacts and runs `twine check`, so a packaging regression fails an MR
   rather than a tag pipeline.
+- Every build (dry-run **and** publish) also guards the wheel beyond `twine
+  check`, which only reads metadata: it asserts each wheel carries a
+  manylinux/musllinux platform tag, asserts the `quip_signer` Python surface is
+  packed (QUI-792), and import-smoke-tests the host wheel in a throwaway venv —
+  install + `import quip_signer` + a sign/verify round-trip (QUI-793). A wheel
+  that builds but can't import fails the build before any upload.
 - On a release tag, TestPyPI publishes automatically. PyPI is a **manual
   "promote" button** in the same pipeline — click it once the TestPyPI wheel is
   verified.
