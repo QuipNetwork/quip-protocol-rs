@@ -116,14 +116,20 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // V1 is unaffected and V2 was not yet deployed, so `transaction_version`
     // stays at 4 and no new migration is needed (the v1 → v2 migration already
     // wipes descriptors; pallet storage version stays 2).
-    // Also under 110: `QuantumPow.QBlock` gains a trailing `topology_hash` so a
-    // block records which topology it was mined against. This changes the
-    // persisted `QBlocks` value layout, so QuantumPow pallet storage version
-    // goes 3 → 4 with a v3 → v4 migration that re-encodes existing entries,
-    // backfilling `topology_hash` with the default topology. Read-only runtime
-    // API shape change (`QBlock`/`QBlockWithNonce`); no call encodings change,
-    // so `transaction_version` stays at 4.
-    spec_version: 110,
+    // Bumped to 111 (110 had already shipped in v0.2.1-rc11 when these
+    // landed) for two QuantumPow changes:
+    // - `QBlock` gains a trailing `topology_hash` so a block records which
+    //   topology it was mined against. This changes the persisted `QBlocks`
+    //   value layout, so QuantumPow pallet storage version goes 3 → 4 with a
+    //   v3 → v4 migration that re-encodes existing entries, backfilling
+    //   `topology_hash` with the default topology. Read-only runtime API
+    //   shape change (`QBlock`/`QBlockWithNonce`). Includes the sudo-only
+    //   per-topology curve `c` override (`set_topology_curve`, new call).
+    // - `submit_proof` weight becomes dimension-scaled (QIP-03): charged
+    //   weight now depends on the registered topology's node/edge counts and
+    //   the proof's solution count instead of a flat 60M placeholder.
+    // No existing call encodings change, so `transaction_version` stays at 4.
+    spec_version: 111,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 4,
