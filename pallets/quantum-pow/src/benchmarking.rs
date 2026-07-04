@@ -134,6 +134,7 @@ fn valid_proof_for<T: Config>(
         nonce,
         salt,
         solutions,
+        device_access_time_us: 0,
     }
 }
 

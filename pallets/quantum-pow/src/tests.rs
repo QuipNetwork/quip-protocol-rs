@@ -200,6 +200,7 @@ fn finalize_winner(miner: u64, block_number: u64) {
         energy_milli: 0,
         salt: [0u8; 32],
         topology_hash: DefaultTopology::<Test>::get().unwrap_or_default(),
+        device_access_time_us: 0,
     });
     QuantumPow::on_finalize(block_number);
 }
@@ -255,6 +256,7 @@ fn proof_for(
         nonce,
         salt,
         solutions: bounded::<_, MaxSolutions>(solutions),
+        device_access_time_us: 0,
     }
 }
 
@@ -2209,6 +2211,7 @@ fn winning_topology_does_not_move_other_topology_difficulty() {
             energy_milli: -10_000,
             salt: [0u8; 32],
             topology_hash: hash_a,
+            device_access_time_us: 0,
         });
         QuantumPow::on_finalize(80);
 
@@ -2222,6 +2225,27 @@ fn winning_topology_does_not_move_other_topology_difficulty() {
             Some(diff_b),
             "B's difficulty must NOT move when A wins"
         );
+    });
+}
+
+#[test]
+fn qblock_persists_device_access_time() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        DefaultTopology::<Test>::put(hash);
+        System::set_block_number(80);
+        BlockBestProof::<Test>::put(ProofRecord {
+            miner: 1,
+            submitted_at: 80,
+            energy_milli: -10_000,
+            salt: [0u8; 32],
+            topology_hash: hash,
+            device_access_time_us: 1_234_567,
+        });
+        QuantumPow::on_finalize(80);
+
+        let qblock = QBlocks::<Test>::get(80).expect("qblock stored");
+        assert_eq!(qblock.device_access_time_us, 1_234_567);
     });
 }
 

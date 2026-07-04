@@ -596,6 +596,7 @@ pub mod pallet {
                     difficulty: active,
                     last_proof_block_hash,
                     topology_hash,
+                    device_access_time_us: record.device_access_time_us,
                 },
             );
             QBlockBlockById::<T>::insert(qblock_id, n);
@@ -968,6 +969,7 @@ pub mod pallet {
                 energy_milli: validation.best_energy_milli,
                 salt: proof.salt,
                 topology_hash: proof.topology_hash,
+                device_access_time_us: proof.device_access_time_us,
             };
 
             let should_replace = match BlockBestProof::<T>::get() {
@@ -1468,6 +1470,7 @@ pub(crate) mod migration {
                         difficulty: old.difficulty,
                         last_proof_block_hash: old.last_proof_block_hash,
                         topology_hash: backfill,
+                        device_access_time_us: 0,
                     })
                 },
             );
