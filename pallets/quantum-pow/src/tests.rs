@@ -964,8 +964,8 @@ fn migration_v2_to_v3_carries_difficulty_and_whitelists_default() {
             frame_support::storage::unhashed::get::<DifficultyConfig>(&old_key).is_none(),
             "old global value removed"
         );
-        // on_runtime_upgrade steps cumulatively through v4.
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(4));
+        // on_runtime_upgrade steps cumulatively through v5.
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
         // The live threshold for the default now equals the carried value.
         assert_eq!(
             QuantumPow::current_difficulty_for(hash, System::block_number()),
@@ -1103,7 +1103,7 @@ fn repeated_same_winner_forces_easing() {
 }
 
 #[test]
-fn migration_below_v2_wipes_then_bumps_to_v4() {
+fn migration_below_v2_wipes_then_bumps_to_v5() {
     new_test_ext().execute_with(|| {
         let (_, _, hash) = registered_topology();
         QBlockCount::<Test>::put(9);
@@ -1115,7 +1115,7 @@ fn migration_below_v2_wipes_then_bumps_to_v4() {
         assert_eq!(DefaultTopology::<Test>::get(), None);
         assert_eq!(QBlockCount::<Test>::get(), 0);
         assert!(!MineableTopologies::<Test>::contains_key(hash));
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(4));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
     });
 }
 
@@ -1133,14 +1133,14 @@ struct OldQBlockV3 {
 }
 
 #[test]
-fn migration_v3_to_v4_backfills_qblock_topology() {
+fn migration_pre_v4_backfills_topology_and_device_time() {
     new_test_ext().execute_with(|| {
         let (_, _, hash) = registered_topology();
         DefaultTopology::<Test>::put(hash);
         StorageVersion::new(3).put::<QuantumPow>();
 
         // A stale pre-111 BlockBestProof would decode-fail post-upgrade
-        // (ProofRecord gained a trailing field); v4 kills it like v3 did.
+        // (ProofRecord gained trailing fields); v5 kills it like v3 did.
         let old_record_key =
             frame_support::storage::storage_prefix(b"QuantumPow", b"BlockBestProof");
         frame_support::storage::unhashed::put(&old_record_key, &[7u8; 4]);
@@ -1168,7 +1168,7 @@ fn migration_v3_to_v4_backfills_qblock_topology() {
             "kill() must remove the raw BlockBestProof bytes, not just decode to None"
         );
 
-        let migrated = QBlocks::<Test>::get(block).expect("qblock survives the v4 re-encode");
+        let migrated = QBlocks::<Test>::get(block).expect("qblock survives the v5 re-encode");
         assert_eq!(migrated.miner, 1);
         assert_eq!(migrated.salt, [3u8; 32]);
         assert_eq!(migrated.energy_milli, -42_000);
@@ -1180,14 +1180,68 @@ fn migration_v3_to_v4_backfills_qblock_topology() {
         );
         // Backfilled with the default topology — correct for a pre-binding block.
         assert_eq!(migrated.topology_hash, hash);
-        // Pre-111 blocks carry no self-reported compute time — backfilled 0.
+        // Pre-112 blocks carry no self-reported compute time — backfilled 0.
         assert_eq!(migrated.device_access_time_us, 0);
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(4));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
+    });
+}
+
+/// Shipped-v4 `QBlock` layout (`topology_hash`, no `device_access_time_us`) —
+/// the shape the deployed spec-111 chain holds — used to plant an entry so
+/// the v4 → v5 append can be exercised end-to-end.
+#[derive(codec::Encode)]
+struct OldQBlockV4 {
+    miner: u64,
+    salt: [u8; 32],
+    energy_milli: i64,
+    reward: u128,
+    submitted_at: u64,
+    difficulty: DifficultyConfig,
+    last_proof_block_hash: sp_core::H256,
+    topology_hash: sp_core::H256,
+}
+
+#[test]
+fn migration_v4_to_v5_appends_device_time_preserving_topology() {
+    new_test_ext().execute_with(|| {
+        let (_, _, default_hash) = registered_topology();
+        DefaultTopology::<Test>::put(default_hash);
+        StorageVersion::new(4).put::<QuantumPow>();
+
+        // The planted block records a NON-default topology: the v4 → v5 path
+        // must preserve it, not re-backfill with the default.
+        let recorded = sp_core::H256::repeat_byte(0xCD);
+        let block: u64 = 11;
+        let old = OldQBlockV4 {
+            miner: 2,
+            salt: [4u8; 32],
+            energy_milli: -13_000,
+            reward: 75,
+            submitted_at: block,
+            difficulty: easy_difficulty(),
+            last_proof_block_hash: sp_core::H256::repeat_byte(8),
+            topology_hash: recorded,
+        };
+        let key = QBlocks::<Test>::hashed_key_for(block);
+        frame_support::storage::unhashed::put(&key, &old);
+
+        QuantumPow::on_runtime_upgrade();
+
+        let migrated = QBlocks::<Test>::get(block).expect("qblock survives the v5 append");
+        assert_eq!(migrated.miner, 2);
+        assert_eq!(migrated.energy_milli, -13_000);
+        assert_eq!(migrated.reward, 75);
+        assert_eq!(
+            migrated.topology_hash, recorded,
+            "v4 → v5 must preserve the stored topology, not backfill the default"
+        );
+        assert_eq!(migrated.device_access_time_us, 0);
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
     });
 }
 
 #[test]
-fn migration_noop_at_v4() {
+fn migration_noop_at_v5() {
     new_test_ext().execute_with(|| {
         let (_, _, hash) = registered_topology();
         let d = DifficultyConfig {
@@ -1197,14 +1251,14 @@ fn migration_noop_at_v4() {
         };
         Difficulties::<Test>::insert(hash, d);
         QBlockCount::<Test>::put(9);
-        StorageVersion::new(4).put::<QuantumPow>();
+        StorageVersion::new(5).put::<QuantumPow>();
 
         QuantumPow::on_runtime_upgrade();
 
         assert!(RegisteredTopologies::<Test>::contains_key(hash));
         assert_eq!(Difficulties::<Test>::get(hash), Some(d));
         assert_eq!(QBlockCount::<Test>::get(), 9);
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(4));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
     });
 }
 
