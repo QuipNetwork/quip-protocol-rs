@@ -731,17 +731,21 @@ fn better_proof_replaces_worse_proof() {
         let (nodes, edges, topology_hash) = registered_topology();
         set_difficulty_default(easy_difficulty());
 
-        let worse = proof_for(1, &nodes, &edges, topology_hash, &[3]);
-        let better = proof_for(2, &nodes, &edges, topology_hash, &[0]);
+        let mut worse = proof_for(1, &nodes, &edges, topology_hash, &[3]);
+        worse.device_access_time_us = 111;
+        let mut better = proof_for(2, &nodes, &edges, topology_hash, &[0]);
+        better.device_access_time_us = 777;
 
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), worse));
         let first = BlockBestProof::<Test>::get().unwrap();
+        assert_eq!(first.device_access_time_us, 111);
 
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(2), better));
         let second = BlockBestProof::<Test>::get().unwrap();
 
         assert!(second.energy_milli <= first.energy_milli);
         assert_eq!(second.miner, 2);
+        assert_eq!(second.device_access_time_us, 777);
     });
 }
 
