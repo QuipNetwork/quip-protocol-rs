@@ -117,7 +117,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // stays at 4 and no new migration is needed (the v1 → v2 migration already
     // wipes descriptors; pallet storage version stays 2).
     // Bumped to 111 (110 had already shipped in v0.2.1-rc11 when these
-    // landed) for two QuantumPow changes:
+    // landed) for two QuantumPow changes — this is what the chain deployed:
     // - `QBlock` gains a trailing `topology_hash` so a block records which
     //   topology it was mined against. This changes the persisted `QBlocks`
     //   value layout, so QuantumPow pallet storage version goes 3 → 4 with a
@@ -128,15 +128,18 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // - `submit_proof` weight becomes dimension-scaled (QIP-03): charged
     //   weight now depends on the registered topology's node/edge counts and
     //   the proof's solution count instead of a flat 60M placeholder.
-    // - `QuantumProof` gains a trailing `device_access_time_us: u64`
-    //   (miner-reported compute time: QPU access time for QPU wins, wall
-    //   clock for CPU/GPU), carried through `ProofRecord` and persisted as a
-    //   trailing field on `QBlock` (same v3 → v4 re-encode migration,
-    //   backfilled with 0). Read-only runtime API shape change
-    //   (`QBlock`/`QBlockWithNonce`) on top of the topology_hash one above.
-    // `submit_proof`'s argument encoding changed, so `transaction_version`
-    // moves to 5.
-    spec_version: 111,
+    // No call encodings changed in 111, so `transaction_version` stayed at 4.
+    // Bumped to 112 (111 was already deployed when this landed):
+    // `QuantumProof` gains a trailing `device_access_time_us: u64`
+    // (miner-reported compute time: QPU access time for QPU wins, wall clock
+    // for CPU/GPU), carried through `ProofRecord` and persisted as a trailing
+    // field on `QBlock`. QuantumPow pallet storage version goes 4 → 5: the
+    // deployed-v4 path appends `device_access_time_us = 0` preserving each
+    // block's stored `topology_hash`; the pre-v4 path re-encodes from the
+    // 7-field layout backfilling both trailing fields. Read-only runtime API
+    // shape change (`QBlock`/`QBlockWithNonce`). `submit_proof`'s argument
+    // encoding changed, so `transaction_version` moves to 5.
+    spec_version: 112,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
     transaction_version: 5,

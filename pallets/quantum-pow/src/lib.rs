@@ -143,7 +143,7 @@ pub mod pallet {
     use sp_core::H256;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
 
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(4);
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(5);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -443,18 +443,32 @@ pub mod pallet {
         /// - on-chain `< 2`: legacy v0.2 wipe (old encodings cannot be
         ///   carried), then proceed with empty per-topology state.
         ///
-        /// v3 → v4: `QBlock` gains trailing `topology_hash` and
-        /// `device_access_time_us`. Existing entries were encoded without
-        /// them and would otherwise fail to decode (silently reading back as
-        /// `None`), so every `QBlocks` value is re-encoded — `topology_hash`
-        /// backfilled with the default topology (the only topology mineable
-        /// before per-topology binding), `device_access_time_us` with 0
-        /// (never reported pre-111). Stale `BlockBestProof` is killed
-        /// (`ProofRecord` also changed shape).
+        /// v3 → v4 (SHIPPED in spec 111): `QBlock` gained a trailing
+        /// `topology_hash`. The deployed 111 chain is at storage v4 with
+        /// entries in that 8-field layout.
         ///
-        /// The steps are cumulative: a v2 chain runs v3 then v4; a v3 chain
-        /// runs only v4; a `< 2` chain wipes (which clears `QBlocks`, leaving
-        /// v4 nothing to translate).
+        /// v4 → v5 (spec 112): `QBlock` gains a trailing
+        /// `device_access_time_us`. Entries encoded without it would fail to
+        /// decode (silently reading back as `None`), so every `QBlocks` value
+        /// is re-encoded with `device_access_time_us = 0` (never reported
+        /// pre-112). Two entry paths:
+        ///
+        /// - on-chain `== 4` (the deployed 111 chain): entries already carry
+        ///   `topology_hash`; only the device time is appended, preserving
+        ///   the stored per-block topology.
+        /// - on-chain `< 4` (chains coming through the v3 step): entries are
+        ///   in the 7-field pre-topology layout; both `topology_hash`
+        ///   (backfilled with the default topology — the only topology
+        ///   mineable before per-topology binding) and the device time are
+        ///   appended in a single re-encode.
+        ///
+        /// Both paths kill any stale `BlockBestProof` (`ProofRecord` also
+        /// changed shape).
+        ///
+        /// The steps are cumulative: a v2 chain runs v3 then the combined
+        /// v5 backfill; a v4 chain runs only the device-time append; a `< 2`
+        /// chain wipes (which clears `QBlocks`, leaving nothing to
+        /// translate).
         fn on_runtime_upgrade() -> Weight {
             let on_chain = Pallet::<T>::on_chain_storage_version();
             if on_chain >= STORAGE_VERSION {
@@ -471,7 +485,11 @@ pub mod pallet {
                 });
             }
 
-            weight = weight.saturating_add(crate::migration::v4::backfill_qblock_fields::<T>());
+            weight = weight.saturating_add(if on_chain == StorageVersion::new(4) {
+                crate::migration::v5::append_device_time::<T>()
+            } else {
+                crate::migration::v5::backfill_from_pre_topology::<T>()
+            });
 
             STORAGE_VERSION.put::<Pallet<T>>();
             weight.saturating_add(T::DbWeight::get().reads_writes(1, 1))
@@ -496,15 +514,15 @@ pub mod pallet {
         fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
             ensure!(
                 Pallet::<T>::on_chain_storage_version() >= STORAGE_VERSION,
-                "storage version must be >= 4 after upgrade"
+                "storage version must be >= 5 after upgrade"
             );
             let (was_v2, default, qblocks_before): (bool, Option<H256>, u64) =
                 Decode::decode(&mut &state[..]).map_err(|_| "pre_upgrade state decode failed")?;
-            // Every qblock must survive the v4 re-encode and now decode under
+            // Every qblock must survive the v5 re-encode and now decode under
             // the new layout. A count mismatch means an entry was dropped.
             ensure!(
                 QBlocks::<T>::iter().count() as u64 == qblocks_before,
-                "v3→v4 must preserve every QBlocks entry"
+                "the v5 re-encode must preserve every QBlocks entry"
             );
             if was_v2 {
                 // The old global `Difficulty` value must be gone.
@@ -1430,7 +1448,7 @@ pub(crate) mod migration {
         }
     }
 
-    pub(crate) mod v4 {
+    pub(crate) mod v5 {
         use crate::pallet::{Config, QBlocks};
         use crate::{types, AccountIdOf, BalanceOf, BlockNumberOf, DefaultTopology};
         use codec::Decode;
@@ -1438,11 +1456,12 @@ pub(crate) mod migration {
         use frame_support::weights::Weight;
         use sp_core::H256;
 
-        /// The pre-v4 `QBlock` layout: identical to [`types::QBlock`] minus the
-        /// trailing `topology_hash`. Kept only so existing entries can be
-        /// decoded and re-encoded with the new field appended.
+        /// The pre-v4 (pre-topology) `QBlock` layout: [`types::QBlock`] minus
+        /// the trailing `topology_hash` and `device_access_time_us`. Kept only
+        /// so entries from chains that never ran the v4 step can be decoded
+        /// and re-encoded with both fields appended.
         #[derive(Decode)]
-        struct OldQBlock<AccountId, Balance, BlockNumber> {
+        struct PreTopologyQBlock<AccountId, Balance, BlockNumber> {
             miner: AccountId,
             salt: [u8; 32],
             energy_milli: i64,
@@ -1452,21 +1471,68 @@ pub(crate) mod migration {
             last_proof_block_hash: H256,
         }
 
-        /// 3 → 4: re-encode every `QBlocks` entry, backfilling the two fields
-        /// added since the deployed layout: `topology_hash` with the default
+        /// The v4 `QBlock` layout as SHIPPED in spec 111 (the deployed
+        /// chain): carries `topology_hash` but not `device_access_time_us`.
+        #[derive(Decode)]
+        struct V4QBlock<AccountId, Balance, BlockNumber> {
+            miner: AccountId,
+            salt: [u8; 32],
+            energy_milli: i64,
+            reward: Balance,
+            submitted_at: BlockNumber,
+            difficulty: types::DifficultyConfig,
+            last_proof_block_hash: H256,
+            topology_hash: H256,
+        }
+
+        /// Kill any stale `BlockBestProof`: `ProofRecord` gained a trailing
+        /// field, and while the value is always empty across an upgrade
+        /// boundary (`on_finalize` take()s it every block) and OptionQuery
+        /// decode failure reads as `None`, `kill()` removes all doubt for
+        /// free — same reasoning as the v3 step.
+        fn kill_stale_best_proof<T: Config>() {
+            crate::BlockBestProof::<T>::kill();
+        }
+
+        /// `< 4` → 5: re-encode every `QBlocks` entry from the 7-field
+        /// pre-topology layout, backfilling `topology_hash` with the default
         /// topology (`H256::zero()` when none is set — blocks won before
         /// per-topology binding were all mined against the default, so this
         /// is the historically-correct value) and `device_access_time_us`
-        /// with 0 (pre-111 miners never reported compute time). Also kills
-        /// any stale `BlockBestProof`: `ProofRecord` gained a trailing field,
-        /// and while the value is always empty across an upgrade boundary
-        /// (`on_finalize` take()s it every block) and OptionQuery decode
-        /// failure reads as `None`, `kill()` removes all doubt for free —
-        /// same reasoning as the v3 step.
-        pub(crate) fn backfill_qblock_fields<T: Config>() -> Weight {
+        /// with 0 (never reported before spec 112).
+        pub(crate) fn backfill_from_pre_topology<T: Config>() -> Weight {
             let backfill = DefaultTopology::<T>::get().unwrap_or_default();
             let mut count = 0u64;
-            QBlocks::<T>::translate::<OldQBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>, _>(
+            QBlocks::<T>::translate::<
+                PreTopologyQBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>,
+                _,
+            >(|_block, old| {
+                count = count.saturating_add(1);
+                Some(types::QBlock {
+                    miner: old.miner,
+                    salt: old.salt,
+                    energy_milli: old.energy_milli,
+                    reward: old.reward,
+                    submitted_at: old.submitted_at,
+                    difficulty: old.difficulty,
+                    last_proof_block_hash: old.last_proof_block_hash,
+                    topology_hash: backfill,
+                    device_access_time_us: 0,
+                })
+            });
+            kill_stale_best_proof::<T>();
+            // One read + one write per entry, plus the `DefaultTopology`
+            // read and the `BlockBestProof` kill.
+            T::DbWeight::get().reads_writes(count.saturating_add(1), count.saturating_add(1))
+        }
+
+        /// 4 → 5: re-encode every `QBlocks` entry from the shipped v4 layout,
+        /// appending `device_access_time_us = 0` and PRESERVING the stored
+        /// `topology_hash` — post-binding blocks may record non-default
+        /// topologies, so no backfill here.
+        pub(crate) fn append_device_time<T: Config>() -> Weight {
+            let mut count = 0u64;
+            QBlocks::<T>::translate::<V4QBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>, _>(
                 |_block, old| {
                     count = count.saturating_add(1);
                     Some(types::QBlock {
@@ -1477,15 +1543,14 @@ pub(crate) mod migration {
                         submitted_at: old.submitted_at,
                         difficulty: old.difficulty,
                         last_proof_block_hash: old.last_proof_block_hash,
-                        topology_hash: backfill,
+                        topology_hash: old.topology_hash,
                         device_access_time_us: 0,
                     })
                 },
             );
-            crate::BlockBestProof::<T>::kill();
-            // One read + one write per entry, plus the `DefaultTopology`
-            // read and the `BlockBestProof` kill.
-            T::DbWeight::get().reads_writes(count.saturating_add(1), count.saturating_add(1))
+            kill_stale_best_proof::<T>();
+            // One read + one write per entry, plus the `BlockBestProof` kill.
+            T::DbWeight::get().reads_writes(count, count.saturating_add(1))
         }
     }
 }
