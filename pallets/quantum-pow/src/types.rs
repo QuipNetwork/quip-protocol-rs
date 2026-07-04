@@ -30,6 +30,13 @@ pub struct QuantumProof<PackedSolutions> {
     pub nonce: U256,
     pub salt: [u8; 32],
     pub solutions: PackedSolutions,
+    /// Miner-reported compute time spent producing this proof, in
+    /// microseconds. QPU miners report the summed D-Wave QPU access time
+    /// across the solution's attempts; CPU/GPU miners report wall-clock
+    /// mining time. Self-reported observability (same trust model as
+    /// `MinerRegistry.participate`'s `budget_seconds`) — the chain cannot
+    /// verify it and consensus never reads it. `0` = unreported.
+    pub device_access_time_us: u64,
 }
 
 #[derive(
@@ -126,6 +133,11 @@ pub struct ProofRecord<AccountId, BlockNumber> {
     /// Topology the winning proof was mined against. `on_finalize` adjusts
     /// the difficulty entry for *this* topology only — never another's.
     pub topology_hash: H256,
+    /// Miner-reported compute time from the accepted proof, in microseconds
+    /// (see `QuantumProof::device_access_time_us`). Carried here so
+    /// `on_finalize` can persist it into `QBlocks` without re-reading the
+    /// extrinsic body.
+    pub device_access_time_us: u64,
 }
 
 #[derive(
@@ -204,6 +216,14 @@ pub struct QBlock<AccountId, Balance, BlockNumber> {
     /// (prunable) `DifficultyUpdated` event, and keeps `difficulty` above
     /// interpretable against the curve it was computed from.
     pub topology_hash: H256,
+    /// Miner-reported compute time spent producing the winning proof, in
+    /// microseconds — QPU access time for QPU wins, wall clock for CPU/GPU
+    /// wins. Copied from the accepted [`ProofRecord`]. Self-reported and
+    /// unverifiable; `0` = unreported (including all pre-111 blocks, which
+    /// the v4 migration backfills with 0). Wall-clock mining duration
+    /// remains derivable from block spacing (`LastProofBlock` deltas), so
+    /// no information is lost by carrying compute time here instead.
+    pub device_access_time_us: u64,
 }
 
 /// Runtime-API view augmenting [`QBlock`] with the derived nonce.

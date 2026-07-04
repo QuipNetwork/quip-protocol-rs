@@ -128,11 +128,18 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
     // - `submit_proof` weight becomes dimension-scaled (QIP-03): charged
     //   weight now depends on the registered topology's node/edge counts and
     //   the proof's solution count instead of a flat 60M placeholder.
-    // No existing call encodings change, so `transaction_version` stays at 4.
+    // - `QuantumProof` gains a trailing `device_access_time_us: u64`
+    //   (miner-reported compute time: QPU access time for QPU wins, wall
+    //   clock for CPU/GPU), carried through `ProofRecord` and persisted as a
+    //   trailing field on `QBlock` (same v3 → v4 re-encode migration,
+    //   backfilled with 0). Read-only runtime API shape change
+    //   (`QBlock`/`QBlockWithNonce`) on top of the topology_hash one above.
+    // `submit_proof`'s argument encoding changed, so `transaction_version`
+    // moves to 5.
     spec_version: 111,
     impl_version: 1,
     apis: apis::RUNTIME_API_VERSIONS,
-    transaction_version: 4,
+    transaction_version: 5,
     system_version: 1,
 };
 

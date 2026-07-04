@@ -200,6 +200,7 @@ fn finalize_winner(miner: u64, block_number: u64) {
         energy_milli: 0,
         salt: [0u8; 32],
         topology_hash: DefaultTopology::<Test>::get().unwrap_or_default(),
+        device_access_time_us: 0,
     });
     QuantumPow::on_finalize(block_number);
 }
@@ -255,6 +256,7 @@ fn proof_for(
         nonce,
         salt,
         solutions: bounded::<_, MaxSolutions>(solutions),
+        device_access_time_us: 0,
     }
 }
 
@@ -729,17 +731,21 @@ fn better_proof_replaces_worse_proof() {
         let (nodes, edges, topology_hash) = registered_topology();
         set_difficulty_default(easy_difficulty());
 
-        let worse = proof_for(1, &nodes, &edges, topology_hash, &[3]);
-        let better = proof_for(2, &nodes, &edges, topology_hash, &[0]);
+        let mut worse = proof_for(1, &nodes, &edges, topology_hash, &[3]);
+        worse.device_access_time_us = 111;
+        let mut better = proof_for(2, &nodes, &edges, topology_hash, &[0]);
+        better.device_access_time_us = 777;
 
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), worse));
         let first = BlockBestProof::<Test>::get().unwrap();
+        assert_eq!(first.device_access_time_us, 111);
 
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(2), better));
         let second = BlockBestProof::<Test>::get().unwrap();
 
         assert!(second.energy_milli <= first.energy_milli);
         assert_eq!(second.miner, 2);
+        assert_eq!(second.device_access_time_us, 777);
     });
 }
 
@@ -1133,6 +1139,12 @@ fn migration_v3_to_v4_backfills_qblock_topology() {
         DefaultTopology::<Test>::put(hash);
         StorageVersion::new(3).put::<QuantumPow>();
 
+        // A stale pre-111 BlockBestProof would decode-fail post-upgrade
+        // (ProofRecord gained a trailing field); v4 kills it like v3 did.
+        let old_record_key =
+            frame_support::storage::storage_prefix(b"QuantumPow", b"BlockBestProof");
+        frame_support::storage::unhashed::put(&old_record_key, &[7u8; 4]);
+
         // Plant an old-layout qblock straight at its storage key so it decodes
         // only under the pre-v4 shape.
         let block: u64 = 7;
@@ -1150,6 +1162,12 @@ fn migration_v3_to_v4_backfills_qblock_topology() {
 
         QuantumPow::on_runtime_upgrade();
 
+        let raw = frame_support::storage::unhashed::get_raw(&old_record_key);
+        assert!(
+            raw.is_none(),
+            "kill() must remove the raw BlockBestProof bytes, not just decode to None"
+        );
+
         let migrated = QBlocks::<Test>::get(block).expect("qblock survives the v4 re-encode");
         assert_eq!(migrated.miner, 1);
         assert_eq!(migrated.salt, [3u8; 32]);
@@ -1162,6 +1180,8 @@ fn migration_v3_to_v4_backfills_qblock_topology() {
         );
         // Backfilled with the default topology — correct for a pre-binding block.
         assert_eq!(migrated.topology_hash, hash);
+        // Pre-111 blocks carry no self-reported compute time — backfilled 0.
+        assert_eq!(migrated.device_access_time_us, 0);
         assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(4));
     });
 }
@@ -2209,6 +2229,7 @@ fn winning_topology_does_not_move_other_topology_difficulty() {
             energy_milli: -10_000,
             salt: [0u8; 32],
             topology_hash: hash_a,
+            device_access_time_us: 0,
         });
         QuantumPow::on_finalize(80);
 
@@ -2222,6 +2243,27 @@ fn winning_topology_does_not_move_other_topology_difficulty() {
             Some(diff_b),
             "B's difficulty must NOT move when A wins"
         );
+    });
+}
+
+#[test]
+fn qblock_persists_device_access_time() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        DefaultTopology::<Test>::put(hash);
+        System::set_block_number(80);
+        BlockBestProof::<Test>::put(ProofRecord {
+            miner: 1,
+            submitted_at: 80,
+            energy_milli: -10_000,
+            salt: [0u8; 32],
+            topology_hash: hash,
+            device_access_time_us: 1_234_567,
+        });
+        QuantumPow::on_finalize(80);
+
+        let qblock = QBlocks::<Test>::get(80).expect("qblock stored");
+        assert_eq!(qblock.device_access_time_us, 1_234_567);
     });
 }
 
