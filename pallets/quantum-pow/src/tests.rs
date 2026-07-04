@@ -1135,6 +1135,12 @@ fn migration_v3_to_v4_backfills_qblock_topology() {
         DefaultTopology::<Test>::put(hash);
         StorageVersion::new(3).put::<QuantumPow>();
 
+        // A stale pre-111 BlockBestProof would decode-fail post-upgrade
+        // (ProofRecord gained a trailing field); v4 kills it like v3 did.
+        let old_record_key =
+            frame_support::storage::storage_prefix(b"QuantumPow", b"BlockBestProof");
+        frame_support::storage::unhashed::put(&old_record_key, &[7u8; 4]);
+
         // Plant an old-layout qblock straight at its storage key so it decodes
         // only under the pre-v4 shape.
         let block: u64 = 7;
@@ -1152,6 +1158,8 @@ fn migration_v3_to_v4_backfills_qblock_topology() {
 
         QuantumPow::on_runtime_upgrade();
 
+        assert!(BlockBestProof::<Test>::get().is_none());
+
         let migrated = QBlocks::<Test>::get(block).expect("qblock survives the v4 re-encode");
         assert_eq!(migrated.miner, 1);
         assert_eq!(migrated.salt, [3u8; 32]);
@@ -1164,6 +1172,8 @@ fn migration_v3_to_v4_backfills_qblock_topology() {
         );
         // Backfilled with the default topology — correct for a pre-binding block.
         assert_eq!(migrated.topology_hash, hash);
+        // Pre-111 blocks carry no self-reported compute time — backfilled 0.
+        assert_eq!(migrated.device_access_time_us, 0);
         assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(4));
     });
 }
