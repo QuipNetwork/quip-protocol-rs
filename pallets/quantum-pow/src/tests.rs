@@ -1158,7 +1158,11 @@ fn migration_v3_to_v4_backfills_qblock_topology() {
 
         QuantumPow::on_runtime_upgrade();
 
-        assert!(BlockBestProof::<Test>::get().is_none());
+        let raw = frame_support::storage::unhashed::get_raw(&old_record_key);
+        assert!(
+            raw.is_none(),
+            "kill() must remove the raw BlockBestProof bytes, not just decode to None"
+        );
 
         let migrated = QBlocks::<Test>::get(block).expect("qblock survives the v4 re-encode");
         assert_eq!(migrated.miner, 1);
