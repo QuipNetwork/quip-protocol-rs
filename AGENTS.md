@@ -134,7 +134,7 @@ Cross-repo standard — `quip-protocol/docs/VERSIONING.md` is canonical; `docs/r
 Rules:
 - Pre-release git tags MUST be hyphenated (`-rcN` / `-alphaN` / `-betaN`). Never the PEP 440 no-hyphen form (`v0.2.1rc18`) for a git tag: `quip-node-manager` orders release candidates by splitting on the hyphen, so a no-hyphen tag collapses every rc to one value and freezes node updates.
 - The `MAJOR.MINOR.PATCH` numerics must match `Cargo.toml`'s `version`; only the separator and the rc suffix differ. A Cargo SemVer pre-release, if ever set, is also hyphenated (`0.2.1-rc.18`).
-- CI (`.gitlab-ci.yml`): a pre-release tag publishes `:<tag>` + the rolling `:vMAJOR.MINOR` series and MUST NOT move `:latest`. Only `main` moves `:latest`; no tag (stable or pre-release) does.
+- CI (`.gitlab-ci.yml`): container images publish on release tags ONLY — branch pushes never build or push images. The floating tag follows the branch the tag was cut from (resolved by the `resolve-floating-tag` job via commit ancestry): a tag on `v0.2` publishes `:<tag>` + `:v0.2`, a tag on `main` publishes `:<tag>` + `:latest`, both plus `:sha-<short-sha>`.
 
 ## License
 

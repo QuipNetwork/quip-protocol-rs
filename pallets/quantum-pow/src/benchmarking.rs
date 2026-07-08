@@ -134,6 +134,7 @@ fn valid_proof_for<T: Config>(
         nonce,
         salt,
         solutions,
+        device_access_time_us: 0,
     }
 }
 
@@ -206,6 +207,21 @@ mod benchmarks {
         QuantumPow::set_difficulty(RawOrigin::Root, topology_hash, difficulty);
 
         assert_eq!(Difficulties::<T>::get(topology_hash), Some(difficulty));
+    }
+
+    #[benchmark]
+    fn set_topology_curve() {
+        let (_nodes, _edges, topology_hash) = register_topology_for::<T>();
+        let curve_c = crate::difficulty::CurveC {
+            easy_milli: 600,
+            knee_milli: 700,
+            hard_milli: 800,
+        };
+
+        #[extrinsic_call]
+        QuantumPow::set_topology_curve(RawOrigin::Root, topology_hash, curve_c);
+
+        assert_eq!(TopologyCurveC::<T>::get(topology_hash), Some(curve_c));
     }
 
     #[benchmark]

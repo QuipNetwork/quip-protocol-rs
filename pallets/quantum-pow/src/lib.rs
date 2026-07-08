@@ -143,7 +143,7 @@ pub mod pallet {
     use sp_core::H256;
     use sp_runtime::traits::{One, SaturatedConversion, Saturating, Zero};
 
-    const STORAGE_VERSION: StorageVersion = StorageVersion::new(3);
+    const STORAGE_VERSION: StorageVersion = StorageVersion::new(5);
 
     #[pallet::pallet]
     #[pallet::storage_version(STORAGE_VERSION)]
@@ -222,6 +222,16 @@ pub mod pallet {
     #[pallet::storage]
     pub type Difficulties<T: Config> =
         StorageMap<_, Blake2_128Concat, H256, types::DifficultyConfig>;
+
+    /// Per-topology curve `c` override, set by root via `set_topology_curve`.
+    /// When present, `energy_curve_for` builds the topology's energy curve from
+    /// these values instead of the runtime `CurveC*Milli` constants; an unset
+    /// topology falls back to the constants (the legacy behavior). Keyed by
+    /// `topology_hash` so the override is carried with the topology and a
+    /// `DefaultTopology` switch resolves the matching curve.
+    #[pallet::storage]
+    pub type TopologyCurveC<T: Config> =
+        StorageMap<_, Blake2_128Concat, H256, crate::difficulty::CurveC>;
 
     /// Root-controlled whitelist of topologies that may be mined: a topology
     /// must have an entry here for `submit_proof` to accept its solutions.
@@ -313,6 +323,12 @@ pub mod pallet {
         DefaultTopologySet {
             topology_hash: H256,
         },
+        /// Root set a per-topology curve `c` override; the topology's energy
+        /// curve is now calibrated from the stored override, not the runtime
+        /// constants.
+        TopologyCurveSet {
+            topology_hash: H256,
+        },
         TopologyMineableAdded {
             topology_hash: H256,
         },
@@ -341,6 +357,10 @@ pub mod pallet {
         MinerNotRegistered,
         TopologyAlreadyRegistered,
         TopologyNotRegistered,
+        /// A curve `c` override was rejected: the values are not strictly
+        /// ordered `easy < knee < hard`, or they do not yield a well-ordered
+        /// energy curve (`min < knee < max`) for the topology.
+        InvalidCurve,
         GraphTooSmall,
         InvalidTopology,
         ProofLimitReached,
@@ -412,26 +432,64 @@ pub mod pallet {
             <T as Config>::WeightInfo::register_miner()
         }
 
+        /// Cumulative storage migration to the in-code `STORAGE_VERSION`.
+        ///
         /// v2 → v3: difficulty becomes per-topology and a mineable whitelist
         /// is introduced.
         ///
-        /// - on-chain `>= 3`: nothing to do.
         /// - on-chain `== 2`: carry the single global `Difficulty` into
         ///   `Difficulties[DefaultTopology]`, seed `MineableTopologies` with
         ///   the default, and remove the old global value.
         /// - on-chain `< 2`: legacy v0.2 wipe (old encodings cannot be
-        ///   carried), then proceed to v3 with empty per-topology state.
+        ///   carried), then proceed with empty per-topology state.
+        ///
+        /// v3 → v4 (SHIPPED in spec 111): `QBlock` gained a trailing
+        /// `topology_hash`. The deployed 111 chain is at storage v4 with
+        /// entries in that 8-field layout.
+        ///
+        /// v4 → v5 (spec 112): `QBlock` gains a trailing
+        /// `device_access_time_us`. Entries encoded without it would fail to
+        /// decode (silently reading back as `None`), so every `QBlocks` value
+        /// is re-encoded with `device_access_time_us = 0` (never reported
+        /// pre-112). Two entry paths:
+        ///
+        /// - on-chain `== 4` (the deployed 111 chain): entries already carry
+        ///   `topology_hash`; only the device time is appended, preserving
+        ///   the stored per-block topology.
+        /// - on-chain `< 4` (chains coming through the v3 step): entries are
+        ///   in the 7-field pre-topology layout; both `topology_hash`
+        ///   (backfilled with the default topology — the only topology
+        ///   mineable before per-topology binding) and the device time are
+        ///   appended in a single re-encode.
+        ///
+        /// Both paths kill any stale `BlockBestProof` (`ProofRecord` also
+        /// changed shape).
+        ///
+        /// The steps are cumulative: a v2 chain runs v3 then the combined
+        /// v5 backfill; a v4 chain runs only the device-time append; a `< 2`
+        /// chain wipes (which clears `QBlocks`, leaving nothing to
+        /// translate).
         fn on_runtime_upgrade() -> Weight {
             let on_chain = Pallet::<T>::on_chain_storage_version();
             if on_chain >= STORAGE_VERSION {
                 return T::DbWeight::get().reads(1);
             }
 
-            let weight = if on_chain == StorageVersion::new(2) {
-                crate::migration::v3::carry_forward::<T>()
+            let mut weight = Weight::zero();
+
+            if on_chain < StorageVersion::new(3) {
+                weight = weight.saturating_add(if on_chain == StorageVersion::new(2) {
+                    crate::migration::v3::carry_forward::<T>()
+                } else {
+                    crate::migration::v3::wipe::<T>()
+                });
+            }
+
+            weight = weight.saturating_add(if on_chain == StorageVersion::new(4) {
+                crate::migration::v5::append_device_time::<T>()
             } else {
-                crate::migration::v3::wipe::<T>()
-            };
+                crate::migration::v5::backfill_from_pre_topology::<T>()
+            });
 
             STORAGE_VERSION.put::<Pallet<T>>();
             weight.saturating_add(T::DbWeight::get().reads_writes(1, 1))
@@ -444,17 +502,28 @@ pub mod pallet {
             // it. StorageVersion has no Into<u16> in this SDK fork; == is
             // available and a bool is Encode/Decode, so we use that.
             let was_v2 = Pallet::<T>::on_chain_storage_version() == StorageVersion::new(2);
-            Ok((was_v2, DefaultTopology::<T>::get()).encode())
+            // Count `QBlocks` entries via `iter_keys`, which decodes only the
+            // (unchanged) keys — safe against the old value layout. The v4
+            // translate must preserve this count exactly; a dropped entry
+            // means an old value failed to decode and was silently discarded.
+            let qblocks = QBlocks::<T>::iter_keys().count() as u64;
+            Ok((was_v2, DefaultTopology::<T>::get(), qblocks).encode())
         }
 
         #[cfg(feature = "try-runtime")]
         fn post_upgrade(state: Vec<u8>) -> Result<(), sp_runtime::TryRuntimeError> {
             ensure!(
                 Pallet::<T>::on_chain_storage_version() >= STORAGE_VERSION,
-                "storage version must be >= 3 after upgrade"
+                "storage version must be >= 5 after upgrade"
             );
-            let (was_v2, default): (bool, Option<H256>) =
+            let (was_v2, default, qblocks_before): (bool, Option<H256>, u64) =
                 Decode::decode(&mut &state[..]).map_err(|_| "pre_upgrade state decode failed")?;
+            // Every qblock must survive the v5 re-encode and now decode under
+            // the new layout. A count mismatch means an entry was dropped.
+            ensure!(
+                QBlocks::<T>::iter().count() as u64 == qblocks_before,
+                "the v5 re-encode must preserve every QBlocks entry"
+            );
             if was_v2 {
                 // The old global `Difficulty` value must be gone.
                 ensure!(
@@ -546,6 +615,8 @@ pub mod pallet {
                     submitted_at: record.submitted_at,
                     difficulty: active,
                     last_proof_block_hash,
+                    topology_hash,
+                    device_access_time_us: record.device_access_time_us,
                 },
             );
             QBlockBlockById::<T>::insert(qblock_id, n);
@@ -766,8 +837,74 @@ pub mod pallet {
             Ok(())
         }
 
+        /// Set (or replace) a topology's curve `c` override (root only).
+        ///
+        /// The override is calibrated against the topology's graph and value
+        /// specs and takes effect immediately for difficulty adjustment and
+        /// decay; an unset topology keeps using the runtime `CurveC*Milli`
+        /// constants. Changing a live topology's curve can leave its stored
+        /// `Difficulty.max_energy_milli` outside the new bounds — the geometric
+        /// adjustment converges it back over subsequent rounds, but operators
+        /// who need an immediate baseline should follow with `set_difficulty`.
+        #[pallet::call_index(8)]
+        #[pallet::weight(<T as Config>::WeightInfo::set_topology_curve())]
+        pub fn set_topology_curve(
+            origin: OriginFor<T>,
+            topology_hash: H256,
+            curve_c: crate::difficulty::CurveC,
+        ) -> DispatchResult {
+            ensure_root(origin)?;
+            let topology = RegisteredTopologies::<T>::get(topology_hash)
+                .ok_or(Error::<T>::TopologyNotRegistered)?;
+            // The `c` values must be strictly increasing easy -> knee -> hard,
+            // and must yield a well-ordered energy curve for this topology.
+            ensure!(
+                curve_c.easy_milli < curve_c.knee_milli && curve_c.knee_milli < curve_c.hard_milli,
+                Error::<T>::InvalidCurve
+            );
+            let curve = crate::difficulty::EnergyCurve::new(
+                topology.nodes.len() as u32,
+                topology.edges.len() as u32,
+                curve_c,
+                &topology.allowed_h_values.as_slice(),
+                &topology.allowed_j_values.as_slice(),
+            )
+            .map_err(|_| Error::<T>::InvalidCurve)?;
+            ensure!(
+                curve.min_milli < curve.knee_milli && curve.knee_milli < curve.max_milli,
+                Error::<T>::InvalidCurve
+            );
+            TopologyCurveC::<T>::insert(topology_hash, curve_c);
+            Self::deposit_event(Event::TopologyCurveSet { topology_hash });
+            Ok(())
+        }
+
         #[pallet::call_index(4)]
-        #[pallet::weight(<T as Config>::WeightInfo::submit_proof())]
+        #[pallet::weight({
+            // Calculate weight based on actual proof dimensions to prevent under-charging
+            // for large proofs (mitigates QIP-03: fixed placeholder weight vulnerability).
+            //
+            // Weight formula: W(n, e, s) = BASE + k₁·n + k₂·e + k₃·s·n + k₄·s·e + k₅·s²·n
+            // Where n=nodes, e=edges, s=solutions
+            //
+            // Validation cost scales with the registered topology's dimensions and the
+            // number of submitted solutions. `QuantumProof` only carries `topology_hash`
+            // and `solutions`, so node/edge counts come from the same topology lookup
+            // validation performs. An unregistered hash does O(1) work before rejecting
+            // with `TopologyNotRegistered`, so it is charged the base weight (n = e = 0);
+            // every solution-scaled term multiplies by n or e, so `solutions` adds
+            // nothing on that path. The base-only charge relies on all dispatch checks
+            // before the topology lookup staying O(1). Conversely, a registered
+            // topology rejected later in dispatch (not mineable, graph too small, bad
+            // nonce, …) still pays the full formula — DispatchResult carries no
+            // PostDispatchInfo refund; over-charging rejected work is the safe
+            // direction.
+            let (nodes, edges) = RegisteredTopologies::<T>::get(proof.topology_hash)
+                .map(|topology| (topology.nodes.len() as u32, topology.edges.len() as u32))
+                .unwrap_or((0, 0));
+            let solutions = proof.solutions.len() as u32;
+            <T as Config>::WeightInfo::submit_proof(nodes, edges, solutions)
+        })]
         pub fn submit_proof(origin: OriginFor<T>, proof: QuantumProofOf<T>) -> DispatchResult {
             let who = ensure_signed(origin)?;
             ensure!(
@@ -852,6 +989,7 @@ pub mod pallet {
                 energy_milli: validation.best_energy_milli,
                 salt: proof.salt,
                 topology_hash: proof.topology_hash,
+                device_access_time_us: proof.device_access_time_us,
             };
 
             let should_replace = match BlockBestProof::<T>::get() {
@@ -1110,16 +1248,23 @@ pub mod pallet {
         /// Returns `None` when the topology is not registered (defensive: a
         /// proof would not validate, and `set_difficulty` requires
         /// registration).
-        fn energy_curve_for(topology_hash: H256) -> Option<crate::difficulty::EnergyCurve> {
+        pub(crate) fn energy_curve_for(
+            topology_hash: H256,
+        ) -> Option<crate::difficulty::EnergyCurve> {
             let topology = RegisteredTopologies::<T>::get(topology_hash)?;
-            crate::difficulty::EnergyCurve::new(
-                topology.nodes.len() as u32,
-                topology.edges.len() as u32,
+            // Prefer a per-topology override; fall back to the runtime
+            // constants when none is set (the legacy calibration).
+            let curve_c = TopologyCurveC::<T>::get(topology_hash).unwrap_or_else(|| {
                 crate::difficulty::CurveC {
                     easy_milli: T::CurveCEasyMilli::get(),
                     knee_milli: T::CurveCKneeMilli::get(),
                     hard_milli: T::CurveCHardMilli::get(),
-                },
+                }
+            });
+            crate::difficulty::EnergyCurve::new(
+                topology.nodes.len() as u32,
+                topology.edges.len() as u32,
+                curve_c,
                 &topology.allowed_h_values.as_slice(),
                 &topology.allowed_j_values.as_slice(),
             )
@@ -1300,6 +1445,112 @@ pub(crate) mod migration {
             let cleared =
                 frame_support::storage::unhashed::clear_prefix(&pallet_prefix, None, None).backend;
             T::DbWeight::get().reads_writes(1, u64::from(cleared))
+        }
+    }
+
+    pub(crate) mod v5 {
+        use crate::pallet::{Config, QBlocks};
+        use crate::{types, AccountIdOf, BalanceOf, BlockNumberOf, DefaultTopology};
+        use codec::Decode;
+        use frame_support::traits::Get;
+        use frame_support::weights::Weight;
+        use sp_core::H256;
+
+        /// The pre-v4 (pre-topology) `QBlock` layout: [`types::QBlock`] minus
+        /// the trailing `topology_hash` and `device_access_time_us`. Kept only
+        /// so entries from chains that never ran the v4 step can be decoded
+        /// and re-encoded with both fields appended.
+        #[derive(Decode)]
+        struct PreTopologyQBlock<AccountId, Balance, BlockNumber> {
+            miner: AccountId,
+            salt: [u8; 32],
+            energy_milli: i64,
+            reward: Balance,
+            submitted_at: BlockNumber,
+            difficulty: types::DifficultyConfig,
+            last_proof_block_hash: H256,
+        }
+
+        /// The v4 `QBlock` layout as SHIPPED in spec 111 (the deployed
+        /// chain): carries `topology_hash` but not `device_access_time_us`.
+        #[derive(Decode)]
+        struct V4QBlock<AccountId, Balance, BlockNumber> {
+            miner: AccountId,
+            salt: [u8; 32],
+            energy_milli: i64,
+            reward: Balance,
+            submitted_at: BlockNumber,
+            difficulty: types::DifficultyConfig,
+            last_proof_block_hash: H256,
+            topology_hash: H256,
+        }
+
+        /// Kill any stale `BlockBestProof`: `ProofRecord` gained a trailing
+        /// field, and while the value is always empty across an upgrade
+        /// boundary (`on_finalize` take()s it every block) and OptionQuery
+        /// decode failure reads as `None`, `kill()` removes all doubt for
+        /// free — same reasoning as the v3 step.
+        fn kill_stale_best_proof<T: Config>() {
+            crate::BlockBestProof::<T>::kill();
+        }
+
+        /// `< 4` → 5: re-encode every `QBlocks` entry from the 7-field
+        /// pre-topology layout, backfilling `topology_hash` with the default
+        /// topology (`H256::zero()` when none is set — blocks won before
+        /// per-topology binding were all mined against the default, so this
+        /// is the historically-correct value) and `device_access_time_us`
+        /// with 0 (never reported before spec 112).
+        pub(crate) fn backfill_from_pre_topology<T: Config>() -> Weight {
+            let backfill = DefaultTopology::<T>::get().unwrap_or_default();
+            let mut count = 0u64;
+            QBlocks::<T>::translate::<
+                PreTopologyQBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>,
+                _,
+            >(|_block, old| {
+                count = count.saturating_add(1);
+                Some(types::QBlock {
+                    miner: old.miner,
+                    salt: old.salt,
+                    energy_milli: old.energy_milli,
+                    reward: old.reward,
+                    submitted_at: old.submitted_at,
+                    difficulty: old.difficulty,
+                    last_proof_block_hash: old.last_proof_block_hash,
+                    topology_hash: backfill,
+                    device_access_time_us: 0,
+                })
+            });
+            kill_stale_best_proof::<T>();
+            // One read + one write per entry, plus the `DefaultTopology`
+            // read and the `BlockBestProof` kill.
+            T::DbWeight::get().reads_writes(count.saturating_add(1), count.saturating_add(1))
+        }
+
+        /// 4 → 5: re-encode every `QBlocks` entry from the shipped v4 layout,
+        /// appending `device_access_time_us = 0` and PRESERVING the stored
+        /// `topology_hash` — post-binding blocks may record non-default
+        /// topologies, so no backfill here.
+        pub(crate) fn append_device_time<T: Config>() -> Weight {
+            let mut count = 0u64;
+            QBlocks::<T>::translate::<V4QBlock<AccountIdOf<T>, BalanceOf<T>, BlockNumberOf<T>>, _>(
+                |_block, old| {
+                    count = count.saturating_add(1);
+                    Some(types::QBlock {
+                        miner: old.miner,
+                        salt: old.salt,
+                        energy_milli: old.energy_milli,
+                        reward: old.reward,
+                        submitted_at: old.submitted_at,
+                        difficulty: old.difficulty,
+                        last_proof_block_hash: old.last_proof_block_hash,
+                        topology_hash: old.topology_hash,
+                        device_access_time_us: 0,
+                    })
+                },
+            );
+            kill_stale_best_proof::<T>();
+            // One read + one write per entry, plus the `BlockBestProof` kill.
+            T::DbWeight::get().reads_writes(count, count.saturating_add(1))
         }
     }
 }

@@ -200,6 +200,7 @@ fn finalize_winner(miner: u64, block_number: u64) {
         energy_milli: 0,
         salt: [0u8; 32],
         topology_hash: DefaultTopology::<Test>::get().unwrap_or_default(),
+        device_access_time_us: 0,
     });
     QuantumPow::on_finalize(block_number);
 }
@@ -255,6 +256,7 @@ fn proof_for(
         nonce,
         salt,
         solutions: bounded::<_, MaxSolutions>(solutions),
+        device_access_time_us: 0,
     }
 }
 
@@ -569,6 +571,109 @@ fn set_difficulty_works() {
     });
 }
 
+/// A valid per-topology curve override with a wider `c` spread than the
+/// 700/725/750 runtime constants (still `easy < knee < hard`).
+fn override_curve_c() -> crate::difficulty::CurveC {
+    crate::difficulty::CurveC {
+        easy_milli: 600,
+        knee_milli: 700,
+        hard_milli: 800,
+    }
+}
+
+#[test]
+fn set_topology_curve_requires_root() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        assert_noop!(
+            QuantumPow::set_topology_curve(RuntimeOrigin::signed(1), hash, override_curve_c()),
+            sp_runtime::DispatchError::BadOrigin
+        );
+    });
+}
+
+#[test]
+fn set_topology_curve_rejects_unregistered_topology() {
+    new_test_ext().execute_with(|| {
+        let _ = registered_topology();
+        assert_noop!(
+            QuantumPow::set_topology_curve(
+                RuntimeOrigin::root(),
+                sp_core::H256::repeat_byte(7),
+                override_curve_c()
+            ),
+            crate::Error::<Test>::TopologyNotRegistered
+        );
+    });
+}
+
+#[test]
+fn set_topology_curve_rejects_misordered_c() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        // knee must lie strictly between easy and hard; this inverts the order.
+        let bad = crate::difficulty::CurveC {
+            easy_milli: 800,
+            knee_milli: 725,
+            hard_milli: 700,
+        };
+        assert_noop!(
+            QuantumPow::set_topology_curve(RuntimeOrigin::root(), hash, bad),
+            crate::Error::<Test>::InvalidCurve
+        );
+    });
+}
+
+#[test]
+fn topology_curve_override_replaces_constant_curve() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        // Without an override the curve is built from the runtime constants.
+        assert_eq!(QuantumPow::energy_curve_for(hash), Some(test_curve()));
+
+        let c = override_curve_c();
+        assert_ok!(QuantumPow::set_topology_curve(
+            RuntimeOrigin::root(),
+            hash,
+            c
+        ));
+
+        let expected = crate::difficulty::EnergyCurve::new(
+            2,
+            1,
+            c,
+            &allowed_h_spec().as_slice(),
+            &allowed_j_spec().as_slice(),
+        )
+        .unwrap();
+        assert_ne!(
+            expected,
+            test_curve(),
+            "override must produce a different curve"
+        );
+        assert_eq!(QuantumPow::energy_curve_for(hash), Some(expected));
+    });
+}
+
+#[test]
+fn topology_curve_override_is_per_topology() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash_a) = registered_topology();
+        let hash_b = registered_zero_field_topology();
+        let b_before = QuantumPow::energy_curve_for(hash_b);
+
+        assert_ok!(QuantumPow::set_topology_curve(
+            RuntimeOrigin::root(),
+            hash_a,
+            override_curve_c()
+        ));
+
+        // Only A's curve moves; B still resolves to the constant-derived curve.
+        assert_eq!(QuantumPow::energy_curve_for(hash_b), b_before);
+        assert_ne!(QuantumPow::energy_curve_for(hash_a), Some(test_curve()));
+    });
+}
+
 #[test]
 fn submit_proof_accepts_valid_proof() {
     new_test_ext().execute_with(|| {
@@ -626,17 +731,21 @@ fn better_proof_replaces_worse_proof() {
         let (nodes, edges, topology_hash) = registered_topology();
         set_difficulty_default(easy_difficulty());
 
-        let worse = proof_for(1, &nodes, &edges, topology_hash, &[3]);
-        let better = proof_for(2, &nodes, &edges, topology_hash, &[0]);
+        let mut worse = proof_for(1, &nodes, &edges, topology_hash, &[3]);
+        worse.device_access_time_us = 111;
+        let mut better = proof_for(2, &nodes, &edges, topology_hash, &[0]);
+        better.device_access_time_us = 777;
 
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), worse));
         let first = BlockBestProof::<Test>::get().unwrap();
+        assert_eq!(first.device_access_time_us, 111);
 
         assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(2), better));
         let second = BlockBestProof::<Test>::get().unwrap();
 
         assert!(second.energy_milli <= first.energy_milli);
         assert_eq!(second.miner, 2);
+        assert_eq!(second.device_access_time_us, 777);
     });
 }
 
@@ -855,7 +964,8 @@ fn migration_v2_to_v3_carries_difficulty_and_whitelists_default() {
             frame_support::storage::unhashed::get::<DifficultyConfig>(&old_key).is_none(),
             "old global value removed"
         );
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(3));
+        // on_runtime_upgrade steps cumulatively through v5.
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
         // The live threshold for the default now equals the carried value.
         assert_eq!(
             QuantumPow::current_difficulty_for(hash, System::block_number()),
@@ -993,7 +1103,7 @@ fn repeated_same_winner_forces_easing() {
 }
 
 #[test]
-fn migration_below_v2_wipes_then_bumps_to_v3() {
+fn migration_below_v2_wipes_then_bumps_to_v5() {
     new_test_ext().execute_with(|| {
         let (_, _, hash) = registered_topology();
         QBlockCount::<Test>::put(9);
@@ -1005,12 +1115,133 @@ fn migration_below_v2_wipes_then_bumps_to_v3() {
         assert_eq!(DefaultTopology::<Test>::get(), None);
         assert_eq!(QBlockCount::<Test>::get(), 0);
         assert!(!MineableTopologies::<Test>::contains_key(hash));
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(3));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
+    });
+}
+
+/// Pre-v4 `QBlock` layout (no `topology_hash`), used to plant an old-format
+/// entry so the v3 → v4 backfill can be exercised end-to-end.
+#[derive(codec::Encode)]
+struct OldQBlockV3 {
+    miner: u64,
+    salt: [u8; 32],
+    energy_milli: i64,
+    reward: u128,
+    submitted_at: u64,
+    difficulty: DifficultyConfig,
+    last_proof_block_hash: sp_core::H256,
+}
+
+#[test]
+fn migration_pre_v4_backfills_topology_and_device_time() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        DefaultTopology::<Test>::put(hash);
+        StorageVersion::new(3).put::<QuantumPow>();
+
+        // A stale pre-111 BlockBestProof would decode-fail post-upgrade
+        // (ProofRecord gained trailing fields); v5 kills it like v3 did.
+        let old_record_key =
+            frame_support::storage::storage_prefix(b"QuantumPow", b"BlockBestProof");
+        frame_support::storage::unhashed::put(&old_record_key, &[7u8; 4]);
+
+        // Plant an old-layout qblock straight at its storage key so it decodes
+        // only under the pre-v4 shape.
+        let block: u64 = 7;
+        let old = OldQBlockV3 {
+            miner: 1,
+            salt: [3u8; 32],
+            energy_milli: -42_000,
+            reward: 50,
+            submitted_at: block,
+            difficulty: easy_difficulty(),
+            last_proof_block_hash: sp_core::H256::repeat_byte(9),
+        };
+        let key = QBlocks::<Test>::hashed_key_for(block);
+        frame_support::storage::unhashed::put(&key, &old);
+
+        QuantumPow::on_runtime_upgrade();
+
+        let raw = frame_support::storage::unhashed::get_raw(&old_record_key);
+        assert!(
+            raw.is_none(),
+            "kill() must remove the raw BlockBestProof bytes, not just decode to None"
+        );
+
+        let migrated = QBlocks::<Test>::get(block).expect("qblock survives the v5 re-encode");
+        assert_eq!(migrated.miner, 1);
+        assert_eq!(migrated.salt, [3u8; 32]);
+        assert_eq!(migrated.energy_milli, -42_000);
+        assert_eq!(migrated.reward, 50);
+        assert_eq!(migrated.difficulty, easy_difficulty());
+        assert_eq!(
+            migrated.last_proof_block_hash,
+            sp_core::H256::repeat_byte(9)
+        );
+        // Backfilled with the default topology — correct for a pre-binding block.
+        assert_eq!(migrated.topology_hash, hash);
+        // Pre-112 blocks carry no self-reported compute time — backfilled 0.
+        assert_eq!(migrated.device_access_time_us, 0);
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
+    });
+}
+
+/// Shipped-v4 `QBlock` layout (`topology_hash`, no `device_access_time_us`) —
+/// the shape the deployed spec-111 chain holds — used to plant an entry so
+/// the v4 → v5 append can be exercised end-to-end.
+#[derive(codec::Encode)]
+struct OldQBlockV4 {
+    miner: u64,
+    salt: [u8; 32],
+    energy_milli: i64,
+    reward: u128,
+    submitted_at: u64,
+    difficulty: DifficultyConfig,
+    last_proof_block_hash: sp_core::H256,
+    topology_hash: sp_core::H256,
+}
+
+#[test]
+fn migration_v4_to_v5_appends_device_time_preserving_topology() {
+    new_test_ext().execute_with(|| {
+        let (_, _, default_hash) = registered_topology();
+        DefaultTopology::<Test>::put(default_hash);
+        StorageVersion::new(4).put::<QuantumPow>();
+
+        // The planted block records a NON-default topology: the v4 → v5 path
+        // must preserve it, not re-backfill with the default.
+        let recorded = sp_core::H256::repeat_byte(0xCD);
+        let block: u64 = 11;
+        let old = OldQBlockV4 {
+            miner: 2,
+            salt: [4u8; 32],
+            energy_milli: -13_000,
+            reward: 75,
+            submitted_at: block,
+            difficulty: easy_difficulty(),
+            last_proof_block_hash: sp_core::H256::repeat_byte(8),
+            topology_hash: recorded,
+        };
+        let key = QBlocks::<Test>::hashed_key_for(block);
+        frame_support::storage::unhashed::put(&key, &old);
+
+        QuantumPow::on_runtime_upgrade();
+
+        let migrated = QBlocks::<Test>::get(block).expect("qblock survives the v5 append");
+        assert_eq!(migrated.miner, 2);
+        assert_eq!(migrated.energy_milli, -13_000);
+        assert_eq!(migrated.reward, 75);
+        assert_eq!(
+            migrated.topology_hash, recorded,
+            "v4 → v5 must preserve the stored topology, not backfill the default"
+        );
+        assert_eq!(migrated.device_access_time_us, 0);
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
     });
 }
 
 #[test]
-fn migration_noop_at_v3() {
+fn migration_noop_at_v5() {
     new_test_ext().execute_with(|| {
         let (_, _, hash) = registered_topology();
         let d = DifficultyConfig {
@@ -1020,14 +1251,14 @@ fn migration_noop_at_v3() {
         };
         Difficulties::<Test>::insert(hash, d);
         QBlockCount::<Test>::put(9);
-        StorageVersion::new(3).put::<QuantumPow>();
+        StorageVersion::new(5).put::<QuantumPow>();
 
         QuantumPow::on_runtime_upgrade();
 
         assert!(RegisteredTopologies::<Test>::contains_key(hash));
         assert_eq!(Difficulties::<Test>::get(hash), Some(d));
         assert_eq!(QBlockCount::<Test>::get(), 9);
-        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(3));
+        assert_eq!(StorageVersion::get::<QuantumPow>(), StorageVersion::new(5));
     });
 }
 
@@ -1175,6 +1406,9 @@ fn on_finalize_persists_qblock_with_recoverable_nonce() {
         // the active threshold equals whatever set_difficulty just stored.
         assert_eq!(stored.difficulty, easy_difficulty());
         assert_eq!(stored.last_proof_block_hash, expected_last_proof_block_hash);
+        // The winning proof's topology is persisted on the qblock, so a block's
+        // topology provenance is recoverable from state alone.
+        assert_eq!(stored.topology_hash, topology_hash);
 
         // Re-derive the nonce via the runtime helper and confirm it matches
         // the value that was on the submitted proof. This is the round-trip
@@ -2049,6 +2283,7 @@ fn winning_topology_does_not_move_other_topology_difficulty() {
             energy_milli: -10_000,
             salt: [0u8; 32],
             topology_hash: hash_a,
+            device_access_time_us: 0,
         });
         QuantumPow::on_finalize(80);
 
@@ -2062,6 +2297,27 @@ fn winning_topology_does_not_move_other_topology_difficulty() {
             Some(diff_b),
             "B's difficulty must NOT move when A wins"
         );
+    });
+}
+
+#[test]
+fn qblock_persists_device_access_time() {
+    new_test_ext().execute_with(|| {
+        let (_, _, hash) = registered_topology();
+        DefaultTopology::<Test>::put(hash);
+        System::set_block_number(80);
+        BlockBestProof::<Test>::put(ProofRecord {
+            miner: 1,
+            submitted_at: 80,
+            energy_milli: -10_000,
+            salt: [0u8; 32],
+            topology_hash: hash,
+            device_access_time_us: 1_234_567,
+        });
+        QuantumPow::on_finalize(80);
+
+        let qblock = QBlocks::<Test>::get(80).expect("qblock stored");
+        assert_eq!(qblock.device_access_time_us, 1_234_567);
     });
 }
 
@@ -2346,3 +2602,258 @@ fn unset_whitelisted_topology_reads_default_hard_difficulty() {
         );
     });
 }
+
+// ============================================================================
+// Weight Regression Tests (QIP-03: Parameterized Weight Accounting)
+// ============================================================================
+
+use crate::weights::WeightInfo;
+
+/// Test helper: calculate weight for given proof dimensions
+fn calculate_weight(nodes: u32, edges: u32, solutions: u32) -> frame_support::weights::Weight {
+    <() as WeightInfo>::submit_proof(nodes, edges, solutions)
+}
+
+#[test]
+fn weight_scales_with_proof_dimensions() {
+    // Mathematical invariant: Weight(n,e,s) should increase with dimensions
+
+    let weight_small = calculate_weight(2, 1, 1);
+    let weight_medium = calculate_weight(100, 200, 8);
+    let weight_large = calculate_weight(1000, 5000, 32);
+
+    // Monotonicity: larger inputs -> larger weight
+    assert!(
+        weight_medium.ref_time() > weight_small.ref_time(),
+        "Weight should increase with proof size (medium > small)"
+    );
+    assert!(
+        weight_large.ref_time() > weight_medium.ref_time(),
+        "Weight should increase with proof size (large > medium)"
+    );
+}
+
+#[test]
+fn weight_formula_components_are_present() {
+    // Verify all components of W(n,e,s) = BASE + k₁·n + k₂·e + k₃·s·n + k₄·s·e + k₅·s²·n
+
+    let base_weight = calculate_weight(0, 0, 0);
+    assert!(base_weight.ref_time() > 0, "Base weight should be non-zero");
+
+    // Component k₁·n: nodes contribute linearly
+    let w_100_nodes = calculate_weight(100, 0, 0);
+    let w_200_nodes = calculate_weight(200, 0, 0);
+    assert!(
+        w_200_nodes.ref_time() > w_100_nodes.ref_time(),
+        "Node component (k₁·n) should increase with node count"
+    );
+
+    // Component k₂·e: edges contribute linearly
+    let w_100_edges = calculate_weight(0, 100, 0);
+    let w_200_edges = calculate_weight(0, 200, 0);
+    assert!(
+        w_200_edges.ref_time() > w_100_edges.ref_time(),
+        "Edge component (k₂·e) should increase with edge count"
+    );
+
+    // Component k₄·s·e: solutions × edges (dominant term)
+    let w_1_sol_100_edge = calculate_weight(0, 100, 1);
+    let w_2_sol_100_edge = calculate_weight(0, 100, 2);
+    assert!(
+        w_2_sol_100_edge.ref_time() > w_1_sol_100_edge.ref_time(),
+        "Solution-edge component (k₄·s·e) should increase with solutions"
+    );
+}
+
+#[test]
+fn weight_prevents_undercharging_for_large_proofs() {
+    // Critical invariant: large proofs must cost far more than small ones, so a
+    // worst-case proof can't be under-charged. The mock's Max* bounds are tiny
+    // (16/32/8), so exercise the formula directly at the documented production
+    // bounds where the dimensional terms must dominate the fixed base.
+    let small_proof_weight = calculate_weight(2, 1, 1); // Minimal proof
+    let large_proof_weight = calculate_weight(5_000, 50_000, 32); // Production worst case
+
+    // Large proof should cost significantly more (at least 10x).
+    let ratio = large_proof_weight.ref_time() / small_proof_weight.ref_time().max(1);
+    assert!(
+        ratio >= 10,
+        "Worst-case proof should cost at least 10x more than minimal proof, got {ratio}x"
+    );
+}
+
+#[test]
+fn weight_scales_quadratically_with_solutions_for_diversity() {
+    // Diversity/quality calculation is O(s²·n). Superlinearity is verified by
+    // comparing successive increments (which cancel the fixed base) rather than
+    // ratios of totals — the large base term makes total ratios ~1 regardless of
+    // curvature, so they cannot reveal the quadratic component.
+    let w_2_sols = calculate_weight(100, 100, 2).ref_time();
+    let w_4_sols = calculate_weight(100, 100, 4).ref_time();
+    let w_8_sols = calculate_weight(100, 100, 8).ref_time();
+
+    // The cost of each additional pair of solutions must itself grow, which is
+    // the signature of the s²·n term.
+    let inc_2_to_4 = w_4_sols - w_2_sols;
+    let inc_4_to_8 = w_8_sols - w_4_sols;
+    assert!(
+        inc_4_to_8 > inc_2_to_4,
+        "Per-solution cost should grow with solution count (quadratic term), \
+         got increment {inc_2_to_4} then {inc_4_to_8}"
+    );
+}
+
+#[test]
+fn weight_calculation_saturates_safely() {
+    // Pathological inputs must saturate, not wrap: the s²·n term alone is
+    // ~2^96 at u32::MAX inputs, so a saturating implementation pins ref_time
+    // at u64::MAX while a wrapping one would land on an arbitrary value.
+    let max_weight = calculate_weight(u32::MAX, u32::MAX, u32::MAX);
+    assert_eq!(
+        max_weight.ref_time(),
+        u64::MAX,
+        "weight must saturate to u64::MAX on overflow"
+    );
+}
+
+#[test]
+fn submit_proof_uses_parameterized_weight() {
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let (nodes, edges, topology_hash) = registered_topology();
+        assert_ok!(QuantumPow::set_difficulty(
+            RuntimeOrigin::root(),
+            topology_hash,
+            easy_difficulty()
+        ));
+
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+
+        // The charge for this proof is the parameterized formula keyed to the
+        // registered topology's dimensions (node/edge counts come from the
+        // topology, not the proof), so it covers at least the base cost.
+        let charged = <() as WeightInfo>::submit_proof(
+            nodes.len() as u32,
+            edges.len() as u32,
+            proof.solutions.len() as u32,
+        );
+        assert!(
+            charged.ref_time() >= 10_000_000,
+            "parameterized weight must cover the base extrinsic cost"
+        );
+
+        // QIP-03 guarantee: a large proof is charged well above the retired 60M
+        // flat weight, so large proofs can no longer be under-charged.
+        let large = calculate_weight(1_000, 5_000, 32);
+        assert!(
+            large.ref_time() > 60_000_000,
+            "large proofs must exceed the retired 60M flat weight"
+        );
+
+        // Submission succeeds end-to-end.
+        assert_ok!(QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof));
+    });
+}
+
+#[test]
+fn submit_proof_dispatch_info_charges_topology_scaled_weight() {
+    // The QIP-03 fix lives in the #[pallet::weight] closure, not in
+    // WeightInfo: this pins the *dispatched* charge to the formula evaluated
+    // at the registered topology's dimensions (n/e come from storage via
+    // proof.topology_hash, s from the proof). A regression to the flat
+    // weight — or transposed nodes/edges arguments — fails here.
+    use frame_support::dispatch::GetDispatchInfo;
+    new_test_ext().execute_with(|| {
+        let (nodes, edges, topology_hash) = registered_topology();
+        let proof = proof_for(1, &nodes, &edges, topology_hash, &[0]);
+        let expected = <() as WeightInfo>::submit_proof(
+            nodes.len() as u32,
+            edges.len() as u32,
+            proof.solutions.len() as u32,
+        );
+        let call = crate::Call::<Test>::submit_proof { proof };
+        assert_eq!(
+            call.get_dispatch_info().call_weight,
+            expected,
+            "dispatched weight must equal the formula at the topology's dimensions"
+        );
+    });
+}
+
+#[test]
+fn submit_proof_dispatch_info_charges_base_for_unregistered_topology() {
+    // An unregistered topology_hash must be charged exactly the
+    // zero-dimension base: every solution-scaled term multiplies by n or e,
+    // so solution count adds nothing, and dispatch rejects after O(1) work.
+    // This pins the closure's unwrap_or((0, 0)) fallback.
+    use frame_support::dispatch::GetDispatchInfo;
+    new_test_ext().execute_with(|| {
+        assert_ok!(QuantumPow::register_miner(RuntimeOrigin::signed(1)));
+        let (nodes, edges, _) = registered_topology();
+        let bogus = sp_core::H256::repeat_byte(0xAB);
+        let proof = proof_for(1, &nodes, &edges, bogus, &[0]);
+
+        let base_only = <() as WeightInfo>::submit_proof(0, 0, proof.solutions.len() as u32);
+        assert_eq!(
+            base_only,
+            <() as WeightInfo>::submit_proof(0, 0, 0),
+            "solutions must not add weight when no topology dimensions apply"
+        );
+
+        let call = crate::Call::<Test>::submit_proof {
+            proof: proof.clone(),
+        };
+        assert_eq!(
+            call.get_dispatch_info().call_weight,
+            base_only,
+            "unregistered topology must be charged the base weight only"
+        );
+
+        assert_noop!(
+            QuantumPow::submit_proof(RuntimeOrigin::signed(1), proof),
+            crate::Error::<Test>::TopologyNotRegistered
+        );
+    });
+}
+
+#[test]
+fn weight_regression_small_proof_cost_increased() {
+    // Regression test: ensure small proofs still pay reasonable weight
+
+    let tiny_weight = calculate_weight(2, 1, 1);
+
+    // Even minimal proofs should pay at least the base cost
+    assert!(
+        tiny_weight.ref_time() >= 10_000_000,
+        "Minimal proof should pay at least base cost"
+    );
+}
+
+#[test]
+fn weight_proportionality_constant_is_reasonable() {
+    // Verify the per-unit weight constants are within reasonable bounds. Each
+    // marginal cost is isolated by differencing against the zero-dimension
+    // weight, since calculate_weight always includes the fixed extrinsic + DB
+    // base (~535M ref_time) that would otherwise swamp the per-unit terms.
+    let base = calculate_weight(0, 0, 0).ref_time();
+    let per_node = calculate_weight(1, 0, 0).ref_time() - base;
+    let per_edge = calculate_weight(0, 1, 0).ref_time() - base;
+    let per_solution_node = calculate_weight(1, 0, 1).ref_time() - base;
+
+    // Isolated marginal costs should be reasonable (not zero, not excessive).
+    assert!(
+        per_node > 0 && per_node < 100_000,
+        "Per-node marginal cost should be reasonable, got {per_node}"
+    );
+    assert!(
+        per_edge > 0 && per_edge < 200_000,
+        "Per-edge marginal cost should be reasonable, got {per_edge}"
+    );
+    assert!(
+        per_solution_node > per_node,
+        "Solution validation adds cost beyond a bare node"
+    );
+}
+
+// ============================================================================
+// End QIP-03 Weight Regression Tests

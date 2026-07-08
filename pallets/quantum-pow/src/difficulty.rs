@@ -1,5 +1,6 @@
-use codec::Encode;
+use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
 use quantum_validation::{AllowedValueSpec, MilliValue, ValidationError};
+use scale_info::TypeInfo;
 
 use crate::types::DifficultyConfig;
 
@@ -61,8 +62,21 @@ pub enum Direction {
 ///
 /// SCALE-encoded `u32` per-mille because pallet constants must implement
 /// `Get<_>` and `f64` does not implement `Encode`. They are divided by 1000
-/// before being fed to `expected_gse`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// before being fed to `expected_gse`. The SCALE/`TypeInfo` derives also let
+/// a `CurveC` be stored as a per-topology override and passed to the
+/// `set_topology_curve` extrinsic.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Decode,
+    DecodeWithMemTracking,
+    Encode,
+    Eq,
+    MaxEncodedLen,
+    PartialEq,
+    TypeInfo,
+)]
 pub struct CurveC {
     /// Easiest (least-negative) end of the curve.
     pub easy_milli: u32,
