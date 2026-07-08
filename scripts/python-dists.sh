@@ -48,6 +48,10 @@
 
 set -euo pipefail
 
+# Absolute path to this script's dir so we can invoke sibling scripts (the smoke
+# test) regardless of CWD -- smoke_dists cd's into the venv before running it.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 MANIFEST="crates/transaction-crypto-py/Cargo.toml"
 DIST="dist"
 
@@ -155,38 +159,10 @@ smoke_dists() {
 	python3 -m venv "${smoke_root}/venv"
 	"${smoke_root}/venv/bin/pip" install --quiet --disable-pip-version-check \
 		--no-index --only-binary=:all: --find-links "${DIST}" quip-signer
-	# Run from the venv dir so no stray `quip_signer/` in CWD can shadow the install.
-	(cd "${smoke_root}/venv" && "${smoke_root}/venv/bin/python" - <<'PY'
-from quip_signer import (
-    HybridSigner,
-    account_id_from_public,
-    public_from_seed,
-    seed_from_mnemonic,
-    sign_payload_from_seed,
-    verify_envelope,
-)
-
-payload = b"quip-signer wheel smoke test"
-
-# Object surface: mnemonic -> sign -> verify, and the documented byte lengths.
-signer = HybridSigner.from_mnemonic(
-    "bottom drive obey lake curtain smoke basket hold race lonely fit walk"
-)
-assert len(signer.public_key) == 1344, "unexpected public key length"
-assert len(signer.account_id) == 32, "unexpected account id length"
-assert verify_envelope(payload, signer.sign(payload), signer.account_id), \
-    "object-path sign/verify failed"
-
-# Free-function surface: seed -> public -> account, and a seed-based round-trip.
-seed = seed_from_mnemonic("0x" + "07" * 32)
-account = account_id_from_public(public_from_seed(seed))
-assert account == HybridSigner.from_seed(seed).account_id, "account derivation mismatch"
-assert verify_envelope(payload, sign_payload_from_seed(seed, payload), account), \
-    "free-function sign/verify failed"
-
-print("quip-signer wheel smoke test: import + sign/verify OK")
-PY
-	)
+	# Run from the venv dir so no stray `quip_signer/` in CWD can shadow the
+	# install; the smoke script is referenced by absolute path since CWD is the venv.
+	(cd "${smoke_root}/venv" &&
+		"${smoke_root}/venv/bin/python" "${SCRIPT_DIR}/quip_signer_wheel_smoke.py")
 }
 
 # --- publish: OIDC mint + twine upload -------------------------------------
