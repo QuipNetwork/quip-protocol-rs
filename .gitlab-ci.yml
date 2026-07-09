@@ -4,7 +4,8 @@
 #
 # Stages:
 #   - test:      fmt / clippy / test / runtime release build on every MR;
-#                also the quip-signer PyPI dry-run (build wheels + twine check)
+#                also the quip-signer PyPI dry-run (build wheels + import-smoke
+#                both arches on native runners)
 #   - build:     build the quip-network-node container per architecture
 #                (amd64 + arm64), each on a native runner, on release tags only
 #   - manifest:  stitch the per-arch images into a multi-arch manifest list so
@@ -13,7 +14,7 @@
 #                tags via Trusted Publishing (OIDC) — TestPyPI auto, PyPI manual
 #
 # Triggers:
-#   - merge_request_event  →  test (incl. PyPI dry-run)
+#   - merge_request_event  →  test (incl. PyPI build + both-arch import smoke, no upload)
 #   - push to main         →  test
 #   - push to v0.2         →  test
 #   - git tag on v0.2      →  test + build + manifest (:<tag> + :v0.2 + :sha-*)
@@ -320,14 +321,23 @@ manifest:
 # projects, configuring each Trusted Publisher, the `release` environment, and
 # the protected `v*` tag pattern) is documented in docs/releasing-quip-signer.md.
 #
-# All three jobs share one build path (scripts/python-dists.sh):
-#   release:dry-run-pypi      every MR / push                build + twine check
-#   release:publish-testpypi  release tag, if PUBLISH=true   auto    → TestPyPI
-#   release:publish-pypi      release tag, if PUBLISH=true   manual  → PyPI
+# The pipeline is build → smoke (both arches) → publish, one job per mode of
+# scripts/python-dists.sh, so the cross-built aarch64 wheel is import-tested on
+# a native arm64 runner before any upload (a wheel only imports on its own
+# arch — one amd64 job cannot exercise both):
+#   release:build-pypi         every MR/push + pre-publish   build 3 artefacts + guards
+#   release:smoke-pypi-amd64   needs build                   import the x86_64 wheel
+#   release:smoke-pypi-arm64   needs build (arm64 runner)    import the aarch64 wheel
+#   release:publish-testpypi   release tag, if PUBLISH=true  auto    → TestPyPI
+#   release:publish-pypi       release tag, if PUBLISH=true  manual  → PyPI
 #
-# The publish jobs are gated on QUIP_SIGNER_PUBLISH (off by default) so a node
-# release tag never reds on an unconfigured wheel publish during Phase 1, and run
-# with needs:[] so they don't wait on the container build/manifest stages.
+# build + both smokes run on every MR/push (the old dry-run, now import-testing
+# both wheels) and again on a release tag ahead of publish. The publish jobs are
+# gated on QUIP_SIGNER_PUBLISH (off by default) so a node release tag never reds
+# on an unconfigured wheel publish during Phase 1. Every pypi job `needs` only
+# other pypi jobs, so the chain never waits on the container build/manifest
+# stages (esp. the slow, OOM-prone arm64 kaniko job). publish `needs` both
+# smokes, so a wheel that won't import on its own arch blocks the upload.
 #
 # Artefact matrix mirrors xquad's xqffi cdylib: abi3 wheel for linux x86_64
 # (native) + abi3 wheel for linux aarch64 (cargo-zigbuild / zig linker) + an
@@ -342,22 +352,26 @@ manifest:
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
 
-# Run on every MR and on main/v0.2 pushes; never on a release tag (the publish
-# jobs own those). Proves the release build works without uploading anything,
-# so a packaging regression fails an MR instead of a tag.
-.on-pr-or-push:
+# build + smoke run on every MR/push (dry-run: no upload) AND on a release tag
+# ahead of the gated publish. Union of "PR or push" and .on-release-tag: any MR /
+# branch push, plus a `v*` tag only once publishing is enabled — so an
+# unconfigured tag pipeline doesn't build/smoke a wheel it will never publish.
+.on-pr-push-or-release-tag:
   rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
     - if: $CI_COMMIT_TAG =~ /^v\d/
       when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH
 
-# Shared base for the PyPI jobs. Runs on the lean Rust image (see
+# Build base: the one job that compiles. Runs on the lean Rust image (see
 # PY_RELEASE_IMAGE) and installs the maturin/twine/zig toolchain. The binding is
 # its own workspace resolving against its own Cargo.lock, so — like
 # py-signer-test — it caches the crate's target/ keyed on that lock, not the
-# workspace one.
-.pypi-dist:
+# workspace one. Emits dist/ as an artefact so the smoke and publish jobs consume
+# the exact bytes it built (never a rebuild — the smoked wheel is the shipped
+# wheel). expire_in outlasts a manual PyPI promote clicked days after the tag.
+.pypi-build:
   image: $PY_RELEASE_IMAGE
   tags: [docker, amd64]
   interruptible: true
@@ -370,6 +384,10 @@ manifest:
         - .cargo/registry/cache
         - .cargo/registry/index
         - crates/transaction-crypto-py/target/
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 week
   before_script:
     # maturin + twine + ziglang go in a venv placed first on PATH, so the
     # `python3` that cargo-zigbuild shells out to (`python3 -m ziglang`, how it
@@ -393,28 +411,82 @@ manifest:
     # confirm the binstalled binary is on PATH.
     - maturin --version && twine --version && command -v cargo-zigbuild
 
-# Dry-run on every MR/push: build all three artefacts and twine-check their
-# metadata. No token, no upload. Catches release-blocking packaging regressions
-# (bad metadata, a wheel that won't build, an unbuildable aarch64 cross) long
-# before a tag is cut.
-release:dry-run-pypi:
-  extends: .pypi-dist
+# Smoke base: import-test one prebuilt wheel. No compile, so it drops the whole
+# Rust/maturin/zig toolchain and runs on a tiny multi-arch python image — the
+# same tag resolves to the amd64 or arm64 variant per runner, and `pip install`
+# then picks the wheel matching that arch. The clean image is also better
+# isolation than the build image: no crate source anywhere on the path to shadow
+# the installed package. The concrete arch (tags:) is set on each smoke job.
+.pypi-smoke:
+  image: docker.io/library/python:3.12-slim-bookworm
+  interruptible: true
+  timeout: 15m
+  needs:
+    - release:build-pypi
+
+# Publish base: mint the OIDC token and upload the prebuilt dist/. Like smoke it
+# needs no Rust toolchain — just twine + curl on the small python image — and it
+# consumes the artefact from build (and both smokes) rather than rebuilding, so
+# the uploaded bytes are the ones that passed the smoke. Needs only the pypi
+# jobs, so it never waits on the container build/manifest stages.
+.pypi-publish:
+  image: docker.io/library/python:3.12-slim-bookworm
+  tags: [docker, amd64]
+  interruptible: false
+  timeout: 15m
+  needs:
+    - release:build-pypi
+    - release:smoke-pypi-amd64
+    - release:smoke-pypi-arm64
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+    - rm -rf /var/lib/apt/lists/*
+    - pip install --quiet --upgrade 'twine>=6.1'
+
+# Build all three artefacts, guard their tags/content, twine-check metadata, and
+# publish dist/ as an artefact. Runs on every MR/push (dry-run) and again ahead
+# of a tagged publish. No token, no upload. Catches release-blocking packaging
+# regressions (bad metadata, a wheel that won't build, an unbuildable aarch64
+# cross, a dropped python surface) long before a tag is cut.
+release:build-pypi:
+  extends: .pypi-build
   stage: test
-  rules: !reference [.on-pr-or-push, rules]
+  rules: !reference [.on-pr-push-or-release-tag, rules]
   script:
-    - bash scripts/python-dists.sh check
+    - bash scripts/python-dists.sh build
+
+# Import-smoke the built wheels on their native architectures — the check a file
+# guard can't make (a broken extension, an ABI mismatch, a bad re-export). Each
+# job installs the one wheel matching its runner arch into a throwaway venv and
+# runs import + sign/verify. The aarch64 job closes the gap the amd64 runner
+# leaves: the cross-built wheel that ships to Linux/aarch64 consumers is import-
+# tested on real arm64 before publish. The smoke workload is featherweight
+# (install a ~1 MB wheel + import), so gating on the memory-constrained arm64
+# runner is safe — nothing like the Substrate compile that strains it elsewhere.
+release:smoke-pypi-amd64:
+  extends: .pypi-smoke
+  stage: test
+  tags: [docker, amd64]
+  rules: !reference [.on-pr-push-or-release-tag, rules]
+  script:
+    - bash scripts/python-dists.sh smoke
+
+release:smoke-pypi-arm64:
+  extends: .pypi-smoke
+  stage: test
+  tags: [docker, arm64]
+  rules: !reference [.on-pr-push-or-release-tag, rules]
+  script:
+    - bash scripts/python-dists.sh smoke
 
 # Auto-publish to TestPyPI on every release tag, once publishing is enabled
-# (Phase 1 validation target). `needs: []` starts it as soon as the pipeline is
-# created instead of waiting out the build/manifest container stages — the wheel
-# publish is independent of the node container build (and must not be blocked by
-# the slow, OOM-prone arm64 kaniko job). No allow_failure: once enabled, a failed
-# TestPyPI upload is a real signal that should red the pipeline.
+# (Phase 1 validation target). Needs build + both smokes (via .pypi-publish), so
+# it uploads only wheels that imported on their own arch, and still doesn't wait
+# on the container build/manifest stages. No allow_failure: once enabled, a
+# failed TestPyPI upload is a real signal that should red the pipeline.
 release:publish-testpypi:
-  extends: .pypi-dist
+  extends: .pypi-publish
   stage: release
-  needs: []
-  interruptible: false
   rules: !reference [.on-release-tag, rules]
   # `environment: release` must match the environment configured on the TestPyPI
   # Trusted Publisher; PyPI rejects the OIDC exchange if they differ.
@@ -429,14 +501,13 @@ release:publish-testpypi:
 
 # Promote to production PyPI: manual button on the tag pipeline, once publishing
 # is enabled. Manual + allow_failure so an un-clicked promote never reds the node
-# release pipeline; click it once the TestPyPI wheel checks out. `needs: []`
-# decouples it from the container stages (same as testpypi). Audience is `pypi`
-# here (vs `testpypi` above).
+# release pipeline; click it once the TestPyPI wheel checks out. Needs build +
+# both smokes (via .pypi-publish) — the promote uploads the same smoked bytes,
+# read from build's artefact (expire_in: 1 week covers a promote clicked days
+# later). Audience is `pypi` here (vs `testpypi` above).
 release:publish-pypi:
-  extends: .pypi-dist
+  extends: .pypi-publish
   stage: release
-  needs: []
-  interruptible: false
   rules:
     - if: $CI_COMMIT_TAG =~ /^v\d/ && $QUIP_SIGNER_PUBLISH == "true"
       when: manual

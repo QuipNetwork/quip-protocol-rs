@@ -3,10 +3,12 @@
 # Releasing `quip-signer` to PyPI
 
 The `quip-signer` PyO3 binding ships as abi3 wheels (+ sdist) on PyPI via the
-release jobs in [`.gitlab-ci.yml`](../.gitlab-ci.yml) (`release:dry-run-pypi`,
+release jobs in [`.gitlab-ci.yml`](../.gitlab-ci.yml) (`release:build-pypi`,
+`release:smoke-pypi-amd64`, `release:smoke-pypi-arm64`,
 `release:publish-testpypi`, `release:publish-pypi`) backed by
-[`scripts/python-dists.sh`](../scripts/python-dists.sh). Publishing uses PyPI
-**Trusted Publishing (OIDC)** — there is no long-lived API token in CI.
+[`scripts/python-dists.sh`](../scripts/python-dists.sh). The pipeline is
+build → smoke (both arches) → publish; publishing uses PyPI **Trusted Publishing
+(OIDC)** — there is no long-lived API token in CI.
 
 Tracking issue: QUI-776.
 
@@ -17,9 +19,23 @@ tag v0.X.Y  ──▶  release:publish-testpypi   (auto)   → TestPyPI
                  release:publish-pypi        (manual) → PyPI  (click to promote)
 ```
 
-- The dry-run (`release:dry-run-pypi`) runs on **every MR/push**: it builds all
-  three artefacts and runs `twine check`, so a packaging regression fails an MR
+- The build + smoke jobs (`release:build-pypi`, `release:smoke-pypi-amd64`,
+  `release:smoke-pypi-arm64`) run on **every MR/push**: they build all three
+  artefacts and import-test both wheels, so a packaging regression fails an MR
   rather than a tag pipeline.
+- `release:build-pypi` guards the wheels beyond `twine check`, which only reads
+  metadata: it asserts each wheel carries a manylinux/musllinux platform tag,
+  asserts the `quip_signer` Python surface is packed (QUI-792), and runs `twine
+  check`, then publishes `dist/` as an artefact the smoke and publish jobs
+  consume (so the uploaded bytes are the ones that were smoke-tested).
+- The two smoke jobs import-test the built wheels **on their native
+  architectures** (QUI-793): each installs the one wheel matching its runner
+  arch into a throwaway venv and runs `import quip_signer` + a sign/verify
+  round-trip. The amd64 job covers the x86_64 wheel; the arm64 job covers the
+  cross-built aarch64 wheel — the artefact Linux/aarch64 consumers pull, now
+  import-tested on real arm64 before publish rather than shipped unexercised. A
+  wheel that builds but can't import fails the build before any upload, and the
+  publish jobs `needs` both smokes.
 - On a release tag, TestPyPI publishes automatically. PyPI is a **manual
   "promote" button** in the same pipeline — click it once the TestPyPI wheel is
   verified.
@@ -131,7 +147,7 @@ script's mint/upload endpoints differ accordingly:
   manylinux-compatible (it depends on the build image's glibc being old enough
   for a manylinux profile). `twine check` does **not** inspect platform tags, so
   `scripts/python-dists.sh` asserts every wheel carries a manylinux/musllinux tag
-  after the build — that assertion (not `twine check`) is what fails the dry-run
-  on a non-portable wheel. The aarch64 build targets an old glibc via the zig
+  after the build — that assertion (not `twine check`) is what fails
+  `release:build-pypi` on a non-portable wheel. The aarch64 build targets an old glibc via the zig
   linker, so it stays manylinux by construction; if the native x86_64 wheel ever
   trips the guard, build it via cargo-zigbuild too (pin an older glibc).
