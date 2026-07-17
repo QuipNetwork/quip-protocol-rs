@@ -32,6 +32,7 @@ pallet-grandpa.workspace = true
 pallet-miner-registry.workspace = true
 pallet-quantum-compute-mempool.workspace = true
 pallet-quantum-pow.workspace = true
+pallet-revive.workspace = true
 quantum-validation.workspace = true
 pallet-session.workspace = true
 pallet-sudo.workspace = true
@@ -86,6 +87,7 @@ std = [
   "pallet-miner-registry/std",
   "pallet-quantum-compute-mempool/std",
   "pallet-quantum-pow/std",
+  "pallet-revive/std",
   "quantum-validation/std",
   "pallet-session/std",
   "pallet-sudo/std",
@@ -124,6 +126,7 @@ runtime-benchmarks = [
   "pallet-grandpa/runtime-benchmarks",
   "pallet-quantum-compute-mempool/runtime-benchmarks",
   "pallet-quantum-pow/runtime-benchmarks",
+  "pallet-revive/runtime-benchmarks",
   "pallet-sudo/runtime-benchmarks",
   "pallet-template/runtime-benchmarks",
   "pallet-timestamp/runtime-benchmarks",
@@ -143,6 +146,7 @@ try-runtime = [
   "pallet-miner-registry/try-runtime",
   "pallet-quantum-compute-mempool/try-runtime",
   "pallet-quantum-pow/try-runtime",
+  "pallet-revive/try-runtime",
   "pallet-session/try-runtime",
   "pallet-sudo/try-runtime",
   "pallet-template/try-runtime",
@@ -164,3 +168,7 @@ metadata-hash = ["substrate-wasm-builder/metadata-hash"]
 # A convenience feature for enabling things when doing a build
 # for an on-chain release.
 on-chain-release-build = ["metadata-hash", "sp-api/disable-logging"]
+
+# Build a dedicated local-development runtime with EIP-155 chain ID 1337.
+# Release/testnet artifacts use 20049 by default.
+dev-chain-id = []

@@ -30,6 +30,7 @@ frame_benchmarking::define_benchmarks!(
     [pallet_balances, Balances]
     [pallet_quantum_compute_mempool, QuantumComputeMempool]
     [pallet_quantum_pow, QuantumPow]
+    [pallet_revive, Revive]
     [pallet_timestamp, Timestamp]
     [pallet_sudo, Sudo]
     [pallet_template, Template]

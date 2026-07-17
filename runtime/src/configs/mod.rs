@@ -26,7 +26,7 @@
 // Substrate and Polkadot dependencies
 use frame_support::{
     derive_impl, parameter_types,
-    traits::{ConstU128, ConstU32, ConstU64, ConstU8, Get, VariantCountOf},
+    traits::{ConstBool, ConstU128, ConstU32, ConstU64, ConstU8, Get, VariantCountOf},
     weights::{
         constants::{RocksDbWeight, WEIGHT_REF_TIME_PER_SECOND},
         IdentityFee, Weight,
@@ -37,7 +37,7 @@ use pallet_transaction_payment::{ConstFeeMultiplier, FungibleAdapter, Multiplier
 use sp_core::crypto::Ss58Codec;
 use sp_runtime::{
     traits::{ConvertInto, One, OpaqueKeys},
-    Perbill,
+    FixedU128, Perbill,
 };
 use sp_version::RuntimeVersion;
 
@@ -45,9 +45,10 @@ use pallet_xqvm::WeightInfo as _;
 
 // Local module imports
 use super::{
-    AccountId, Babe, Balance, Balances, Block, BlockNumber, Hash, Nonce, PalletInfo, Runtime,
-    RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason, RuntimeOrigin, RuntimeTask,
-    SessionKeys, System, EXISTENTIAL_DEPOSIT, MICRO_UNIT, MILLI_UNIT, SLOT_DURATION, UNIT, VERSION,
+    AccountId, Address, Babe, Balance, Balances, Block, BlockNumber, EthExtraImpl, Hash, Nonce,
+    PalletInfo, Runtime, RuntimeCall, RuntimeEvent, RuntimeFreezeReason, RuntimeHoldReason,
+    RuntimeOrigin, RuntimeTask, SessionKeys, Signature, System, Timestamp, EXISTENTIAL_DEPOSIT,
+    MICRO_UNIT, MILLI_UNIT, SLOT_DURATION, UNIT, VERSION,
 };
 
 const NORMAL_DISPATCH_RATIO: Perbill = Perbill::from_percent(75);
@@ -196,10 +197,56 @@ impl pallet_transaction_payment::Config for Runtime {
     type RuntimeEvent = RuntimeEvent;
     type OnChargeTransaction = FungibleAdapter<Balances, ()>;
     type OperationalFeeMultiplier = ConstU8<5>;
-    type WeightToFee = IdentityFee<Balance>;
+    type WeightToFee = pallet_revive::evm::fees::BlockRatioFee<1, 1, Runtime, Balance>;
     type LengthToFee = IdentityFee<Balance>;
     type FeeMultiplierUpdate = ConstFeeMultiplier<FeeMultiplier>;
     type WeightInfo = pallet_transaction_payment::weights::SubstrateWeight<Runtime>;
+}
+
+parameter_types! {
+    pub const ReviveDepositPerByte: Balance = 10 * MICRO_UNIT;
+    pub const ReviveDepositPerItem: Balance = 200 * MILLI_UNIT;
+    pub const ReviveDepositPerChildTrieItem: Balance = 2 * MILLI_UNIT;
+    pub ReviveCodeHashLockupDepositPercent: Perbill = Perbill::from_percent(30);
+    pub const ReviveMaxEthExtrinsicWeight: FixedU128 = FixedU128::from_rational(9, 10);
+}
+
+/// The public-testnet chain ID is the safe default for release artifacts.
+#[cfg(not(feature = "dev-chain-id"))]
+pub type ReviveChainId = ConstU64<20_049>;
+
+/// Local development artifacts deliberately use the conventional private-chain ID.
+#[cfg(feature = "dev-chain-id")]
+pub type ReviveChainId = ConstU64<1_337>;
+
+impl pallet_revive::Config for Runtime {
+    type Time = Timestamp;
+    type Balance = Balance;
+    type Currency = Balances;
+    type OnBurn = ();
+    type RuntimeEvent = RuntimeEvent;
+    type RuntimeCall = RuntimeCall;
+    type RuntimeOrigin = RuntimeOrigin;
+    type RuntimeHoldReason = RuntimeHoldReason;
+    type WeightInfo = pallet_revive::weights::SubstrateWeight<Runtime>;
+    type Precompiles = ();
+    type FindAuthor = pallet_session::FindAccountFromAuthorIndex<Runtime, Babe>;
+    type DepositPerByte = ReviveDepositPerByte;
+    type DepositPerItem = ReviveDepositPerItem;
+    type DepositPerChildTrieItem = ReviveDepositPerChildTrieItem;
+    type CodeHashLockupDepositPercent = ReviveCodeHashLockupDepositPercent;
+    type AddressMapper = pallet_revive::AccountId32Mapper<Runtime>;
+    type AllowEVMBytecode = ConstBool<true>;
+    type UploadOrigin = frame_system::EnsureSigned<AccountId>;
+    type InstantiateOrigin = frame_system::EnsureSigned<AccountId>;
+    type RuntimeMemory = ConstU32<{ 128 * 1024 * 1024 }>;
+    type PVFMemory = ConstU32<{ 512 * 1024 * 1024 }>;
+    type ChainId = ReviveChainId;
+    type NativeToEthRatio = ConstU32<1_000_000>;
+    type FeeInfo = pallet_revive::evm::fees::Info<Address, Signature, EthExtraImpl>;
+    type MaxEthExtrinsicWeight = ReviveMaxEthExtrinsicWeight;
+    type DebugEnabled = ConstBool<false>;
+    type GasScale = ConstU32<1_000>;
 }
 
 impl pallet_sudo::Config for Runtime {
