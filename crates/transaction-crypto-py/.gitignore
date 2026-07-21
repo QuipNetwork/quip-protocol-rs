@@ -1,0 +1,12 @@
+# This crate is excluded from the root workspace, so it builds into its own
+# target/ here (the root /target/ ignore does not reach it).
+/target/
+.pytest_cache/
+
+# Built PyO3 extension dropped next to the Python source by `maturin develop`
+# / `make py-signer-develop` (like the browser signer's .wasm). The package
+# source (__init__.py, .pyi, py.typed) is tracked; the compiled artifact is not.
+python/quip_signer/*.so
+python/quip_signer/*.pyd
+python/quip_signer/*.dylib
+python/quip_signer/__pycache__/

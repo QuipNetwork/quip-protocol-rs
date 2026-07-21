@@ -42,9 +42,10 @@ use sp_version::RuntimeVersion;
 
 // Local module imports
 use super::{
-    AccountId, Babe, Balance, Block, BlockNumber, Executive, Grandpa, InherentDataExt, Nonce,
-    QuantumPow, Runtime, RuntimeCall, RuntimeGenesisConfig, SessionKeys, System,
-    TransactionPayment, BABE_GENESIS_EPOCH_CONFIG, VERSION,
+    AccountId, Babe, Balance, Block, BlockNumber, Executive, Grandpa, Hash, InherentDataExt,
+    MinerRegistry, Nonce, QuantumComputeMempool, QuantumPow, Runtime, RuntimeCall,
+    RuntimeGenesisConfig, SessionKeys, System, TransactionPayment, BABE_GENESIS_EPOCH_CONFIG,
+    VERSION,
 };
 use pallet_quantum_pow::RegisteredTopologies;
 
@@ -53,6 +54,16 @@ type QuantumPowEdges = frame_support::BoundedVec<(u32, u32), super::configs::Qua
 type QuantumPowAllowedValues = frame_support::BoundedVec<
     quantum_validation::MilliValue,
     super::configs::QuantumPowMaxAllowedValues,
+>;
+type QuantumMempoolNodes = frame_support::BoundedVec<u32, super::configs::QuantumMaxNodes>;
+type QuantumMempoolEdges = frame_support::BoundedVec<(u32, u32), super::configs::QuantumMaxEdges>;
+type QuantumMempoolFields = frame_support::BoundedVec<i32, super::configs::QuantumMaxNodes>;
+type QuantumMempoolCouplings = frame_support::BoundedVec<i32, super::configs::QuantumMaxEdges>;
+type QuantumMempoolMinerAccounts =
+    frame_support::BoundedVec<AccountId, super::configs::QuantumMaxBidMiners>;
+type QuantumMempoolMinerTypes = frame_support::BoundedVec<
+    pallet_quantum_compute_mempool::types::MinerType,
+    frame_support::traits::ConstU32<8>,
 >;
 
 impl_runtime_apis! {
@@ -229,8 +240,113 @@ impl_runtime_apis! {
             QuantumPow::qblock_with_nonce(block_number)
         }
 
+        fn latest_qblock_id() -> Option<u64> {
+            QuantumPow::latest_qblock_id()
+        }
+
+        fn qblock_id_by_block(block_number: BlockNumber) -> Option<u64> {
+            QuantumPow::qblock_id_by_block(block_number)
+        }
+
+        fn qblock_by_id(
+            qblock_id: u64,
+        ) -> Option<pallet_quantum_pow::types::QBlockWithNonce<AccountId, Balance, BlockNumber>> {
+            QuantumPow::qblock_with_nonce_by_id(qblock_id)
+        }
+
+        fn qblock_by_block(
+            block_number: BlockNumber,
+        ) -> Option<pallet_quantum_pow::types::QBlockWithNonce<AccountId, Balance, BlockNumber>> {
+            QuantumPow::qblock_with_nonce(block_number)
+        }
+
         fn current_difficulty() -> pallet_quantum_pow::types::DifficultyConfig {
-            QuantumPow::current_difficulty_for(System::block_number())
+            QuantumPow::default_topology()
+                .map(|h| QuantumPow::current_difficulty_for(h, System::block_number()))
+                .unwrap_or_default()
+        }
+
+        fn current_hardness() -> pallet_quantum_pow::types::DifficultyConfig {
+            QuantumPow::default_topology()
+                .map(|h| QuantumPow::current_difficulty_for(h, System::block_number()))
+                .unwrap_or_default()
+        }
+
+        fn difficulty_for(
+            topology_hash: sp_core::H256,
+        ) -> Option<pallet_quantum_pow::types::DifficultyConfig> {
+            QuantumPow::difficulty_for_api(topology_hash)
+        }
+
+        fn mineable_topologies() -> alloc::vec::Vec<sp_core::H256> {
+            QuantumPow::mineable_topologies()
+        }
+    }
+
+    impl pallet_quantum_compute_mempool::QuantumComputeMempoolApi<
+        Block,
+        AccountId,
+        Balance,
+        BlockNumber,
+        Hash,
+        QuantumMempoolNodes,
+        QuantumMempoolEdges,
+        QuantumMempoolFields,
+        QuantumMempoolCouplings,
+        QuantumMempoolMinerAccounts,
+        QuantumMempoolMinerTypes,
+    > for Runtime {
+        fn open_order_ids(start_after: Option<u64>, limit: u32) -> Vec<u64> {
+            QuantumComputeMempool::open_order_ids(start_after, limit)
+        }
+
+        fn job_order(
+            order_id: u64,
+        ) -> Option<pallet_quantum_compute_mempool::types::JobOrder<
+            AccountId,
+            Balance,
+            BlockNumber,
+            Hash,
+            pallet_quantum_compute_mempool::types::IsingParams<
+                QuantumMempoolNodes,
+                QuantumMempoolEdges,
+                QuantumMempoolFields,
+                QuantumMempoolCouplings,
+            >,
+            pallet_quantum_compute_mempool::types::JobMode<
+                QuantumMempoolMinerAccounts,
+                QuantumMempoolMinerTypes,
+            >,
+        >> {
+            QuantumComputeMempool::job_order(order_id)
+        }
+
+        fn order_result(
+            order_id: u64,
+        ) -> Option<
+            pallet_quantum_compute_mempool::types::StoredResult<AccountId, Balance, BlockNumber>,
+        > {
+            QuantumComputeMempool::result_for_order(order_id)
+        }
+
+        fn order_top_solvers(
+            order_id: u64,
+        ) -> Vec<pallet_quantum_compute_mempool::types::RankedSolver<AccountId>> {
+            QuantumComputeMempool::order_top_solvers(order_id)
+        }
+    }
+
+    impl pallet_miner_registry::MinerRegistryApi<Block, AccountId, BlockNumber> for Runtime {
+        fn participants_by_qblock(
+            qblock_id: u64,
+            start_after: Option<AccountId>,
+            limit: u32,
+        ) -> Vec<(AccountId, pallet_miner_registry::ParticipationRecord<BlockNumber>)> {
+            MinerRegistry::participants_by_qblock(qblock_id, start_after, limit)
+        }
+
+        fn participant_count_by_qblock(qblock_id: u64) -> u32 {
+            MinerRegistry::participant_count_by_qblock(qblock_id)
         }
     }
 

@@ -1,7 +1,7 @@
 [package]
 name = "pallet-quantum-compute-mempool"
 description = "FRAME pallet for QUIP's user-submitted Ising job marketplace."
-version = "0.2.0"
+version = "0.2.1"
 license = "Unlicense"
 authors.workspace = true
 homepage.workspace = true
@@ -23,6 +23,7 @@ frame-system.workspace = true
 pallet-balances.workspace = true
 quantum-validation.workspace = true
 scale-info = { features = ["derive"], workspace = true }
+sp-api.workspace = true
 sp-runtime.workspace = true
 
 [dev-dependencies]
@@ -40,6 +41,7 @@ std = [
   "pallet-balances/std",
   "quantum-validation/std",
   "scale-info/std",
+  "sp-api/std",
   "sp-runtime/std",
 ]
 runtime-benchmarks = [

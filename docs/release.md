@@ -16,8 +16,8 @@
 ## Tag
 
 ```bash
-git checkout main
-git pull
+git checkout <release-branch>   # main or the active series branch (e.g. v0.2) —
+git pull                        # this choice decides the floating tag (see below)
 git tag -a v<MAJOR>.<MINOR>.<PATCH> -m "v<MAJOR>.<MINOR>.<PATCH>: <one-line summary>"
 git push origin v<MAJOR>.<MINOR>.<PATCH>
 ```
@@ -25,6 +25,22 @@ git push origin v<MAJOR>.<MINOR>.<PATCH>
 The GitLab CI pipeline at `.gitlab-ci.yml` picks up the tag via the
 `$CI_COMMIT_TAG` rule and publishes
 `registry.gitlab.com/quip.network/quip-protocol-rs/quip-network-node:v<MAJOR>.<MINOR>.<PATCH>`.
+
+### Version-tag format (shared standard)
+
+Pre-release tags use **SemVer hyphenated** pre-releases —
+`v<MAJOR>.<MINOR>.<PATCH>-rcN` (e.g. `v0.2.1-rc18`), **never** the PEP 440
+no-hyphen form `v0.2.1rc18`. This is the cross-repo standard so `quip-node-manager`
+(and any SemVer consumer) can order release candidates correctly; see
+`quip-protocol/docs/VERSIONING.md` for the full rationale.
+
+Container images publish on release tags **only** — branch pushes never build
+or push images. The floating tag follows the branch the tag was cut from,
+resolved by the `resolve-floating-tag` CI job via commit ancestry (tag
+pipelines carry no branch variable): a tag on `v0.2` publishes `:<tag>` +
+`:v0.2`, a tag on `main` publishes `:<tag>` + `:latest`, both plus
+`:sha-<short-sha>`. A tag reachable from neither branch gets only `:<tag>` +
+`:sha-<short-sha>`.
 
 ## Post-tag verification
 

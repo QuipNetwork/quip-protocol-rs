@@ -43,7 +43,7 @@ cargo build --release --features runtime-benchmarks
 cargo +nightly doc --open
 ```
 
-No `.gitlab-ci.yml` exists; all lint/test gates are local. Run `cargo clippy --all-targets` and `cargo test` before pushing.
+CI (`.gitlab-ci.yml`) runs `cargo fmt --check`, `cargo clippy --workspace -D warnings`, `cargo test`, and a runtime release build on every merge request. Run `cargo clippy --all-targets` and `cargo test` locally before pushing to catch failures early.
 
 ## Architecture
 
@@ -83,7 +83,7 @@ Three-crate workspace:
 
 These gate code at both pallet and runtime level.
 
-**Workspace lints**: The root `Cargo.toml` defines strict clippy + rustc lints that apply to every crate via `[workspace.lints]`. There is no CI to catch warnings — run `cargo clippy --all-targets` locally before pushing.
+**Workspace lints**: The root `Cargo.toml` defines strict clippy + rustc lints that apply to every crate via `[workspace.lints]`. CI enforces these (`cargo clippy --workspace -D warnings`); run `cargo clippy --all-targets` locally before pushing.
 
 ## Implementation Rules
 
@@ -120,6 +120,21 @@ These gate code at both pallet and runtime level.
 ## Environment Setup
 
 Rust toolchain is pinned in `env-setup/rust-toolchain.toml` (stable channel, includes `wasm32-unknown-unknown` target). Alternatively, use Nix: `cd env-setup && nix develop` (requires `clang`, `protobuf`, `rustup`).
+
+## Versioning & release tags
+
+Cross-repo standard — `quip-protocol/docs/VERSIONING.md` is canonical; `docs/release.md` is the release checklist.
+
+| Artifact | Format | Example |
+|----------|--------|---------|
+| Git tag (pre-release) | SemVer hyphenated `vMAJOR.MINOR.PATCH-rcN` | `v0.2.1-rc18` |
+| Git tag (stable) | `vMAJOR.MINOR.PATCH` | `v0.2.1` |
+| `Cargo.toml` `version` | bare SemVer (toolchain-native) | `0.2.1` |
+
+Rules:
+- Pre-release git tags MUST be hyphenated (`-rcN` / `-alphaN` / `-betaN`). Never the PEP 440 no-hyphen form (`v0.2.1rc18`) for a git tag: `quip-node-manager` orders release candidates by splitting on the hyphen, so a no-hyphen tag collapses every rc to one value and freezes node updates.
+- The `MAJOR.MINOR.PATCH` numerics must match `Cargo.toml`'s `version`; only the separator and the rc suffix differ. A Cargo SemVer pre-release, if ever set, is also hyphenated (`0.2.1-rc.18`).
+- CI (`.gitlab-ci.yml`): container images publish on release tags ONLY — branch pushes never build or push images. The floating tag follows the branch the tag was cut from (resolved by the `resolve-floating-tag` job via commit ancestry): a tag on `v0.2` publishes `:<tag>` + `:v0.2`, a tag on `main` publishes `:<tag>` + `:latest`, both plus `:sha-<short-sha>`.
 
 ## License
 

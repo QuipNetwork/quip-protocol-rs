@@ -8,31 +8,45 @@ edition = "2021"
 [workspace]
 members = [
   "crates/quantum-validation",
+  "crates/transaction-crypto-core",
+  "crates/transaction-crypto-wasm",
   "crates/transaction-crypto",
   "node",
   "pallets/faucet-ops",
+  "pallets/miner-registry",
   "pallets/quantum-compute-mempool",
   "pallets/quantum-pow",
   "pallets/template",
   "pallets/xqvm",
   "runtime",
 ]
+# `transaction-crypto-py` is a PyO3 `extension-module` cdylib. It is excluded so
+# its macOS `dynamic_lookup` link requirement (injected by maturin) never
+# perturbs the runtime/node builds. It depends on `transaction-crypto-core` by
+# path and is built via maturin, not as part of this workspace.
+exclude = ["crates/transaction-crypto-py"]
 resolver = "2"
 
 [workspace.dependencies]
 quip-protocol-runtime = { path = "./runtime", default-features = false }
 pallet-faucet-ops = { path = "./pallets/faucet-ops", default-features = false }
+pallet-miner-registry = { path = "./pallets/miner-registry", default-features = false }
 pallet-quantum-compute-mempool = { path = "./pallets/quantum-compute-mempool", default-features = false }
 pallet-quantum-pow = { path = "./pallets/quantum-pow", default-features = false }
 pallet-template = { path = "./pallets/template", default-features = false }
 pallet-xqvm = { path = "./pallets/xqvm", default-features = false }
 quantum-validation = { path = "./crates/quantum-validation", default-features = false }
+quip-transaction-crypto-core = { path = "./crates/transaction-crypto-core", default-features = false }
+quip-transaction-crypto-wasm = { path = "./crates/transaction-crypto-wasm", default-features = false }
 quip-transaction-crypto = { path = "./crates/transaction-crypto", default-features = false }
 clap = { version = "4.5.13" }
 frame-benchmarking-cli = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 frame-metadata-hash-extension = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 frame-system = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
+fips204 = { version = "0.4", default-features = false, features = ["ml-dsa-44"] }
 futures = { version = "0.3.31" }
+getrandom = { version = "0.2.17", default-features = false }
+hkdf = { version = "0.12", default-features = false }
 jsonrpsee = { version = "0.24.3" }
 pallet-transaction-payment = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 pallet-transaction-payment-rpc = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
@@ -68,6 +82,13 @@ sp-timestamp = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch
 substrate-frame-rpc-system = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 substrate-build-script-utils = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 codec = { version = "3.7.5", default-features = false, package = "parity-scale-codec" }
+blake2 = { version = "0.10", default-features = false }
+# `alloc`/`std` features are intentionally omitted: they pull in
+# `unicode-normalization`, whose tables roughly double the browser WASM bundle.
+# The core crate uses `Mnemonic::parse_in_normalized`, which needs neither.
+bip39 = { version = "2.2", default-features = false }
+substrate-bip39 = { version = "0.6.1", default-features = false }
+hex = { version = "0.4.3", default-features = false }
 frame-benchmarking = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 frame-executive = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 frame-support = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
@@ -83,6 +104,7 @@ pallet-timestamp = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", br
 pallet-transaction-payment-rpc-runtime-api = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 scale-info = { version = "2.11.6", default-features = false }
 serde_json = { version = "1.0.132", default-features = false }
+rand_core = { version = "0.6", default-features = false }
 sp-consensus-grandpa = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 sp-offchain = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 sp-session = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
@@ -91,7 +113,11 @@ sp-transaction-pool = { git = "https://github.com/QuipNetwork/polkadot-sdk.git",
 sp-version = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 substrate-wasm-builder = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 quip-crypto-primitives = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
+quip-crypto-primitives-core = { git = "https://github.com/QuipNetwork/polkadot-sdk.git", branch = "v0.2", default-features = false }
 schnorrkel = { version = "0.11.5", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+zeroize = { version = "1", default-features = false, features = ["derive"] }
+wasm-bindgen = { version = "0.2.117" }
 
 
 [workspace.lints.rust]

@@ -1,0 +1,35 @@
+# Excluded from the root workspace (see root Cargo.toml `[workspace] exclude`):
+# PyO3 `extension-module` cdylibs need `-undefined dynamic_lookup` link args on
+# macOS, which maturin injects but a bare `cargo build --workspace` would not.
+# Keeping this crate as its own workspace isolates that quirk from the runtime/
+# node builds. It still depends on the sp-free `transaction-crypto-core` by path.
+[package]
+name = "quip-transaction-crypto-py"
+version = "0.2.2"
+license = "MIT-0"
+authors = ["Quip Network <roman@postquant.xyz>"]
+homepage = "https://www.quip.network/"
+repository = "https://gitlab.com/quip.network/quip-protocol-rs.git"
+edition = "2021"
+publish = false
+
+[lib]
+# The compiled extension is `_quip_signer`; the `quip_signer` Python package
+# (under python/) re-exports it. Mixed layout so type stubs ship too.
+name = "_quip_signer"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"] }
+quip-transaction-crypto-core = { path = "../transaction-crypto-core", default-features = false, features = ["std"] }
+zeroize = { version = "1", default-features = false }
+
+# Size-tuned: the signer is not on a hot path, so favor a small extension.
+# `panic = "unwind"` is kept on purpose — PyO3 turns Rust panics into Python
+# exceptions; `abort` would take down the interpreter instead.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "unwind"
