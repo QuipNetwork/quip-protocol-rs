@@ -202,21 +202,64 @@ selecting a finite proof-size budget remains an explicit economics follow-up.
 ### Ethereum JSON-RPC sidecar
 
 The pinned SDK exposes Revive's Ethereum RPC as a sidecar process connected to
-the node's WebSocket RPC. At SDK commit `4330574c`, the sidecar cannot be added
-as an ordinary Git dependency: its build script requires `revive-dev-runtime`
-to be built in the SDK workspace. Build or install the SDK's standalone
-`pallet-revive-eth-rpc` package, then run its `eth-rpc` binary:
+the node's WebSocket RPC. Embedded integration remains blocked on
+[paritytech/polkadot-sdk#11297](https://github.com/paritytech/polkadot-sdk/pull/11297),
+which introduces the `SubstrateClientT` abstraction and embeds the ETH RPC
+server into an omni-node. That PR is still open as of 2026-07-17 and is not in
+Quip's pinned SDK commit `4330574c`.
+
+At that commit, the sidecar also cannot be added as an ordinary Git dependency:
+its build script requires `revive-dev-runtime` to be built in the SDK workspace.
+The development image therefore builds `pallet-revive-eth-rpc` from a complete,
+exactly pinned checkout of the Quip SDK fork.
+
+Run the development node and sidecar together with:
 
 ```bash
-eth-rpc \
-  --node-rpc-url ws://127.0.0.1:9944 \
-  --eth-pruning 256
+make revive-dev
 ```
 
-It listens on port `8545` by default. `--eth-pruning 256` keeps recent receipt
-data in memory and is convenient for development. The default `archive` mode
-persists a SQLite receipt index and requires an archive node for complete
-historical synchronization.
+In another terminal, check the Ethereum endpoint:
+
+```bash
+bash scripts/check-revive-sidecar.sh
+bash scripts/check-subscan-evm-indexer.sh
+bash scripts/check-subscan-ui.sh
+```
+
+Stop the attached stack with Ctrl-C. To remove its containers and development
+chain volume afterward, run `make revive-dev-down`.
+
+The stack builds the node with `dev-chain-id`, exposes Substrate RPC on `9944`,
+and exposes Ethereum JSON-RPC on `8545`. It also builds
+[Subscan Essentials](https://github.com/subscan-explorer/subscan-essentials) at
+commit `bcb39fbd`, runs its API/subscriber/worker with MySQL and Redis, and
+exposes the API on `4399`. It also builds the official
+[Subscan Essentials UI](https://github.com/subscan-explorer/subscan-essentials-ui-react)
+at commit `9f29809f` and exposes it on `3000`. The UI container regenerates
+`/__ENV.js` at startup so the browser uses the host-visible Subscan API instead
+of retaining upstream's default endpoint. Compose supports
+`QUIP_SUBSCAN_API_PORT` and `QUIP_SUBSCAN_UI_PORT` overrides; the default
+browser API URL is `http://localhost:4399`.
+
+Subscan reads finalized Substrate blocks from the node and their Ethereum
+representation from the sidecar; the local smoke checks require the EVM blocks
+API to return an indexed block, the UI to return HTML, its runtime API setting
+to target the local API, and the API to permit the UI's browser origin. The
+Compose node uses `--state-pruning=archive` and `--blocks-pruning=archive`,
+since Subscan's genesis backfill reads historical event storage that a pruned
+node discards. Quip-specific UI logos, banners, and theme customization are
+deferred; the initial integration uses the upstream UI unchanged.
+
+`--eth-pruning 256` keeps recent receipt data in memory. The default sidecar
+`archive` mode instead persists a SQLite receipt index and requires an archive
+node for complete historical synchronization.
+
+GitLab CI boots this same Compose stack and requires `eth_chainId == 0x539`, a
+valid `eth_blockNumber` response, at least one indexed EVM block from Subscan,
+and a ready UI configured for the local API. Uploading, deploying, and calling
+a contract is the next smoke-test increment and is deliberately not part of
+the initial readiness job.
 
 ## Pending decisions and validation
 
@@ -261,9 +304,17 @@ and testnet IDs.
 - [x] Replace the generic unchecked extrinsic wrapper with Revive's EVM-aware
       wrapper while preserving Quip's hybrid native signature flow.
 - [x] Implement Revive runtime APIs.
-- [ ] Package the SDK's standalone Ethereum RPC sidecar for Quip deployment.
-      The runtime APIs are implemented, but SDK commit `4330574c` cannot expose
-      `pallet-revive-eth-rpc` as an ordinary Git dependency.
+- [x] Add a pinned SDK Ethereum RPC sidecar image and a single-node development
+      Compose stack.
+- [x] Boot the Compose stack in CI and validate `eth_chainId` and
+      `eth_blockNumber` readiness.
+- [x] Add Subscan Essentials to the development/CI stack and require an indexed
+      Ethereum-shaped block.
+- [x] Add the pinned Subscan Essentials UI, runtime API configuration, and UI
+      readiness/CORS checks to the development and CI stack.
+- [ ] Extend the CI smoke test to upload, deploy, and call a contract.
+- [ ] Define production sidecar image publishing and persistent/archive receipt
+      storage before exposing the public testnet Ethereum RPC.
 - [x] Leave genesis mapped accounts empty; permissionless explicit mapping is
       available and avoids divergence from an upgraded existing testnet.
 - [x] Add initialization required for an existing-testnet
@@ -343,4 +394,6 @@ does not expose `MaxCodeLen`, `MaxStorageKeyLen`, `Schedule`, `CallFilter`,
 | 2026-07-17 | Require the `dev-chain-id` node/runtime artifact for all local presets and reject `quip-testnet` from that artifact; only the default/testnet artifact can run the public testnet with Chain ID `20049`. |
 | 2026-07-17 | Replace transaction-payment `IdentityFee` with `BlockRatioFee<1, 1, Runtime, Balance>` while retaining the fixed multiplier and length fee. |
 | 2026-07-17 | Add Revive at stable pallet index `14`, with runtime APIs, EVM-aware extrinsics, and idempotent existing-chain account initialization. |
-| 2026-07-17 | Keep Ethereum JSON-RPC as the SDK standalone sidecar; package it separately because the pinned package cannot be consumed as a Git dependency. |
+| 2026-07-17 | Use a pinned SDK Ethereum RPC sidecar for development and CI while embedded integration is blocked on paritytech/polkadot-sdk#11297; defer the contract upload/call smoke test and production sidecar publishing. |
+| 2026-07-20 | Add pinned Subscan Essentials API/subscriber/worker services with MySQL and Redis to the development and CI stack; run the node in archive mode and require an indexed EVM block. |
+| 2026-07-20 | Add the official Subscan Essentials UI at pinned commit `9f29809f`, expose it locally on port `3000`, configure its browser API through runtime `__ENV.js`, and defer Quip-specific branding. |
