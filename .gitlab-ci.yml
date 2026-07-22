@@ -51,6 +51,7 @@
 
 stages:
   - test
+  - bench
   - build
   - manifest
   - release
@@ -166,6 +167,83 @@ py-signer-test:
     - cargo fmt --manifest-path crates/transaction-crypto-py/Cargo.toml -- --check
     - cargo clippy -p quip-transaction-crypto-py --manifest-path crates/transaction-crypto-py/Cargo.toml --all-targets -- -D warnings
     - make py-signer-test
+
+# Weight regeneration on the reference machine (QUI-857). Manual job on
+# same-repo MR pipelines: a developer plays it when their change affects
+# weights; it builds with runtime-benchmarks, reruns the FRAME benchmarks,
+# and pushes the regenerated pallets/*/src/weights.rs back to the MR branch
+# as the bench bot (BENCH_PUSH_TOKEN, a bench-bot project access token).
+#
+# The `bench` tag is the whole point: it pins this job to the dedicated
+# reference machine, and that runner carries ONLY the `bench` tag —
+# deliberately not `docker`/`amd64` — so ordinary fleet jobs never land on
+# the box and skew a running measurement. Its runner is registered with
+# concurrent=1; resource_group additionally serializes bench jobs across
+# pipelines, so benchmarks run strictly one at a time.
+#
+# The bot commit carries no [skip ci]: the retriggered MR pipeline is the
+# compile check for wholesale-regenerated weight files. No trigger loop —
+# this job is `when: manual` in that pipeline too.
+#
+# Cargo caches live on a host volume on the bench box (/srv/ci-cache,
+# mounted at /ci-cache by the runner) instead of GitLab's tar-based cache:
+# the target dir runs tens of GB. Cold build dominates the runtime (~1h);
+# warm runs are much shorter. See scripts/run-benchmarks.sh for the pallet
+# derivation and the pallet_quantum_pow skip rationale.
+benchmark-weights:
+  stage: bench
+  needs: []
+  image: $TOOLCHAIN_IMAGE
+  tags: [bench]
+  resource_group: reference-machine
+  interruptible: false
+  timeout: 3h
+  rules:
+    # Same-repo MRs only: the push-back token must never fire for a fork.
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID == $CI_PROJECT_ID'
+      when: manual
+      allow_failure: true
+  variables:
+    CARGO_HOME: /ci-cache/cargo-home
+    CARGO_TARGET_DIR: /ci-cache/target
+    GIT_STRATEGY: clone
+    GIT_DEPTH: "0"
+  cache: []
+  script:
+    - ./scripts/run-benchmarks.sh
+    - ./scripts/push-weights.sh
+
+# Reference-hardware drift check: `benchmark machine` scores the box against
+# Substrate's reference hardware (CPU hash/verify rates, memory bandwidth,
+# disk). Run it manually from any MR, or monthly via a scheduled pipeline
+# that sets BENCH_MACHINE_CHECK=true (note: a schedule on main also runs the
+# ordinary test jobs — accepted). A degradation means the box changed
+# (governor unit dead, thermal issue, kernel regression) and weights should
+# not be regenerated until it's understood. Uses the released node image —
+# the subcommand is stable across versions; bump the tag alongside releases.
+#
+# --allow-fail because the reference machine (node02, SATA SSD) fails the
+# two disk benches by design — ~43% seq / ~42% rnd of the NVMe-assuming
+# reference at provisioning time (2026-07-22). Disk speed does not affect
+# `benchmark pallet` ref_time (in-memory DB). Read the table: CPU (~130-139%
+# at baseline) and memory (~110%) are the drift signals that matter.
+benchmark-machine:
+  stage: bench
+  needs: []
+  image:
+    name: $IMAGE:v0.2.1
+    entrypoint: [""]
+  tags: [bench]
+  resource_group: reference-machine
+  interruptible: false
+  timeout: 30m
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $BENCH_MACHINE_CHECK == "true"'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: manual
+      allow_failure: true
+  script:
+    - quip-network-node benchmark machine --allow-fail
 
 # Shared publish rules. Container images are published on release tags ONLY —
 # branch pushes (main/v0.2 merges) never build or push images. Floating
