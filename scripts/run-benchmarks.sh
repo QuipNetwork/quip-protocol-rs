@@ -70,11 +70,17 @@ for pallet in "${pallets[@]}"; do
   fi
 
   echo "== Benchmarking $pallet -> $dir/src/weights.rs =="
+  # --template is required: the CLI's built-in template emits the
+  # runtime-style file (pub struct WeightInfo implementing
+  # <crate>::WeightInfo), which does not compile inside a pallet crate.
+  # .maintain/frame-weight-template.hbs emits the in-pallet convention
+  # (pub trait WeightInfo + SubstrateWeight<T> + () impls) this repo uses.
   "$BIN" benchmark pallet \
     --pallet "$pallet" \
     --extrinsic '*' \
     --steps "$STEPS" \
     --repeat "$REPEAT" \
+    --template .maintain/frame-weight-template.hbs \
     --output "$dir/src/weights.rs"
 done
 
